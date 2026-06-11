@@ -5,6 +5,7 @@ import json
 import sys
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -106,8 +107,12 @@ def analyze_session(path: Path, agent_type: str = None):
     model = None
     turns = 0
     skills_in_context = []
+    started_at = None
 
     for entry in lines:
+        if started_at is None and entry.get("timestamp"):
+            started_at = entry["timestamp"]
+
         t = entry.get("type")
 
         if t == "assistant":
@@ -180,6 +185,7 @@ def analyze_session(path: Path, agent_type: str = None):
         "usage": usage_total,
         "errors": errors,
         "skills_in_context": list(dict.fromkeys(skills_in_context)),
+        "started_at": started_at,
     }
 
 
@@ -293,9 +299,21 @@ def main():
             b["estimated_cost_usd"] = round(b["estimated_cost_usd"] + c, 4)
     totals["by_model"] = by_model
 
+    # Derive report_timestamp (UTC) for use in the default report filename.
+    # Format: YYYY-mm-DD-HHMM (string slice — ISO already UTC so no tz conversion).
+    # Fallback to file mtime when no JSONL entry carries a timestamp.
+    raw_ts = main_data.get("started_at")
+    if raw_ts and len(raw_ts) >= 16:
+        # "2026-06-11T16:12:14.966Z" → "2026-06-11-1612"
+        report_timestamp = raw_ts[:10] + "-" + raw_ts[11:13] + raw_ts[14:16]
+    else:
+        mtime_utc = datetime.fromtimestamp(Path(main_path).stat().st_mtime, tz=timezone.utc)
+        report_timestamp = mtime_utc.strftime("%Y-%m-%d-%H%M")
+
     result = {
         "session_id": session_id,
         "session_dir": str(Path(main_path).parent),
+        "report_timestamp": report_timestamp,
         "main_session": main_data,
         "subagent_sessions": subagent_data,
         "totals": totals,

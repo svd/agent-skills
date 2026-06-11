@@ -72,17 +72,24 @@ Exit code 2 means multiple sessions were found — the JSON lists them; ask the 
 
 ## Step 3 — Determine report filename
 
-After parsing you have `session_id`. Take the **last 4–6 characters** as a slug (use 6 if they're all hex-like, 4 if they include hyphens or are less readable).
+After parsing you have `session_id` and `report_timestamp` (both in the parser output).
 
-**Default filename:** `session-report-<slug>.md`
-Example: session ID `7d6b74af-3bfb-4447-bebe-bb3aa141a12d` → slug `a12d` → `session-report-a12d.md`
+**Slug:** take the **last 6–8 characters** of `session_id` (8 if they're all hex characters with no hyphens, 6 otherwise).
+
+**Default filename:** `<report_timestamp>-session-<slug>.md`
+
+`report_timestamp` is already formatted `YYYY-mm-DD-HHMM` in UTC by the parser (derived from the first JSONL entry `timestamp`, or JSONL file mtime as fallback).
+
+Example: `report_timestamp` = `2026-06-11-1612`, session ID `7d6b74af-3bfb-4447-bebe-bb3aa141a12d` → slug `b2edbc` → `2026-06-11-1612-session-b2edbc.md`
 
 **Also propose 1–2 short content-based names** by scanning:
-- `skills_in_context` — dominant skill name gives a strong hint (e.g. `pptx` → `session-report-pptx-gen.md`)
-- First 3–5 tool call `input_summary` values — extract the task theme (e.g. "debug auth", "data-extract", "rfp-review")
+- `skills_in_context` — dominant skill name gives a strong hint (e.g. `pptx` → `pptx-gen`)
+- First 3–5 tool call `input_summary` values — extract the task theme (e.g. `debug-auth`, `data-extract`, `rfp-review`)
 - The session title or first user message if visible
 
-Name format: `session-report-<topic-slug>.md` where topic-slug is 2–4 words joined by hyphens, lowercase, ASCII only.
+Content-based name format: `<report_timestamp>-<topic>.md` where `<topic>` is 2–4 words joined by hyphens, lowercase, ASCII only.
+
+Example: `2026-06-11-1612-pptx-gen.md`
 
 Use `AskUserQuestion` to present the choice with the default as the first option and the 1–2 content-based names as additional options (plus "Other" for free text). If the user has already specified an output filename in their request, skip this step.
 
