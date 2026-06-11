@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "manage-claude-projects",
+  "version": "0.1.0",
+  "description": "Inspect, audit, and clean up local Claude Code projects under ~/.claude.",
+  "author": {
+    "name": "Sviatoslav Sviridov",
+    "email": "sviridov@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": ["claude-code", "projects", "cleanup", "tokens", "cost"]
+}

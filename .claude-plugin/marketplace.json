@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "svd-agent-skills",
+  "owner": {
+    "name": "Sviatoslav Sviridov",
+    "email": "sviridov@gmail.com"
+  },
+  "description": "Personal Claude Code skills for managing local projects and analyzing sessions.",
+  "metadata": {
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "manage-claude-projects",
+      "source": "./plugins/manage-claude-projects",
+      "description": "Inspect, audit, and clean up local Claude Code projects under ~/.claude."
+    },
+    {
+      "name": "session-analyzer",
+      "source": "./plugins/session-analyzer",
+      "description": "Analyze a Claude Code session JSONL transcript into a structured Markdown report."
+    }
+  ]
+}
