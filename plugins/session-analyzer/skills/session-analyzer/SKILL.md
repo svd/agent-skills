@@ -52,6 +52,29 @@ The script outputs JSON to stdout:
     "skills_in_context": ["staffing-assistant:staffing-analysis", "caveman:caveman-commit"]
   },
   "subagent_sessions": [...],
+  "workflow_sessions": [
+    {
+      "wf_id": "wf_8960abc0-585",
+      "workflow_name": "deep-research",
+      "status": "killed",
+      "args": "Landscape research ...",
+      "default_model": "claude-fable-5[1m]",
+      "duration_ms": 947795,
+      "agent_count": 100,
+      "transcript_files": 197,
+      "meta_total_tokens": 1907679,
+      "meta_total_tool_calls": 384,
+      "phases": [{"title": "Scope", "detail": "..."}],
+      "phase_rollup": {"Verify": {"agents": 75, "tool_calls": 302, "errors": 39}},
+      "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+      "estimated_cost_usd": 160.49,
+      "agents": [
+        {"label": "scope", "phase": "Scope", "state": "done", "cached": true,
+         "model": "claude-fable-5", "tool_calls": [...], "errors": [...], "usage": {}}
+      ],
+      "errors": [{"label": "verify:claim-3", "phase": "Verify", "name": "WebFetch", "result_preview": "...", "agent_id": "..."}]
+    }
+  ],
   "totals": {
     "input_tokens": 0, "output_tokens": 0,
     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
@@ -69,6 +92,27 @@ The script outputs JSON to stdout:
 ```
 
 Exit code 2 means multiple sessions were found — the JSON lists them; ask the user to pick one.
+
+### Workflows (the `Workflow` tool)
+
+When a session invokes the **Workflow** tool, its fan-out agents are **not** in
+`<sid>/subagents/` — they live in `<sid>/subagents/workflows/<wf_id>/agent-*.jsonl`,
+with run metadata in `<sid>/workflows/<wf_id>.json` and the script in
+`<sid>/workflows/scripts/`. The parser discovers these automatically and emits one
+entry per run in `workflow_sessions`. Notes:
+
+- **`agents[]`** reuses the same per-session shape as subagents, enriched with
+  `label` / `phase` / `state` (`done`/`error`/`progress`) / `cached` from the run's
+  `workflowProgress`. Agents from prior resume runs that aren't in the final
+  progress map get `label: "(prior-run/untracked)"` but are still counted.
+- **`transcript_files`** (actual jsonl count, incl. resumed runs) usually exceeds
+  **`agent_count`** / **`meta_total_tokens`** (which track only the final run). The
+  parser's `usage` and `estimated_cost_usd` sum **all** transcripts — true compute
+  spent — so they will be larger than the metadata's headline numbers. Report both
+  and note the difference.
+- Workflow agent usage is **already folded into `totals` and `by_model`**, priced
+  at each agent's own model (workflow agents often run a different/cheaper model
+  than the main loop — e.g. `fable` workflow under an `opus` main session).
 
 ## Step 3 — Determine report filename
 
@@ -101,8 +145,12 @@ Attribution heuristics (apply in order):
 1. If a skill/agent file explicitly names the tool (e.g. "Run `Bash` with `staffing-extract`") → **skill-driven**.
 2. If the tool call matches a pattern described in the skill (e.g. spawning N `Agent` calls for evaluation) → **skill-driven**.
 3. If `skills_in_context` lists a skill and the action fits that skill's documented workflow → **skill-driven**.
-4. If the LLM used a tool to recover from an error in a way not described by the skill → **LLM autonomous (error recovery)**.
-5. If no skill rule accounts for the tool call → **LLM autonomous**.
+4. If the tool call belongs to a workflow agent (it appears under a
+   `workflow_sessions[].agents[]`) → **workflow-driven** (attribute to
+   `workflow:<workflow_name>`, optionally with the agent `phase`). These are
+   prescribed by the workflow script, not autonomous.
+5. If the LLM used a tool to recover from an error in a way not described by the skill → **LLM autonomous (error recovery)**.
+6. If no skill rule accounts for the tool call → **LLM autonomous**.
 
 When no reference files are provided, use `skills_in_context` from the parser output plus reasoning about common skill patterns to make best-effort attributions. Note the uncertainty in the report.
 
@@ -137,6 +185,24 @@ For each distinct subagent type, summarize: type, count of instances, tool calls
 | Agent type | Instances | Key tools used | Errors |
 |-----------|-----------|----------------|--------|
 
+### Workflows (if any)
+
+One row per `workflow_sessions[]` run. State the `status` plainly — if `killed`
+or `error`, say how many agents failed (`errors` count vs `transcript_files`).
+
+| Workflow | Status | Agents | Tool calls | Errors | Tokens | Cost |
+|----------|--------|--------|-----------|--------|--------|------|
+| <workflow_name> | <status> | <transcript_files> | <meta_total_tool_calls> | <len(errors)> | <usage sum> | $X.XX |
+
+Then a per-phase breakdown from `phase_rollup`:
+
+| Phase | Agents | Tool calls | Errors |
+|-------|--------|-----------|--------|
+| <phase> | <n> | <n> | <n> |
+
+Note any gap between `transcript_files` / summed `usage` (all runs, incl. resumes)
+and `agent_count` / `meta_total_tokens` (final tracked run only).
+
 ## 2. Skill vs. LLM Attribution
 
 | Source | Tool calls | % |
@@ -149,7 +215,9 @@ Note if attribution is inferred (no reference files provided).
 
 ## 3. Errors and Recovery
 
-For each error from `main_session.errors` and subagent errors:
+For each error from `main_session.errors`, subagent errors, **and
+`workflow_sessions[].errors`** (these carry `label`/`phase`/`agent_id` — use them
+to identify which workflow agent failed):
 
 ### Error <N> — <tool-name> (turn <seq>)
 
@@ -168,16 +236,19 @@ For each error from `main_session.errors` and subagent errors:
 
 ## 4. Token Usage and Cost
 
-| Metric | Main session | Subagents | Total |
-|--------|-------------|-----------|-------|
-| Input tokens | | | |
-| Output tokens | | | |
-| Cache writes | | | |
-| Cache reads | | | |
-| **Estimated cost** | | | **$X.XXXX** |
+| Metric | Main session | Subagents | Workflows | Total |
+|--------|-------------|-----------|-----------|-------|
+| Input tokens | | | | |
+| Output tokens | | | | |
+| Cache writes | | | | |
+| Cache reads | | | | |
+| **Estimated cost** | | | | **$X.XXXX** |
 
-*Pricing: <tier> rates (~$X/MTok input, $X/MTok output, $X/MTok cache write, $X/MTok cache read).
-Costs are approximate — actual billing may differ.*
+(Omit the Workflows column when `workflow_sessions` is empty.)
+
+*Pricing is per-model — each session/agent is priced at its own model's rates, then
+summed (see Cost by model below). Costs are approximate — actual billing may differ.
+When a workflow ran a different model than the main loop, list both tiers' rates.*
 
 ### Cost by model
 
@@ -200,7 +271,11 @@ Costs are approximate — actual billing may differ.*
 ## Report quality checklist
 
 Before finishing:
-- [ ] Every error in `errors[]` has a dedicated subsection in §3.
+- [ ] Every error in `errors[]` has a dedicated subsection in §3. When a workflow
+      produced many similar errors, group them by `phase`/error kind with counts
+      rather than one subsection each, but cover every distinct failure mode.
+- [ ] Every `workflow_sessions[]` run appears in the §1 Workflows table with its
+      status, agent count, and per-phase breakdown.
 - [ ] Attribution in §2 is consistent with the per-row Attribution column in §1.
 - [ ] Cost table totals match `totals.estimated_cost_usd`.
 - [ ] Per-model cost rows sum to `totals.estimated_cost_usd` (ignoring unpriced models).

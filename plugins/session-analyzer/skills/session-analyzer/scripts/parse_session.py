@@ -222,6 +222,110 @@ def estimate_cost(usage, model_str):
     )
 
 
+def find_workflow_runs(parent: Path, session_id: str):
+    """
+    Discover Workflow tool runs for a session.
+
+    Workflow agents are NOT in <sid>/subagents/ alongside normal subagents — they
+    live in <sid>/subagents/workflows/<wf_id>/agent-*.jsonl, with run metadata in
+    <sid>/workflows/<wf_id>.json. Returns [(wf_id, wf_dir, meta_file_or_None), ...].
+    """
+    base = parent / session_id / "subagents" / "workflows"
+    meta_dir = parent / session_id / "workflows"
+    runs = []
+    if base.is_dir():
+        for wf_dir in sorted(d for d in base.iterdir() if d.is_dir()):
+            wf_id = wf_dir.name
+            meta_file = meta_dir / f"{wf_id}.json"
+            runs.append((wf_id, wf_dir, meta_file if meta_file.is_file() else None))
+    return runs
+
+
+def analyze_workflow(wf_id: str, wf_dir: Path, meta_file: Path):
+    """
+    Analyze one workflow run: enrich each agent transcript with progress metadata
+    (label/phase/state from <wf_id>.json), aggregate usage, and price per agent
+    model. Returns a dict; `agents` reuses analyze_session output verbatim.
+    """
+    meta = {}
+    if meta_file is not None:
+        try:
+            meta = json.loads(meta_file.read_text())
+        except Exception:
+            meta = {}
+
+    # Map agentId -> progress entry (label, phase, model, state, cached).
+    progress = {}
+    for p in meta.get("workflowProgress", []):
+        if isinstance(p, dict) and p.get("type") == "workflow_agent":
+            progress[p.get("agentId")] = p
+    default_model = meta.get("defaultModel")
+
+    agents = []
+    usage_total = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    errors = []
+    phase_rollup = {}
+    cost_sum, any_priced = 0.0, False
+
+    for sa_file in sorted(wf_dir.glob("agent-*.jsonl")):
+        agent_id = sa_file.stem
+        if agent_id.startswith("agent-"):
+            agent_id = agent_id[len("agent-"):]
+        pe = progress.get(agent_id, {})
+        label = pe.get("label") or "(prior-run/untracked)"
+        data = analyze_session(sa_file, agent_type="workflow-subagent")
+        data["agent_id"] = agent_id
+        data["label"] = label
+        data["phase"] = pe.get("phaseTitle")
+        data["state"] = pe.get("state")
+        data["cached"] = pe.get("cached")
+        # Workflow agent model can differ from main loop (e.g. fable vs opus).
+        if not data.get("model"):
+            data["model"] = pe.get("model") or default_model
+        agents.append(data)
+
+        for k in usage_total:
+            usage_total[k] += data["usage"].get(k, 0)
+        c = estimate_cost(data["usage"], data.get("model") or "")
+        if c is not None:
+            cost_sum += c
+            any_priced = True
+        for e in data["errors"]:
+            errors.append({**e, "agent_id": agent_id, "label": label,
+                           "phase": pe.get("phaseTitle")})
+
+        ph = pe.get("phaseTitle") or "(untracked)"
+        r = phase_rollup.setdefault(ph, {"agents": 0, "tool_calls": 0, "errors": 0})
+        r["agents"] += 1
+        r["tool_calls"] += len(data["tool_calls"])
+        r["errors"] += len(data["errors"])
+
+    return {
+        "wf_id": wf_id,
+        "workflow_name": meta.get("workflowName"),
+        "status": meta.get("status"),
+        "args": (meta.get("args") if isinstance(meta.get("args"), str)
+                 else json.dumps(meta.get("args")))[:300] if meta.get("args") is not None else None,
+        "default_model": default_model,
+        "duration_ms": meta.get("durationMs"),
+        "agent_count": meta.get("agentCount"),
+        "transcript_files": len(agents),
+        "meta_total_tokens": meta.get("totalTokens"),
+        "meta_total_tool_calls": meta.get("totalToolCalls"),
+        "phases": meta.get("phases"),
+        "phase_rollup": phase_rollup,
+        "usage": usage_total,
+        "estimated_cost_usd": round(cost_sum, 4) if any_priced else None,
+        "agents": agents,
+        "errors": errors,
+    }
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"error": "Usage: parse_session.py <path-or-session-uuid>"}))
@@ -256,14 +360,22 @@ def main():
                     pass
             subagent_data.append(analyze_session(sa_file, agent_type=agent_type))
 
+    # Workflow runs: agents live in <sid>/subagents/workflows/<wf_id>/, not above.
+    workflow_data = []
+    for wf_id, wf_dir, wf_meta in find_workflow_runs(Path(main_path).parent, session_id):
+        workflow_data.append(analyze_workflow(wf_id, wf_dir, wf_meta))
+
+    # Flatten workflow agents so they count toward totals / by-model / cost.
+    workflow_agents = [a for wf in workflow_data for a in wf["agents"]]
+
     # Aggregate totals
     totals = dict(main_data["usage"])
-    for sa in subagent_data:
+    for sa in subagent_data + workflow_agents:
         for k in totals:
             totals[k] += sa["usage"].get(k, 0)
 
     # Cost each session at its own model, then sum — mixed-model sessions price right.
-    per_session = [main_data] + subagent_data
+    per_session = [main_data] + subagent_data + workflow_agents
     session_costs, unpriced = [], []
     for s in per_session:
         m = s.get("model") or ""
@@ -316,6 +428,7 @@ def main():
         "report_timestamp": report_timestamp,
         "main_session": main_data,
         "subagent_sessions": subagent_data,
+        "workflow_sessions": workflow_data,
         "totals": totals,
     }
 
