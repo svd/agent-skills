@@ -19,6 +19,14 @@
       "name": "session-analyzer",
       "source": "./plugins/session-analyzer",
       "description": "Analyze a Claude Code session JSONL transcript into a structured Markdown report."
+    },
+    {
+      "name": "mcp-client-kit",
+      "source": {
+        "source": "github",
+        "repo": "svd/mcp-client-kit"
+      },
+      "description": "Generate typed Python wrappers for any MCP server (skills: generate-mcp-wrappers, generate-mcp-runner)."
     }
   ]
 }

@@ -11,6 +11,7 @@ Personal Claude Code plugin marketplace. Marketplace name: `svd-agent-skills`.
 # Install individual plugins
 /plugin install manage-claude-projects@svd-agent-skills
 /plugin install session-analyzer@svd-agent-skills
+/plugin install mcp-client-kit@svd-agent-skills
 ```
 
 ## Plugins
@@ -39,6 +40,17 @@ Skills: `/session-analyzer:session-analyzer`
 
 Trigger phrases: "analyze this session", "session report", "how many tokens did it use",
 "what errors occurred", "show me the tool calls", or any session UUID / path.
+
+### mcp-client-kit
+
+Generate typed Python wrappers for any MCP server — one `async def` per tool with
+real return types, so you call tools from code instead of pushing JSON schemas
+through the model's context window. Ships a CLI (`mcpgen`) plus skills that drive it.
+
+Skills: `/mcp-client-kit:generate-mcp-wrappers`, `/mcp-client-kit:generate-mcp-runner`
+
+Trigger phrases: "generate MCP wrappers", "typed wrappers for an MCP server",
+"mcpgen", "smoke-test run.py for MCP wrappers".
 
 ## Pricing
 
