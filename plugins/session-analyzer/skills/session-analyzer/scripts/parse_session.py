@@ -12,6 +12,16 @@ from pathlib import Path
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
+def _parse_iso(ts):
+    """Parse an ISO 8601 timestamp string to a datetime (handles trailing Z)."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
 def find_session_files(target: str):
     """
     Resolve a session path or UUID to (main_jsonl, subagents_dir_or_None, session_id).
@@ -108,10 +118,14 @@ def analyze_session(path: Path, agent_type: str = None):
     turns = 0
     skills_in_context = []
     started_at = None
+    ended_at = None
 
     for entry in lines:
-        if started_at is None and entry.get("timestamp"):
-            started_at = entry["timestamp"]
+        ts = entry.get("timestamp")
+        if ts:
+            if started_at is None:
+                started_at = ts
+            ended_at = ts
 
         t = entry.get("type")
 
@@ -175,6 +189,12 @@ def analyze_session(path: Path, agent_type: str = None):
         if entry["is_error"]:
             errors.append(entry)
 
+    wall_seconds = None
+    if started_at and ended_at and started_at != ended_at:
+        a, b = _parse_iso(started_at), _parse_iso(ended_at)
+        if a and b:
+            wall_seconds = round((b - a).total_seconds(), 1)
+
     return {
         "session_id": path.stem,
         "agent_type": agent_type,
@@ -186,6 +206,8 @@ def analyze_session(path: Path, agent_type: str = None):
         "errors": errors,
         "skills_in_context": list(dict.fromkeys(skills_in_context)),
         "started_at": started_at,
+        "ended_at": ended_at,
+        "wall_seconds": wall_seconds,
     }
 
 
@@ -386,6 +408,9 @@ def main():
     totals["pricing_tier"] = next((k for k in PRICING if k in main_model.lower()), None)
     if unpriced:
         totals["unpriced_models"] = sorted(set(unpriced))
+    # Wall time reflects the main session span; subagents/workflow agents run
+    # concurrently within it, so summing their walls would double-count.
+    totals["wall_seconds"] = main_data.get("wall_seconds")
 
     # Per-model breakdown — group sessions by model id, sum usage + cost.
     by_model = {}

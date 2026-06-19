@@ -49,7 +49,10 @@ The script outputs JSON to stdout:
     ],
     "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
     "errors": [...],
-    "skills_in_context": ["staffing-assistant:staffing-analysis", "caveman:caveman-commit"]
+    "skills_in_context": ["staffing-assistant:staffing-analysis", "caveman:caveman-commit"],
+    "started_at": "2026-06-11T16:12:14.966Z",
+    "ended_at": "2026-06-11T16:24:17.340Z",
+    "wall_seconds": 722.4
   },
   "subagent_sessions": [...],
   "workflow_sessions": [
@@ -80,6 +83,7 @@ The script outputs JSON to stdout:
     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
     "estimated_cost_usd": 0.0,
     "pricing_tier": "sonnet",
+    "wall_seconds": 722.4,
     "by_model": {
       "claude-opus-4-8": {
         "input_tokens": 0, "output_tokens": 0,
@@ -166,6 +170,7 @@ Use this exact structure:
 **Session ID:** `<uuid>`
 **Date:** <from file mtime or session metadata>
 **Model:** <from main_session.model>
+**Wall time:** <totals.wall_seconds formatted as Hh Mm Ss — e.g. "12m 3s"; omit this line when wall_seconds is null>
 
 ---
 
@@ -190,9 +195,9 @@ For each distinct subagent type, summarize: type, count of instances, tool calls
 One row per `workflow_sessions[]` run. State the `status` plainly — if `killed`
 or `error`, say how many agents failed (`errors` count vs `transcript_files`).
 
-| Workflow | Status | Agents | Tool calls | Errors | Tokens | Cost |
-|----------|--------|--------|-----------|--------|--------|------|
-| <workflow_name> | <status> | <transcript_files> | <meta_total_tool_calls> | <len(errors)> | <usage sum> | $X.XX |
+| Workflow | Status | Agents | Tool calls | Errors | Tokens | Cost | Duration |
+|----------|--------|--------|-----------|--------|--------|------|----------|
+| <workflow_name> | <status> | <transcript_files> | <meta_total_tool_calls> | <len(errors)> | <usage sum> | $X.XX | <duration_ms formatted as Hh Mm Ss, or "—" if null> |
 
 Then a per-phase breakdown from `phase_rollup`:
 
@@ -271,6 +276,8 @@ When a workflow ran a different model than the main loop, list both tiers' rates
 ## Report quality checklist
 
 Before finishing:
+- [ ] Header shows **Wall time** when `totals.wall_seconds` is non-null; line is omitted (not shown as "—") when null.
+- [ ] Every workflow row in the §1 Workflows table has a **Duration** column; "—" when `duration_ms` is null.
 - [ ] Every error in `errors[]` has a dedicated subsection in §3. When a workflow
       produced many similar errors, group them by `phase`/error kind with counts
       rather than one subsection each, but cover every distinct failure mode.
