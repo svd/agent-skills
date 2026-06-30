@@ -103,7 +103,7 @@ def looks_like_error(content):
     return any(re.search(p, text) for p in patterns)
 
 
-def analyze_session(path: Path, agent_type: str = None):
+def analyze_session(path: Path, agent_type: str = None, agent_name: str = None):
     lines = parse_jsonl(path)
 
     tool_calls = []
@@ -198,6 +198,7 @@ def analyze_session(path: Path, agent_type: str = None):
     return {
         "session_id": path.stem,
         "agent_type": agent_type,
+        "agent_name": agent_name,
         "path": str(path),
         "model": model,
         "turns": turns,
@@ -374,13 +375,15 @@ def main():
             # Load companion meta file for agent type
             meta_file = subagents_dir / (sa_file.stem + ".meta.json")
             agent_type = None
+            agent_name = None
             if meta_file.exists():
                 try:
                     meta = json.loads(meta_file.read_text())
                     agent_type = meta.get("agentType") or meta.get("description")
+                    agent_name = meta.get("description")
                 except Exception:
                     pass
-            subagent_data.append(analyze_session(sa_file, agent_type=agent_type))
+            subagent_data.append(analyze_session(sa_file, agent_type=agent_type, agent_name=agent_name))
 
     # Workflow runs: agents live in <sid>/subagents/workflows/<wf_id>/, not above.
     workflow_data = []
@@ -402,6 +405,7 @@ def main():
     for s in per_session:
         m = s.get("model") or ""
         c = estimate_cost(s["usage"], m)
+        s["estimated_cost_usd"] = c  # store on the dict; None if unpriced
         (unpriced.append(m or "unknown") if c is None else session_costs.append(c))
     totals["estimated_cost_usd"] = round(sum(session_costs), 4) if session_costs else None
     main_model = main_data.get("model") or ""
@@ -435,6 +439,43 @@ def main():
         else:
             b["estimated_cost_usd"] = round(b["estimated_cost_usd"] + c, 4)
     totals["by_model"] = by_model
+
+    # Per-agent-execution breakdown — group by execution unit:
+    #   "main session", each subagent agent_type, each "workflow:<name>".
+    by_agent_items = [("main session", main_data)]
+    for sa in subagent_data:
+        key = sa.get("agent_type") or "subagent"
+        by_agent_items.append((key, sa))
+    for wf in workflow_data:
+        wf_key = "workflow:" + (wf.get("workflow_name") or wf["wf_id"])
+        for ag in wf["agents"]:
+            by_agent_items.append((wf_key, ag))
+
+    by_agent = {}
+    for key, s in by_agent_items:
+        b = by_agent.setdefault(key, {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "instances": 0,
+            "models": [],
+            "estimated_cost_usd": 0.0,
+            "priced": True,
+        })
+        for k in ("input_tokens", "output_tokens",
+                  "cache_creation_input_tokens", "cache_read_input_tokens"):
+            b[k] += s["usage"].get(k, 0)
+        b["instances"] += 1
+        m = s.get("model") or "unknown"
+        if m not in b["models"]:
+            b["models"].append(m)
+        c = s.get("estimated_cost_usd")  # already computed in the cost loop above
+        if c is None:
+            b["priced"] = False
+        else:
+            b["estimated_cost_usd"] = round(b["estimated_cost_usd"] + c, 4)
+    totals["by_agent"] = by_agent
 
     # Derive report_timestamp (UTC) for use in the default report filename.
     # Format: YYYY-mm-DD-HHMM (string slice — ISO already UTC so no tz conversion).

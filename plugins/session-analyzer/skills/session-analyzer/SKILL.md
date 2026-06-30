@@ -54,7 +54,16 @@ The script outputs JSON to stdout:
     "ended_at": "2026-06-11T16:24:17.340Z",
     "wall_seconds": 722.4
   },
-  "subagent_sessions": [...],
+  "subagent_sessions": [
+    {
+      "session_id": "agent-abc123", "agent_type": "Explore",
+      "agent_name": "Explore session-analyzer plugin",
+      "model": "claude-sonnet-4-6", "turns": 4,
+      "tool_calls": [...], "errors": [],
+      "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+      "estimated_cost_usd": 0.012
+    }
+  ],
   "workflow_sessions": [
     {
       "wf_id": "wf_8960abc0-585",
@@ -73,7 +82,8 @@ The script outputs JSON to stdout:
       "estimated_cost_usd": 160.49,
       "agents": [
         {"label": "scope", "phase": "Scope", "state": "done", "cached": true,
-         "model": "claude-fable-5", "tool_calls": [...], "errors": [...], "usage": {}}
+         "model": "claude-fable-5", "tool_calls": [...], "errors": [...], "usage": {},
+         "estimated_cost_usd": 1.23}
       ],
       "errors": [{"label": "verify:claim-3", "phase": "Verify", "name": "WebFetch", "result_preview": "...", "agent_id": "..."}]
     }
@@ -89,6 +99,22 @@ The script outputs JSON to stdout:
         "input_tokens": 0, "output_tokens": 0,
         "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
         "sessions": 1, "estimated_cost_usd": 0.0, "priced": true
+      }
+    },
+    "by_agent": {
+      "main session": {
+        "input_tokens": 0, "output_tokens": 0,
+        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        "instances": 1, "models": ["claude-opus-4-8"],
+        "estimated_cost_usd": 0.0, "priced": true
+      },
+      "Explore": {
+        "instances": 3, "models": ["claude-sonnet-4-6"],
+        "estimated_cost_usd": 0.036, "priced": true
+      },
+      "workflow:deep-research": {
+        "instances": 100, "models": ["claude-fable-5"],
+        "estimated_cost_usd": 160.49, "priced": true
       }
     }
   }
@@ -263,6 +289,32 @@ When a workflow ran a different model than the main loop, list both tiers' rates
 
 *Rows from `totals.by_model`. Unpriced models (no matching pricing tier) show "—" for cost.*
 
+### Cost by agent execution
+
+*(Include this subsection only when `subagent_sessions` or `workflow_sessions[].agents`
+is non-empty — skip entirely for a solo main-session run.)*
+
+| Execution | Instances | Models | Input | Output | Cache write | Cache read | Cost |
+|-----------|-----------|--------|-------|--------|-------------|------------|------|
+| main session | 1 | <model> | <n> | <n> | <n> | <n> | $X.XXXX |
+| <agent_type> | <N> | <model(s)> | <n> | <n> | <n> | <n> | $X.XXXX |
+| workflow:<name> | <N> | <model(s)> | <n> | <n> | <n> | <n> | $X.XXXX |
+
+*Rows from `totals.by_agent`. Subagent groups use the `agent_type` field as the key
+(e.g. `Explore`, `Plan`, `caveman:cavecrew-builder`). Workflow groups use
+`workflow:<workflow_name>`. Unpriced groups show "—" for cost.*
+
+When `subagent_sessions` is non-empty, add a per-instance detail table
+(subagents only — workflow agents stay in the grouped table above to avoid flooding):
+
+| # | Agent type | Name | Model | Input | Output | Cache write | Cache read | Cost |
+|---|-----------|------|-------|-------|--------|-------------|------------|------|
+| 1 | <agent_type> | <agent_name or "—"> | <model> | <n> | <n> | <n> | <n> | $X.XXXX |
+
+*Rows from `subagent_sessions[]`, each carrying `estimated_cost_usd` and `agent_name`
+(the task description from the Agent tool call). Show "—" when `agent_name` is null.
+Omit this table when no `subagent_sessions` ran.*
+
 ## 5. Optimization Recommendations
 
 <numbered list of concrete, specific recommendations based on observed patterns:>
@@ -286,6 +338,7 @@ Before finishing:
 - [ ] Attribution in §2 is consistent with the per-row Attribution column in §1.
 - [ ] Cost table totals match `totals.estimated_cost_usd`.
 - [ ] Per-model cost rows sum to `totals.estimated_cost_usd` (ignoring unpriced models).
+- [ ] Cost by agent execution rows sum to `totals.estimated_cost_usd` (ignoring unpriced groups); section omitted when only the main session ran.
 - [ ] §5 recommendations are specific to this session (not generic advice).
 - [ ] Report path is stated in the final response to the user.
 
