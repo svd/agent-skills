@@ -222,17 +222,28 @@ PRICING = {
     "haiku":  {"input": 1.0,   "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
 }
 
+# Sonnet 5 introductory pricing, effective through 2026-08-31 (inclusive).
+# Applied only when a session's own start time falls in the window; standard
+# PRICING["sonnet"] used otherwise.
+SONNET_INTRO_PRICING = {"input": 2.0, "output": 10.0, "cache_write": 2.50, "cache_read": 0.20}
+SONNET_INTRO_START = datetime(2026, 7, 1, tzinfo=timezone.utc)
+SONNET_INTRO_END = datetime(2026, 9, 1, tzinfo=timezone.utc)  # exclusive -> Aug 31 fully included
 
-def _match_price(model_str):
+
+def _match_price(model_str, session_dt=None):
     ml = (model_str or "").lower()
     for key, price in PRICING.items():
         if key in ml:
+            if (key == "sonnet" and session_dt is not None
+                    and SONNET_INTRO_START <= session_dt < SONNET_INTRO_END):
+                return SONNET_INTRO_PRICING
             return price
     return None
 
 
-def estimate_cost(usage, model_str):
-    p = _match_price(model_str)
+def estimate_cost(usage, model_str, session_ts=None):
+    session_dt = _parse_iso(session_ts) if session_ts else None
+    p = _match_price(model_str, session_dt)
     if p is None:
         return None
     M = 1_000_000
@@ -314,7 +325,7 @@ def analyze_workflow(wf_id: str, wf_dir: Path, meta_file: Path):
 
         for k in usage_total:
             usage_total[k] += data["usage"].get(k, 0)
-        c = estimate_cost(data["usage"], data.get("model") or "")
+        c = estimate_cost(data["usage"], data.get("model") or "", data.get("started_at"))
         if c is not None:
             cost_sum += c
             any_priced = True
@@ -404,7 +415,7 @@ def main():
     session_costs, unpriced = [], []
     for s in per_session:
         m = s.get("model") or ""
-        c = estimate_cost(s["usage"], m)
+        c = estimate_cost(s["usage"], m, s.get("started_at"))
         s["estimated_cost_usd"] = c  # store on the dict; None if unpriced
         (unpriced.append(m or "unknown") if c is None else session_costs.append(c))
     totals["estimated_cost_usd"] = round(sum(session_costs), 4) if session_costs else None
@@ -433,7 +444,7 @@ def main():
                   "cache_creation_input_tokens", "cache_read_input_tokens"):
             b[k] += s["usage"].get(k, 0)
         b["sessions"] += 1
-        c = estimate_cost(s["usage"], m)
+        c = estimate_cost(s["usage"], m, s.get("started_at"))
         if c is None:
             b["priced"] = False
         else:
