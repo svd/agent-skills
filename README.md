@@ -12,6 +12,7 @@ Personal Claude Code plugin marketplace. Marketplace name: `svd-agent-skills`.
 /plugin install manage-claude-projects@svd-agent-skills
 /plugin install session-analyzer@svd-agent-skills
 /plugin install mcp-client-kit@svd-agent-skills
+/plugin install hermes-tweet@svd-agent-skills
 ```
 
 ## Plugins
@@ -51,6 +52,15 @@ Skills: `/mcp-client-kit:generate-mcp-wrappers`, `/mcp-client-kit:generate-mcp-r
 
 Trigger phrases: "generate MCP wrappers", "typed wrappers for an MCP server",
 "mcpgen", "smoke-test run.py for MCP wrappers".
+
+### hermes-tweet
+
+Use Hermes Agent with X/Twitter research, account reads, and approval-gated actions through Xquik.
+
+Toolset: `hermes-tweet`
+
+Trigger phrases: "explore Xquik endpoints", "read this X profile with Hermes",
+"search X posts", or "check X account status".
 
 ## Pricing
 

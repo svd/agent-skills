@@ -27,6 +27,11 @@
         "repo": "svd/mcp-client-kit"
       },
       "description": "Generate typed Python wrappers for any MCP server (skills: generate-mcp-wrappers, generate-mcp-runner)."
+    },
+    {
+      "name": "hermes-tweet",
+      "source": "./plugins/hermes-tweet",
+      "description": "Use Hermes Agent with X/Twitter research, read workflows, and approval-gated actions through Xquik."
     }
   ]
 }
