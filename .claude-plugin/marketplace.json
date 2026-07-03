@@ -32,6 +32,11 @@
         "repo": "svd/mcp-client-kit"
       },
       "description": "Generate typed Python wrappers for any MCP server (skills: generate-mcp-wrappers, generate-mcp-runner)."
+    },
+    {
+      "name": "hermes-tweet",
+      "source": "./plugins/hermes-tweet",
+      "description": "Set up and safely operate the maintained Hermes Tweet integration from Claude Code."
     }
   ]
 }

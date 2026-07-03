@@ -13,6 +13,7 @@ Personal Claude Code plugin marketplace. Marketplace name: `svd-agent-skills`.
 /plugin install session-analyzer@svd-agent-skills
 /plugin install mcp-client-kit@svd-agent-skills
 /plugin install session-handoff@svd-agent-skills
+/plugin install hermes-tweet@svd-agent-skills
 ```
 
 ## Plugins
@@ -66,6 +67,18 @@ Skills: `/session-handoff:session-handoff`
 
 Trigger phrases: "handoff", "hand off this session", "continue this in a new chat",
 "context is getting long", "park this project", "resume where we left off".
+
+### hermes-tweet
+
+Set up and safely operate the maintained Hermes Tweet integration. This thin
+Claude Code plugin does not vendor the Hermes runtime. It guides installation,
+configuration, read-first routing, and explicit approval for actions that run
+inside Hermes Agent.
+
+Skill: `/hermes-tweet:hermes-tweet`
+
+Trigger phrases: "set up Hermes Tweet", "configure Hermes Tweet",
+"explore Xquik endpoints in Hermes", or "troubleshoot Hermes Tweet".
 
 ## Pricing
 
