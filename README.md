@@ -12,6 +12,7 @@ Personal Claude Code plugin marketplace. Marketplace name: `svd-agent-skills`.
 /plugin install manage-claude-projects@svd-agent-skills
 /plugin install session-analyzer@svd-agent-skills
 /plugin install mcp-client-kit@svd-agent-skills
+/plugin install session-handoff@svd-agent-skills
 ```
 
 ## Plugins
@@ -51,6 +52,20 @@ Skills: `/mcp-client-kit:generate-mcp-wrappers`, `/mcp-client-kit:generate-mcp-r
 
 Trigger phrases: "generate MCP wrappers", "typed wrappers for an MCP server",
 "mcpgen", "smoke-test run.py for MCP wrappers".
+
+### session-handoff
+
+Write and resume structured context handoffs between Claude sessions — new chat, new
+machine, next day — without losing state, decisions, or mistakes already found. Handoffs
+use trust tags (`[V]` verified / `[?]` unverified memory / `[S]` stale-risk), track a
+parent/chain across handoffs for the same project, and a stdlib-only helper script
+(`handoff_tool.py`) creates/validates/inspects them and flags staleness against the repo's
+git state.
+
+Skills: `/session-handoff:session-handoff`
+
+Trigger phrases: "handoff", "hand off this session", "continue this in a new chat",
+"context is getting long", "park this project", "resume where we left off".
 
 ## Pricing
 
