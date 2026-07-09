@@ -5,7 +5,7 @@
     "name": "Sviatoslav Sviridov",
     "email": "sviridov@gmail.com"
   },
-  "description": "Personal Claude Code skills for managing local projects and analyzing sessions.",
+  "description": "Personal Claude Code skills for managing local projects, analyzing sessions, and handing off context between sessions.",
   "metadata": {
     "pluginRoot": "./plugins"
   },
@@ -19,6 +19,11 @@
       "name": "session-analyzer",
       "source": "./plugins/session-analyzer",
       "description": "Analyze a Claude Code session JSONL transcript into a structured Markdown report."
+    },
+    {
+      "name": "session-handoff",
+      "source": "./plugins/session-handoff",
+      "description": "Write and resume structured context handoffs between Claude sessions."
     },
     {
       "name": "mcp-client-kit",

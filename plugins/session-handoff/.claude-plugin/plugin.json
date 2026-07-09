@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "session-handoff",
+  "version": "0.1.0",
+  "description": "Write and resume structured context handoffs between Claude sessions.",
+  "author": {
+    "name": "Sviatoslav Sviridov",
+    "email": "sviridov@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": ["claude-code", "session", "handoff", "context", "resume"]
+}
