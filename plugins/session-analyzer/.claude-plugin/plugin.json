@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-analyzer",
-  "version": "0.3.0",
-  "description": "Analyze a Claude Code session JSONL transcript into a structured Markdown report.",
+  "version": "0.4.0",
+  "description": "Analyze a Claude Code or Claude Desktop session transcript into a structured Markdown report.",
   "author": {
     "name": "Sviatoslav Sviridov",
     "email": "sviridov@gmail.com"
