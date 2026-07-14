@@ -1,27 +1,39 @@
 ---
 name: session-analyzer
 description: >
-  Analyze a Claude Code session transcript (JSONL) and produce a structured Markdown report.
-  The report covers: all tool calls and their types, attribution of each action to a skill/agent
-  rule vs. LLM autonomous decision, steps that caused errors and how the LLM recovered,
-  total token usage and estimated cost, and optimization recommendations.
+  Analyze a Claude Code or Claude Desktop agent-mode session transcript (JSONL) and produce a
+  structured Markdown report. The report covers: all tool calls and their types, attribution of
+  each action to a skill/agent rule vs. LLM autonomous decision, steps that caused errors and how
+  the LLM recovered, total token usage and estimated cost, and optimization recommendations.
 
   Trigger when the user asks to "review", "analyze", "audit", or "report on" a Claude session,
-  mentions a session directory path, a session UUID, or asks things like "what happened in that
-  session", "what did Claude do in that run", "how many tokens did it use", "why did it retry",
-  "what errors occurred", or "show me the tool calls". Also trigger when the user says "session
-  report", "session summary", or references a session file by path or ID.
+  mentions a session directory path, a session UUID, an `audit.jsonl` / Claude Desktop log, or
+  asks things like "what happened in that session", "what did Claude do in that run", "how many
+  tokens did it use", "why did it retry", "what errors occurred", or "show me the tool calls".
+  Also trigger when the user says "session report", "session summary", or references a session
+  file by path or ID.
 ---
 
 # Session Analyzer
 
-Produces a structured Markdown report from a Claude Code session JSONL transcript. Report filename is chosen interactively (default: `session-report-<slug>.md`).
+Produces a structured Markdown report from a Claude session transcript — either a **Claude Code**
+JSONL transcript or a **Claude Desktop agent-mode** `audit.jsonl` log. Format is auto-detected;
+the report structure is identical either way. Report filename is chosen interactively (default:
+`session-report-<slug>.md`).
 
 ## Step 1 — Resolve the session
 
 The user provides one of:
-- **Filesystem path** — a directory containing `*.jsonl`, or a direct `.jsonl` file path.
-- **Session UUID** — a 36-char UUID like `7d6b74af-3bfb-4447-bebe-bb3aa141a12d`. Search `~/.claude/projects/**/<uuid>.jsonl`.
+- **Claude Code — filesystem path** — a directory containing `*.jsonl`, or a direct `.jsonl` file path.
+- **Claude Code — session UUID** — a 36-char UUID like `7d6b74af-3bfb-4447-bebe-bb3aa141a12d`. Search `~/.claude/projects/**/<uuid>.jsonl`.
+- **Claude Desktop — path** — a direct path to an `audit.jsonl` file, or a `local_<uuid>` conversation directory containing one. Format is detected structurally (not by path shape), so a copied-out log with a different filename still works.
+- **Claude Desktop — discovery** — if the user doesn't have a path, run
+  `python3 "$CLAUDE_PLUGIN_ROOT/scripts/parse_session.py" --list-desktop [--root <path>]` to list
+  conversations under the two standard macOS roots (`~/Library/Application Support/Claude` and
+  `.../Claude-3p`). Pass `--root` for any additional Desktop instance (e.g. one launched with a
+  custom `--user-data-dir`) — **never assume a fixed root beyond the two standard ones**; ask the
+  user for it if their instance isn't found. Each listed entry has `conversation_id`, `path`,
+  `title`, `run_count`, `last_timestamp` — use these to help the user pick.
 - **Output destination** — optional separate directory where the report should be written. Default: same directory as the session JSONL.
 - **Skills/agents reference path** — optional path to a plugin/skill directory. Use this to improve attribution accuracy (Step 4 — Load skill/agent reference files).
 
@@ -35,7 +47,12 @@ Run the bundled parser script. It is at `$CLAUDE_PLUGIN_ROOT/scripts/parse_sessi
 python3 "$CLAUDE_PLUGIN_ROOT/scripts/parse_session.py" "<session-path-or-uuid>"
 ```
 
-The script outputs JSON to stdout:
+Format is auto-detected structurally (never by path). The script emits one of two envelopes:
+
+- **Claude Code** — `"format": "claude-code"`, one analysis object (shape below) at the top level, same as before.
+- **Claude Desktop** — `"format": "desktop"`, with `"source_file"`, `"conversation_id"`, `"run_count"`, and a **`"runs"` array**. Each element of `runs[]` is the *same* analysis object shape as the Claude Code output (`session_id`, `main_session`, `subagent_sessions`, `totals`, ...), plus `run_index`, `conversation_id`, and `partial` (true when the run has no `result` event yet — e.g. it's still in progress). See Step 2.5 for why a Desktop file yields multiple runs and how to report them.
+
+The per-run analysis object shape (used directly for Claude Code, and per-element for Desktop):
 
 ```json
 {
@@ -123,6 +140,34 @@ The script outputs JSON to stdout:
 
 Exit code 2 means multiple sessions were found — the JSON lists them; ask the user to pick one.
 
+### Desktop-only `totals` fields
+
+For a Desktop run, `totals` carries one extra field, `"usage_source"`:
+
+- **`"result_event_groundtruth"`** (the common case for a completed run) — `totals`'
+  four usage counters and `estimated_cost_usd`/`by_model` come from the run's
+  `result` event `modelUsage` block, **not** from summing the transcript's
+  `assistant` records. Desktop emits one `assistant` JSONL line per streamed
+  content block (thinking, tool_use, text, ...) rather than one per completed
+  turn, so summing them under/over-counts tokens (observed: output tokens off by
+  ~4-5x even after deduping repeated `request_id`s). The `result` event's
+  `modelUsage` is authoritative — use it. The (unreliable) transcript sum is kept
+  at `totals["transcript_estimate_usd"]` for reference only; don't report it as
+  the cost.
+- **`"transcript_estimate_cost_confirmed"`** — a `result` event exists with
+  `total_cost_usd` but no `modelUsage` breakdown; `totals["estimated_cost_usd_groundtruth"]`
+  holds that figure for a sanity check, but `estimated_cost_usd`/`by_model` are
+  still the (less reliable) transcript sum.
+- **`"transcript_estimate"`** — no `result` event at all (a `partial: true` run,
+  still in progress). Only the transcript sum is available; note the uncertainty
+  in the report.
+- When `usage_source` is `"result_event_groundtruth"`, `totals["by_agent_is_estimate"]`
+  is `true` — the main-vs-subagent split in `by_agent` (and each `main_session`/
+  `subagent_sessions[]` entry's own `usage`) still comes from the transcript sum,
+  so it **will not sum exactly** to the ground-truth `totals`. Report the
+  ground-truth total as authoritative and note the by-agent split is proportional/
+  approximate rather than trying to force reconciliation.
+
 ### Workflows (the `Workflow` tool)
 
 When a session invokes the **Workflow** tool, its fan-out agents are **not** in
@@ -143,6 +188,28 @@ entry per run in `workflow_sessions`. Notes:
 - Workflow agent usage is **already folded into `totals` and `by_model`**, priced
   at each agent's own model (workflow agents often run a different/cheaper model
   than the main loop — e.g. `fable` workflow under an `opus` main session).
+
+## Step 2.5 — Desktop: one report per run (skip when `format` is `claude-code`)
+
+A Desktop `audit.jsonl` is an append-only log of **every run** ever executed in that
+conversation, not one session — the parser already segments it into `runs[]` at
+`system/init` → `result` boundaries (see Step 2). **Produce one report per run**,
+not one report for the whole file:
+
+- Iterate `runs[]`; treat each element as an independent analysis object and run
+  Steps 3–5 on it exactly as you would a Claude Code session.
+- Skip a run entirely if it is trivial noise — `partial: true` **and** its
+  `main_session.turns == 0` **and** it has no `subagent_sessions` (this happens for
+  a run interrupted before `init` produced any activity). Do not skip a `partial`
+  run that has real turns/tool calls — report it, noting in the header that it was
+  still in progress when the log was captured (no ground-truth cost; see the
+  `usage_source` note in Step 2).
+- Two runs in the same file can share the same internal `session_id` (observed on
+  real logs) — the filename slug (Step 3) can therefore collide across runs in one
+  file. Disambiguate by appending the run's `run_index`, e.g.
+  `2026-06-08-0824-session-2d2d27-r2.md`.
+- If the user only wants one specific run (e.g. "the last one", "run 2"), skip the
+  others — don't generate reports the user didn't ask for.
 
 ## Step 3 — Determine report filename
 
@@ -183,6 +250,15 @@ Attribution heuristics (apply in order):
 6. If no skill rule accounts for the tool call → **LLM autonomous**.
 
 When no reference files are provided, use `skills_in_context` from the parser output plus reasoning about common skill patterns to make best-effort attributions. Note the uncertainty in the report.
+
+**Desktop sessions have no `attributionSkill` field** (the hook-driven mechanism Claude Code
+attribution can lean on doesn't exist there), so treat every Desktop run as "no reference files
+provided" for attribution purposes unless the user supplies one. Compensating raw material:
+`skills_in_context` for a Desktop run is seeded from the run's `init` record `skills` + `agents`
+arrays (everything *available* in that session, not necessarily *used*) — it's a better-defined
+list than Claude Code's regex-scraped hook text, but it's a menu, not a usage log. Cross-reference
+it against actual tool call names/arguments in §1 before crediting a skill, and note in §2 that
+attribution is inferred.
 
 ## Step 5 — Write the report
 
@@ -339,6 +415,10 @@ Before finishing:
 - [ ] Cost table totals match `totals.estimated_cost_usd`.
 - [ ] Per-model cost rows sum to `totals.estimated_cost_usd` (ignoring unpriced models).
 - [ ] Cost by agent execution rows sum to `totals.estimated_cost_usd` (ignoring unpriced groups); section omitted when only the main session ran.
+      **Exception:** when `totals.usage_source == "result_event_groundtruth"` (Desktop,
+      see Step 2), `totals.by_agent_is_estimate` is `true` and the by-agent rows are
+      *not* expected to sum exactly to the ground-truth total — state that explicitly
+      in the note under the table instead of forcing reconciliation.
 - [ ] §5 recommendations are specific to this session (not generic advice).
 - [ ] Report path is stated in the final response to the user.
 
