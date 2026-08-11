@@ -8,7 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run any plugin's script directly (subcommands vary — see SKILL.md)
 python3 plugins/<plugin>/skills/<plugin>/scripts/<script>.py <subcommand> [args]
 
-# The one existing test suite (session-handoff only)
+# The two test suites (session-analyzer and session-handoff)
+python3 plugins/session-analyzer/skills/session-analyzer/scripts/smoke_test.py
 python3 plugins/session-handoff/skills/session-handoff/scripts/smoke_test.py
 ```
 
@@ -84,20 +85,23 @@ bumping versions by hand — it encodes the exact convention:
   commit.
 - `marketplace.json` and `README.md` are **not** touched by a release (no version field to sync;
   README only changes when a plugin is added/removed).
-- Run a plugin's `smoke_test.py` (if it has one — currently only `session-handoff`) before
-  releasing it.
+- Run a plugin's `smoke_test.py` (if it has one — currently `session-analyzer` and
+  `session-handoff`) before releasing it.
 
 ## Testing
 
-Only `session-handoff` has a test script, stdlib-only, no framework:
+`session-analyzer` and `session-handoff` each have a `smoke_test.py` — stdlib-only, no framework,
+self-contained (they build their own fixtures in a temp tree, so they don't read real `~/.claude`
+data). Each prints `N/N checks passed.` and exits non-zero on failure:
 
 ```bash
+python3 plugins/session-analyzer/skills/session-analyzer/scripts/smoke_test.py
 python3 plugins/session-handoff/skills/session-handoff/scripts/smoke_test.py
 ```
 
-The other two plugins have no automated tests — verify changes to `projects.py` or
-`parse_session.py` by running the subcommand directly against real `~/.claude` data or a sample
-transcript and inspecting the JSON output.
+`manage-claude-projects` has no automated tests — verify changes to `projects.py` by running the
+subcommand directly against real `~/.claude` data and inspecting the JSON output. Take particular
+care with `remove`, the only destructive subcommand: dry-run first.
 
 ## Pricing table (shared across manage-claude-projects and session-analyzer)
 
