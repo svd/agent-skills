@@ -5,11 +5,21 @@ import json
 import sys
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
+
+# Backstop only. Real teams observed at depth 2; the cap exists so a pathological
+# tree can't run away, and hitting it is reported (coverage.discovery.depth_capped)
+# rather than silently truncating.
+MAX_TEAM_DEPTH = 5
 
 # Standard macOS Claude Desktop user-data roots. Desktop's actual root is wherever
 # the app was launched with (--user-data-dir); these two are just the defaults
@@ -41,8 +51,7 @@ def find_session_files(target: str):
 
     # Directory: look for UUID-named .jsonl files inside
     if p.is_dir():
-        uuid_re = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-        jsonl_files = sorted(f for f in p.glob("*.jsonl") if uuid_re.match(f.stem))
+        jsonl_files = sorted(f for f in p.glob("*.jsonl") if UUID_RE.match(f.stem))
         if not jsonl_files:
             jsonl_files = sorted(p.glob("*.jsonl"))
         if len(jsonl_files) > 1:
@@ -62,12 +71,80 @@ def find_session_files(target: str):
 
     # UUID string: search ~/.claude/projects/**/<uuid>.jsonl
     uuid_str = p.name
-    if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", uuid_str, re.I):
+    if UUID_RE.match(uuid_str):
         for f in CLAUDE_PROJECTS_DIR.rglob(f"{uuid_str}.jsonl"):
             subagents_dir = f.parent / uuid_str / "subagents"
             return f, subagents_dir if subagents_dir.is_dir() else None, uuid_str
 
     return None, None, None
+
+
+# Memoized per projects_dir so recursion never rescans the tree.
+# Value: (index, stats) where index is {teamName: [Path, ...]}.
+_TEAM_INDEX_CACHE = {}
+
+
+def scan_team_index(projects_dir=None):
+    """
+    Build {teamName: [session_jsonl, ...]} by peeking at the head of every top-level
+    session transcript under `projects_dir`.
+
+    Teammate sessions (the `Agent` tool's second spawn mode) are full, independent
+    Claude Code sessions. Their transcript lives in the project directory matching the
+    *teammate's own cwd*, which is frequently a different directory than the leader's —
+    so there is no filesystem containment to exploit and no meta sidecar. The only
+    reliable link is the `teamName` field the teammate's own records carry.
+
+    A broad scan is deliberate: worktree/slug/cwd heuristics were measured to miss real
+    teammates (one observed team spans two project slugs because a teammate's cwd was a
+    subdirectory), and the scan is cheap — ~890 files in well under a second, because
+    each file is peeked at 10 lines with a substring pre-filter before any json.loads.
+
+    `projects_dir` is a parameter so tests can point at a temp tree instead of real
+    ~/.claude data; it defaults at CALL time, not import time, so the default stays
+    overridable. Unreadable files are collected, never raised.
+    """
+    projects_dir = Path(projects_dir if projects_dir is not None else CLAUDE_PROJECTS_DIR)
+    key = str(projects_dir)
+    if key in _TEAM_INDEX_CACHE:
+        return _TEAM_INDEX_CACHE[key]
+
+    index = {}
+    files_scanned = 0
+    unreadable = []
+    started = time.time()
+
+    for f in sorted(projects_dir.glob("*/*.jsonl")):
+        if not UUID_RE.match(f.stem):
+            continue
+        files_scanned += 1
+        try:
+            with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                for i, raw in enumerate(fh):
+                    if i >= 10:
+                        break
+                    # `teamName` is always written within the first few records; the
+                    # substring test keeps us from json-parsing ~88% of all files.
+                    if '"teamName"' not in raw:
+                        continue
+                    try:
+                        rec = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    team = rec.get("teamName")
+                    if team:
+                        index.setdefault(team, []).append(f)
+                        break
+        except OSError as e:
+            unreadable.append({"path": str(f), "error": str(e)})
+
+    stats = {
+        "files_scanned": files_scanned,
+        "scan_seconds": round(time.time() - started, 2),
+        "unreadable_files": unreadable,
+    }
+    _TEAM_INDEX_CACHE[key] = (index, stats)
+    return index, stats
 
 
 def parse_jsonl(path: Path):
@@ -110,6 +187,56 @@ def looks_like_error(content):
         r"failed:",
     ]
     return any(re.search(p, text) for p in patterns)
+
+
+# "you are implementing X" / "you are reviewing Y" / "you are red-teaming Z".
+# Generic verb capture rather than a fixed allowlist, so an unseen role still
+# classifies instead of collapsing into "unclassified".
+_ROLE_RE = re.compile(r"\byou are ([a-z]+(?:-[a-z]+)?)ing\b", re.I)
+
+# The regex captures the stem before "-ing", which for the four common roles is
+# already the role name.
+_ROLE_ALIASES = {
+    "implement": "implement",
+    "review": "review",
+    "audit": "audit",
+    "red-team": "red-team",
+}
+
+
+def infer_role(lines):
+    """
+    Heuristic read of a teammate's role from the opening brief it was spawned with.
+
+    Returns (role_or_None, role_source, brief_excerpt). `role_source` is
+    "brief_heuristic" on a match and "unmatched" otherwise — the caller labels the
+    role as a heuristic in the report so it is never mistaken for recorded metadata.
+    """
+    brief = ""
+    for entry in lines:
+        if entry.get("type") != "user":
+            continue
+        content = entry.get("message", {}).get("content")
+        if isinstance(content, str) and "<teammate-message" in content:
+            brief = content
+            break
+
+    excerpt = brief[:160]
+    if not brief:
+        return None, "unmatched", excerpt
+
+    m = _ROLE_RE.search(brief)
+    if not m:
+        return None, "unmatched", excerpt
+
+    stem = m.group(1).lower()
+    if stem in _ROLE_ALIASES:
+        return _ROLE_ALIASES[stem], "brief_heuristic", excerpt
+    # English doubles a final consonant before "-ing" ("running" -> stem "runn"),
+    # so undo the gemination to recover the verb ("run").
+    if len(stem) > 2 and stem[-1] == stem[-2] and stem[-1] not in "aeiou":
+        stem = stem[:-1]
+    return stem, "brief_heuristic", excerpt
 
 
 def analyze_records(lines, ts_key="timestamp", agent_type=None, agent_name=None,
@@ -260,6 +387,100 @@ def analyze_session(path: Path, agent_type: str = None, agent_name: str = None, 
                             agent_name=agent_name, session_id=path.stem, path=str(path))
 
 
+def analyze_subagents(subagents_dir: Path):
+    """
+    Analyze every in-process subagent transcript in a `<sid>/subagents/` directory,
+    reading each `agent-*.meta.json` sidecar for the agent type/description.
+
+    Both the analyzed target and any adopted teammate can own such a directory, so
+    this loop lives here rather than inline in main().
+    """
+    out = []
+    if not subagents_dir or not Path(subagents_dir).is_dir():
+        return out
+    subagents_dir = Path(subagents_dir)
+    for sa_file in sorted(subagents_dir.glob("agent-*.jsonl")):
+        meta_file = subagents_dir / (sa_file.stem + ".meta.json")
+        agent_type = None
+        agent_name = None
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text())
+                agent_type = meta.get("agentType") or meta.get("description")
+                agent_name = meta.get("description")
+            except Exception:
+                pass
+        out.append(analyze_session(sa_file, agent_type=agent_type, agent_name=agent_name))
+    return out
+
+
+def extract_agent_spawns(lines):
+    """
+    Parent-side view of `Agent` tool usage, for the coverage block only.
+
+    The `Agent` tool has two spawn modes and the discriminator is structural: a
+    tool_use whose `input` carries a `name` key spawns a **teammate** (an independent
+    session with its own transcript elsewhere on disk); one without spawns an
+    **in-process subagent** (transcript under `<sid>/subagents/`). The tool_result
+    text is deliberately not parsed — it is internal metadata whose wording can change.
+
+    This is reporting only. It must never gate teammate discovery: adopted teammates
+    with no `Agent` call anywhere in the parent are real and routinely observed.
+    """
+    spawns = {}
+    order = []
+    in_process = 0
+    agent_calls = 0
+    results = {}
+
+    for entry in lines:
+        t = entry.get("type")
+        if t == "assistant":
+            for item in entry.get("message", {}).get("content", []) or []:
+                if not isinstance(item, dict) or item.get("type") != "tool_use":
+                    continue
+                if item.get("name") != "Agent":
+                    continue
+                agent_calls += 1
+                inp = item.get("input") or {}
+                name = inp.get("name")
+                if not name:
+                    in_process += 1
+                    continue
+                tool_use_id = item.get("id")
+                spawns[name] = {
+                    "description": inp.get("description"),
+                    "subagent_type": inp.get("subagent_type"),
+                    "tool_use_id": tool_use_id,
+                }
+                order.append((name, tool_use_id))
+        elif t == "user":
+            for item in entry.get("message", {}).get("content", []) or []:
+                if isinstance(item, dict) and item.get("type") == "tool_result":
+                    rc = item.get("content", "")
+                    results[item.get("tool_use_id")] = {
+                        "is_error": bool(item.get("is_error")) or looks_like_error(rc),
+                        "preview": content_preview(rc, 300),
+                    }
+
+    failed = []
+    for name, tool_use_id in order:
+        res = results.get(tool_use_id)
+        if res and res["is_error"]:
+            failed.append({
+                "name": name,
+                "error": res["preview"],
+                "tool_use_id": tool_use_id,
+            })
+
+    return {
+        "agent_tool_calls": agent_calls,
+        "in_process_subagent_spawns": in_process,
+        "teammate_spawns": spawns,
+        "failed_spawns": failed,
+    }
+
+
 # Per-MTok USD. Matched by substring on the model id; unmatched models are unpriced.
 # Cache write = 1.25x input, cache read = 0.1x input (standard Anthropic prompt-cache rates).
 PRICING = {
@@ -408,6 +629,202 @@ def analyze_workflow(wf_id: str, wf_dir: Path, meta_file: Path):
     }
 
 
+def team_name_for(session_id: str):
+    """The teamName a session's own teammates carry: "session-" + first 8 hex."""
+    return "session-" + (session_id or "")[:8]
+
+
+def analyze_teammate(path: Path, depth: int, parent_sid: str, spawn_meta=None):
+    """
+    Analyze one adopted teammate transcript and stamp the team metadata onto it.
+
+    `agent_type` is set to "teammate:<role>" so the existing by_agent accumulation in
+    build_result groups teammates by role with no further change. Keying by role
+    rather than by agentName is deliberate: a 35-teammate run would otherwise produce
+    35 singleton rows in the cost table and bury the model-mix signal (implement runs
+    hot on opus, review on sonnet) that is the actionable finding. Per-name detail
+    stays available in teammate_sessions[].
+
+    Deliberately does not sum tokens or call estimate_cost — build_result owns all
+    pricing and rollups.
+    """
+    lines = parse_jsonl(path)
+    role, role_source, brief_excerpt = infer_role(lines)
+
+    agent_name = None
+    team_name = None
+    cwd = None
+    git_branch = None
+    for rec in lines:
+        agent_name = agent_name or rec.get("agentName")
+        team_name = team_name or rec.get("teamName")
+        cwd = cwd or rec.get("cwd")
+        git_branch = git_branch or rec.get("gitBranch")
+        if agent_name and team_name and cwd and git_branch:
+            break
+
+    data = analyze_session(
+        path,
+        agent_type="teammate:" + (role or "unclassified"),
+        agent_name=agent_name,
+        lines=lines,
+    )
+    data.update({
+        "kind": "teammate",
+        "agent_name": agent_name,
+        "role": role,
+        "role_source": role_source,
+        "team_name": team_name,
+        "depth": depth,
+        "parent_session_id": parent_sid,
+        "project_slug": path.parent.name,
+        "cwd": cwd,
+        "git_branch": git_branch,
+        "spawn_description": (
+            (spawn_meta or {}).get("description") or brief_excerpt or None
+        ),
+        "matched_spawn": spawn_meta is not None,
+    })
+    return data
+
+
+def _windows_overlap(a_start, a_end, b_start, b_end):
+    """True when [a_start, a_end] and [b_start, b_end] intersect. Unknown bounds
+    are treated as overlapping — absence of a timestamp is not evidence of a gap."""
+    a0, a1 = _parse_iso(a_start), _parse_iso(a_end)
+    b0, b1 = _parse_iso(b_start), _parse_iso(b_end)
+    if not (a0 and a1 and b0 and b1):
+        return True
+    return a0 <= b1 and b0 <= a1
+
+
+def new_team_state():
+    """Mutable accumulator threaded through collect_team for the coverage block."""
+    return {
+        "team_claims": {},
+        "project_slugs": set(),
+        "depth_capped": [],
+        "window_mismatches": [],
+        "ambiguous_team_name": False,
+        "max_depth_reached": 0,
+        "windows": {},
+    }
+
+
+def collect_team(parent_sid, index, visited, depth=0, max_depth=MAX_TEAM_DEPTH,
+                 spawns=None, state=None):
+    """
+    Discover every teammate session led by `parent_sid`, plus each teammate's own
+    in-process subagents and workflow agents. Returns a FLAT list — flatness is what
+    lets build_result fold them into the existing rollups unchanged.
+
+    Confirmation predicate is `teamName` equality alone, plus "not the target itself"
+    and "not already visited". There is deliberately no time-window gate: teammates
+    get resumed after the leader's last written line, the leader's ended_at is only
+    its last record, and cross-process clock skew is unbounded — so a hard window test
+    would drop real sessions. Prefix collision was measured at zero across ~890 local
+    sessions (P ~ 9e-5), and a non-overlapping adoption is instead recorded as a soft
+    `window_mismatches` warning and adopted anyway.
+
+    `visited` is one set owned by the caller, keyed by BOTH resolved path and session
+    id, seeded with the target's own file before any traversal, and inserted at
+    discovery time. That, not predicate cleverness, is what prevents a descendant from
+    re-adopting an ancestor: every ancestor is in the set before its descendants are
+    scanned. Traversal is breadth-first by depth so nearest-ancestor attribution is
+    deterministic.
+    """
+    state = state if state is not None else new_team_state()
+    out = []
+    queue = [(parent_sid, depth, spawns)]
+
+    while queue:
+        next_queue = []
+        for sid, d, sid_spawns in queue:
+            team = team_name_for(sid)
+            candidates = index.get(team, [])
+            if not candidates:
+                continue
+
+            # Two distinct sessions sharing an 8-hex prefix would both claim one
+            # teamName. First claimant wins (BFS makes that the lowest depth); the
+            # whole team is flagged so the report can distrust the attribution.
+            claimant = state["team_claims"].get(team)
+            if claimant is None:
+                state["team_claims"][team] = sid
+            elif claimant != sid:
+                state["ambiguous_team_name"] = True
+                continue
+
+            if d + 1 > max_depth:
+                state["depth_capped"].append(sid)
+                continue
+
+            parent_window = state["windows"].get(sid, (None, None))
+
+            for path in candidates:
+                resolved = str(Path(path).resolve())
+                child_sid = Path(path).stem
+                if resolved in visited or child_sid in visited:
+                    continue
+                if child_sid == sid:
+                    continue  # self-adoption guard
+                visited.add(resolved)
+                visited.add(child_sid)
+
+                tm = analyze_teammate(path, d + 1, sid, spawn_meta=None)
+                # Match by the teammate's own agentName against the parent's spawn
+                # table; the spawn list is a strict subset of reality, so a miss is
+                # normal and only affects reporting.
+                meta = (sid_spawns or {}).get(tm.get("agent_name"))
+                if meta:
+                    tm["spawn_description"] = meta.get("description") or tm["spawn_description"]
+                    tm["matched_spawn"] = True
+                    tm["spawn_tool_use_id"] = meta.get("tool_use_id")
+                out.append(tm)
+
+                state["project_slugs"].add(Path(path).parent.name)
+                state["max_depth_reached"] = max(state["max_depth_reached"], d + 1)
+                state["windows"][child_sid] = (tm.get("started_at"), tm.get("ended_at"))
+
+                if not _windows_overlap(parent_window[0], parent_window[1],
+                                        tm.get("started_at"), tm.get("ended_at")):
+                    state["window_mismatches"].append({
+                        "session_id": child_sid,
+                        "agent_name": tm.get("agent_name"),
+                        "parent_session_id": sid,
+                        "teammate_started_at": tm.get("started_at"),
+                        "teammate_ended_at": tm.get("ended_at"),
+                    })
+
+                role_suffix = tm.get("role") or "unclassified"
+
+                # A teammate is a full session, so it can own in-process subagents
+                # and workflow runs of its own — both are attributed to the teammate
+                # that owns them and flattened as siblings.
+                for sa in analyze_subagents(Path(path).parent / child_sid / "subagents"):
+                    sa["kind"] = "teammate-subagent"
+                    sa["depth"] = d + 2
+                    sa["parent_session_id"] = child_sid
+                    sa["agent_type"] = "teammate-subagent:" + role_suffix
+                    out.append(sa)
+
+                for wf_id, wf_dir, wf_meta in find_workflow_runs(Path(path).parent, child_sid):
+                    wf = analyze_workflow(wf_id, wf_dir, wf_meta)
+                    wf_key = "teammate-workflow:" + (wf.get("workflow_name") or wf_id)
+                    for ag in wf["agents"]:
+                        ag["kind"] = "teammate-workflow-agent"
+                        ag["depth"] = d + 2
+                        ag["parent_session_id"] = child_sid
+                        ag["agent_type"] = wf_key
+                        out.append(ag)
+
+                # Only the top-level parent has a spawn table; deeper levels pass none.
+                next_queue.append((child_sid, d + 1, None))
+        queue = next_queue
+
+    return out
+
+
 def derive_report_timestamp(raw_ts, mtime_source: Path):
     """
     Format YYYY-mm-DD-HHMM (UTC) for the default report filename, from an ISO
@@ -420,23 +837,30 @@ def derive_report_timestamp(raw_ts, mtime_source: Path):
     return mtime_utc.strftime("%Y-%m-%d-%H%M")
 
 
-def build_result(session_id, session_dir, main_data, subagent_data, workflow_data, report_timestamp):
+def build_result(session_id, session_dir, main_data, subagent_data, workflow_data,
+                 report_timestamp, teammate_data=None, coverage=None):
     """
     Assemble the shared output shape (totals / by_model / by_agent rollups) from
     already-analyzed main/subagent/workflow data. Used by both the Claude Code and
     Desktop flows so they emit byte-identical downstream JSON.
+
+    `teammate_data` / `coverage` are keyword-only in practice: the Desktop flow calls
+    this with six positional arguments and must stay bit-for-bit unaffected, so every
+    teammate-related key is emitted only when `coverage` is supplied.
     """
     # Flatten workflow agents so they count toward totals / by-model / cost.
     workflow_agents = [a for wf in workflow_data for a in wf["agents"]]
+    teammate_data = teammate_data or []
 
     # Aggregate totals
     totals = dict(main_data["usage"])
-    for sa in subagent_data + workflow_agents:
+    for sa in subagent_data + workflow_agents + teammate_data:
         for k in totals:
             totals[k] += sa["usage"].get(k, 0)
 
     # Cost each session at its own model, then sum — mixed-model sessions price right.
-    per_session = [main_data] + subagent_data + workflow_agents
+    core_sessions = [main_data] + subagent_data + workflow_agents
+    per_session = core_sessions + teammate_data
     session_costs, unpriced = [], []
     for s in per_session:
         m = s.get("model") or ""
@@ -451,6 +875,34 @@ def build_result(session_id, session_dir, main_data, subagent_data, workflow_dat
     # Wall time reflects the main session span; subagents/workflow agents run
     # concurrently within it, so summing their walls would double-count.
     totals["wall_seconds"] = main_data.get("wall_seconds")
+
+    if coverage is not None:
+        # Teammates break the "children run inside the parent's span" assumption, so
+        # the existing wall_seconds key keeps its meaning (report header and the
+        # shared Desktop path depend on it) and the team-wide span is added beside it.
+        core_costs = [s.get("estimated_cost_usd") for s in core_sessions]
+        core_priced = [c for c in core_costs if c is not None]
+        totals["core_cost_usd"] = round(sum(core_priced), 4) if core_priced else None
+        totals["cost_scope"] = (
+            "main+subagents+teammates" if teammate_data else "main+subagents"
+        )
+
+        starts = [_parse_iso(s.get("started_at")) for s in per_session]
+        ends = [_parse_iso(s.get("ended_at")) for s in per_session]
+        starts = [d for d in starts if d]
+        ends = [d for d in ends if d]
+        span = round((max(ends) - min(starts)).total_seconds(), 1) if starts and ends else None
+        totals["span_wall_seconds"] = span
+        agent_seconds = round(sum(s.get("wall_seconds") or 0 for s in per_session), 1)
+        totals["agent_seconds"] = agent_seconds
+        totals["concurrency_ratio"] = (
+            round(agent_seconds / span, 2) if span else None
+        )
+        wall = totals.get("wall_seconds")
+        totals["wall_seconds_covers_team"] = not (
+            span is not None and wall is not None and span > wall
+        )
+        totals["coverage"] = coverage
 
     # Per-model breakdown — group sessions by model id, sum usage + cost.
     by_model = {}
@@ -486,6 +938,8 @@ def build_result(session_id, session_dir, main_data, subagent_data, workflow_dat
         wf_key = "workflow:" + (wf.get("workflow_name") or wf["wf_id"])
         for ag in wf["agents"]:
             by_agent_items.append((wf_key, ag))
+    for tm in teammate_data:
+        by_agent_items.append((tm.get("agent_type") or "teammate:unclassified", tm))
 
     by_agent = {}
     for key, s in by_agent_items:
@@ -513,7 +967,7 @@ def build_result(session_id, session_dir, main_data, subagent_data, workflow_dat
             b["estimated_cost_usd"] = round(b["estimated_cost_usd"] + c, 4)
     totals["by_agent"] = by_agent
 
-    return {
+    result = {
         "session_id": session_id,
         "session_dir": session_dir,
         "report_timestamp": report_timestamp,
@@ -522,6 +976,130 @@ def build_result(session_id, session_dir, main_data, subagent_data, workflow_dat
         "workflow_sessions": workflow_data,
         "totals": totals,
     }
+    if coverage is not None:
+        result["teammate_sessions"] = teammate_data
+    return result
+
+
+def build_coverage(enabled, team_name, spawn_info, teammate_data, state, scan_stats):
+    """
+    Assemble totals["coverage"].
+
+    Two populations are counted in OPPOSITE directions, so they get two objects and
+    never one "N of M": parent-side `Agent` calls (some of which never produced a
+    transcript) and filesystem-side transcripts (some of which match no `Agent` call).
+    No attempt is made to reconcile them — mismatches in both directions are normal.
+    """
+    spawn_info = spawn_info or {"agent_tool_calls": 0, "in_process_subagent_spawns": 0,
+                                "teammate_spawns": {}, "failed_spawns": []}
+    state = state or new_team_state()
+    scan_stats = scan_stats or {"files_scanned": 0, "scan_seconds": 0.0, "unreadable_files": []}
+
+    teammates = [t for t in teammate_data if t.get("kind") == "teammate"]
+    adopted_names = {t.get("agent_name") for t in teammates if t.get("agent_name")}
+
+    detected = dict(spawn_info["teammate_spawns"])
+    failed_names = {f["name"] for f in spawn_info["failed_spawns"]}
+
+    matched = sorted(n for n in detected if n in adopted_names)
+    unresolved = sorted(
+        n for n in detected if n not in adopted_names and n not in failed_names
+    )
+    orphans = sorted(
+        ({"agent_name": t.get("agent_name"), "session_id": t.get("session_id")}
+         for t in teammates if t.get("agent_name") not in detected),
+        key=lambda r: (r["agent_name"] or "", r["session_id"] or ""),
+    )
+
+    unparseable = scan_stats["unreadable_files"]
+    depth_capped = list(state["depth_capped"])
+    ambiguous = bool(state["ambiguous_team_name"])
+
+    reasons = []
+    if not enabled:
+        reasons.append("teammate scanning disabled (--no-teammates)")
+    if unresolved:
+        reasons.append(
+            f"{len(unresolved)} teammate spawn(s) have no transcript: "
+            + ", ".join(unresolved)
+        )
+    if depth_capped:
+        reasons.append(
+            f"recursion hit MAX_TEAM_DEPTH={MAX_TEAM_DEPTH} at "
+            + ", ".join(depth_capped)
+        )
+    if unparseable:
+        reasons.append(f"{len(unparseable)} session file(s) could not be read")
+    if ambiguous:
+        reasons.append("two sessions claim the same teamName; adoption may be wrong")
+
+    # `complete` answers "is the total a floor, or the real number?" — orphans are
+    # EXTRA coverage, not missing coverage, so they never clear it. A failed spawn
+    # provably never started, so it produced no tokens to miss.
+    complete = enabled and not unresolved and not depth_capped and not unparseable and not ambiguous
+    # `reconciled` answers the different question "is every adopted session explained?"
+    reconciled = complete and not orphans
+    if complete and orphans:
+        reasons.append(
+            f"{len(orphans)} adopted teammate(s) have no matching Agent call"
+        )
+
+    return {
+        "enabled": enabled,
+        "team_name": team_name,
+        "spawns": {
+            "agent_tool_calls": spawn_info["agent_tool_calls"],
+            "resolved_in_process": spawn_info["in_process_subagent_spawns"],
+            "detected_teammate": len(detected),
+            "matched_to_transcript": len(matched),
+            "failed": len(spawn_info["failed_spawns"]),
+        },
+        "teammates": {
+            "adopted": len(teammates),
+            "matched_to_spawn": sum(1 for t in teammates if t.get("matched_spawn")),
+            "orphan_adopted": len(orphans),
+        },
+        "unresolved_spawns": unresolved,
+        "failed_spawns": [
+            {"name": f["name"], "reason": f["error"], "tool_use_id": f["tool_use_id"]}
+            for f in spawn_info["failed_spawns"]
+        ],
+        "orphan_teammates": orphans,
+        "discovery": {
+            "broad_scan": enabled,
+            "files_scanned": scan_stats["files_scanned"],
+            "scan_seconds": scan_stats["scan_seconds"],
+            "max_depth_reached": state["max_depth_reached"],
+            "depth_capped": depth_capped,
+            "unparseable_files": unparseable,
+            "project_slugs": sorted(state["project_slugs"]),
+        },
+        "window_mismatches": state["window_mismatches"],
+        "ambiguous_team_name": ambiguous,
+        "complete": complete,
+        "reconciled": reconciled,
+        "incomplete_reasons": reasons,
+    }
+
+
+def assert_disjoint(subagent_data, workflow_data, teammate_data):
+    """
+    Guard against double counting: a session reachable both as a subagent and as a
+    teammate would be priced twice and inflate the headline total. Fail loudly.
+    """
+    groups = {
+        "subagent_sessions": [s.get("session_id") for s in subagent_data],
+        "workflow_agents": [a.get("session_id") for wf in workflow_data for a in wf["agents"]],
+        "teammate_sessions": [t.get("session_id") for t in teammate_data],
+    }
+    names = list(groups)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            dupes = set(groups[a]) & set(groups[b])
+            if dupes:
+                raise AssertionError(
+                    f"session id(s) counted in both {a} and {b}: {sorted(dupes)}"
+                )
 
 
 def detect_format(lines):
@@ -775,8 +1353,15 @@ def main():
     argv = sys.argv[1:]
     if not argv:
         print(json.dumps({
-            "error": "Usage: parse_session.py <path-or-session-uuid> | --list-desktop [--root PATH]",
+            "error": "Usage: parse_session.py [--no-teammates] <path-or-session-uuid> "
+                     "| --list-desktop [--root PATH]",
         }))
+        sys.exit(1)
+
+    teammates_enabled = "--no-teammates" not in argv
+    argv = [a for a in argv if a != "--no-teammates"]
+    if not argv:
+        print(json.dumps({"error": "No session target given."}))
         sys.exit(1)
 
     if argv[0] == "--list-desktop":
@@ -821,33 +1406,59 @@ def main():
     # Reuse the file we already parsed for format detection above (the common case:
     # target names main_path directly) instead of reading it a second time.
     reuse_lines = candidate_lines if candidate is not None and candidate.resolve() == Path(main_path).resolve() else None
-    main_data = analyze_session(main_path, lines=reuse_lines)
+    main_lines = reuse_lines if reuse_lines is not None else parse_jsonl(main_path)
+    main_data = analyze_session(main_path, lines=main_lines)
 
-    subagent_data = []
-    if subagents_dir:
-        for sa_file in sorted(subagents_dir.glob("agent-*.jsonl")):
-            # Load companion meta file for agent type
-            meta_file = subagents_dir / (sa_file.stem + ".meta.json")
-            agent_type = None
-            agent_name = None
-            if meta_file.exists():
-                try:
-                    meta = json.loads(meta_file.read_text())
-                    agent_type = meta.get("agentType") or meta.get("description")
-                    agent_name = meta.get("description")
-                except Exception:
-                    pass
-            subagent_data.append(analyze_session(sa_file, agent_type=agent_type, agent_name=agent_name))
+    subagent_data = analyze_subagents(subagents_dir)
 
     # Workflow runs: agents live in <sid>/subagents/workflows/<wf_id>/, not above.
     workflow_data = []
     for wf_id, wf_dir, wf_meta in find_workflow_runs(Path(main_path).parent, session_id):
         workflow_data.append(analyze_workflow(wf_id, wf_dir, wf_meta))
 
+    # The analyzed target may itself be somebody's teammate. Surface that membership,
+    # but never adopt on the target's own teamName — only on the teams it leads.
+    own_team = None
+    own_agent_name = None
+    for rec in main_lines:
+        own_team = own_team or rec.get("teamName")
+        own_agent_name = own_agent_name or rec.get("agentName")
+        if own_team and own_agent_name:
+            break
+    main_data["team_membership"] = (
+        {"team_name": own_team, "agent_name": own_agent_name} if own_team else None
+    )
+
+    teammate_data = []
+    coverage = None
+    if teammates_enabled:
+        spawn_info = extract_agent_spawns(main_lines)
+        index, scan_stats = ({}, None)
+        state = new_team_state()
+        if CLAUDE_PROJECTS_DIR.is_dir():
+            index, scan_stats = scan_team_index(CLAUDE_PROJECTS_DIR)
+        # Seed `visited` with the target itself, by both keys, before any traversal —
+        # this is what stops a descendant from re-adopting the target.
+        visited = {str(Path(main_path).resolve()), session_id}
+        state["windows"][session_id] = (main_data.get("started_at"), main_data.get("ended_at"))
+        teammate_data = collect_team(
+            session_id, index, visited, spawns=spawn_info["teammate_spawns"], state=state
+        )
+        coverage = build_coverage(
+            True, team_name_for(session_id), spawn_info, teammate_data, state, scan_stats
+        )
+    else:
+        coverage = build_coverage(
+            False, team_name_for(session_id), None, [], None, None
+        )
+
+    assert_disjoint(subagent_data, workflow_data, teammate_data)
+
     report_timestamp = derive_report_timestamp(main_data.get("started_at"), Path(main_path))
 
     result = build_result(session_id, str(Path(main_path).parent), main_data,
-                           subagent_data, workflow_data, report_timestamp)
+                           subagent_data, workflow_data, report_timestamp,
+                           teammate_data=teammate_data, coverage=coverage)
     result["format"] = "claude-code"
 
     print(json.dumps(result, indent=2))

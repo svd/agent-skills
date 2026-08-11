@@ -105,12 +105,38 @@ The per-run analysis object shape (used directly for Claude Code, and per-elemen
       "errors": [{"label": "verify:claim-3", "phase": "Verify", "name": "WebFetch", "result_preview": "...", "agent_id": "..."}]
     }
   ],
+  "teammate_sessions": [
+    {
+      "kind": "teammate",
+      "session_id": "b922872b-1056-4f6f-9797-9dd5a5afff30",
+      "agent_name": "renderer-impl",
+      "role": "implement", "role_source": "brief_heuristic",
+      "team_name": "session-313f8c48",
+      "depth": 1, "parent_session_id": "313f8c48-...",
+      "project_slug": "-Users-x-src-app--claude-worktrees-html-renderer",
+      "cwd": "/Users/x/src/app/.claude/worktrees/html-renderer",
+      "git_branch": "worktree-html-renderer",
+      "agent_type": "teammate:implement",
+      "spawn_description": "Implement the HTML renderer",
+      "matched_spawn": true,
+      "model": "claude-opus-5", "turns": 40,
+      "tool_calls": [...], "errors": [...], "usage": {},
+      "estimated_cost_usd": 26.66
+    }
+  ],
   "totals": {
     "input_tokens": 0, "output_tokens": 0,
     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
     "estimated_cost_usd": 0.0,
+    "core_cost_usd": 0.0,
+    "cost_scope": "main+subagents+teammates",
     "pricing_tier": "sonnet",
     "wall_seconds": 722.4,
+    "span_wall_seconds": 41527.8,
+    "agent_seconds": 169058.8,
+    "concurrency_ratio": 4.07,
+    "wall_seconds_covers_team": true,
+    "coverage": { "...": "see Teammate sessions below" },
     "by_model": {
       "claude-opus-4-8": {
         "input_tokens": 0, "output_tokens": 0,
@@ -132,6 +158,10 @@ The per-run analysis object shape (used directly for Claude Code, and per-elemen
       "workflow:deep-research": {
         "instances": 100, "models": ["claude-fable-5"],
         "estimated_cost_usd": 160.49, "priced": true
+      },
+      "teammate:implement": {
+        "instances": 13, "models": ["claude-opus-5"],
+        "estimated_cost_usd": 346.79, "priced": true
       }
     }
   }
@@ -188,6 +218,50 @@ entry per run in `workflow_sessions`. Notes:
 - Workflow agent usage is **already folded into `totals` and `by_model`**, priced
   at each agent's own model (workflow agents often run a different/cheaper model
   than the main loop — e.g. `fable` workflow under an `opus` main session).
+
+### Teammate sessions (the `Agent` tool's second spawn mode)
+
+The `Agent` tool can spawn a **teammate**: a full, independent Claude Code session with its own
+top-level `<uuid>.jsonl`, living in the project directory matching the *teammate's own cwd* — often
+a different directory than the leader's, and sometimes several different ones in one team. There is
+no filesystem containment and no meta sidecar, so these are found by scanning instead: a teammate's
+own records carry `teamName == "session-" + <leader session id>[:8]`.
+
+This matters enormously for cost. On a validated real run the leader's in-process view showed 11
+sessions and $333; the true all-in figure was 54 sessions and $793 — **$460 was invisible**.
+
+- Teammate usage is **already folded into `totals`, `by_model`, and `by_agent`**, priced at each
+  teammate's own model. `totals.estimated_cost_usd` is therefore the **all-in** number.
+  `totals.core_cost_usd` preserves the old main+subagents+workflows figure, and
+  `totals.cost_scope` names which is which. Never add them together.
+- **`by_agent` groups teammates by role**, not by name — `teammate:implement`, `teammate:review`,
+  `teammate:unclassified`, and so on. Per-name detail lives in `teammate_sessions[]`.
+- **`role` is a heuristic**, read from the verb in each teammate's opening brief
+  (`role_source: "brief_heuristic"`, or `"unmatched"` when nothing matched). Label it as such in
+  the report; never present it as recorded metadata.
+- Teammates own their own in-process subagents (`kind: "teammate-subagent"`) and workflow agents
+  (`kind: "teammate-workflow-agent"`), flattened as siblings in the same array. Filter on `kind`
+  when counting "how many teammates".
+- **Two count mismatches are normal and must not be reconciled.** Some `Agent` spawns never produce
+  a transcript (the spawn failed), and some transcripts match no `Agent` call at all (3 of 35 in the
+  validated case). Report both counts and both lists; do not invent an explanation.
+- `totals.wall_seconds` still means the *main session's* span. Teammates can run outside it, so
+  `span_wall_seconds` covers the whole team and `wall_seconds_covers_team` is `false` when the
+  header's wall time understates the run. `concurrency_ratio` = `agent_seconds / span_wall_seconds`.
+- `main_session.team_membership` is non-null when the analyzed session is itself somebody's
+  teammate. A teammate target adopts nothing — it leads no team.
+- `--no-teammates` disables the scan. It makes every figure a lower bound; the coverage banner must
+  say so.
+
+`totals.coverage` reports the two populations separately, and carries **two independent flags**:
+
+- **`complete`** — "is the total a floor, or the real number?" False when volume is missing: the
+  scan was disabled, a spawn has no transcript, the depth cap was hit, a file was unreadable, or two
+  sessions claim one `teamName`. Orphans do **not** clear it (they are *extra* coverage), and
+  neither do failed spawns (a spawn that never started produced no tokens to miss).
+- **`reconciled`** — "is every adopted session explained by a spawn?" False when orphans exist.
+
+`incomplete_reasons` is a human-readable list, empty only when both flags are true.
 
 ## Step 2.5 — Desktop: one report per run (skip when `format` is `claude-code`)
 
@@ -246,6 +320,10 @@ Attribution heuristics (apply in order):
    `workflow_sessions[].agents[]`) → **workflow-driven** (attribute to
    `workflow:<workflow_name>`, optionally with the agent `phase`). These are
    prescribed by the workflow script, not autonomous.
+4b. If the tool call belongs to a teammate session (it appears under
+   `teammate_sessions[]`) → **teammate-driven** (attribute to `teammate:<role>`).
+   These are prescribed by the brief the spawning skill wrote, not autonomous —
+   but the role itself is a heuristic, so say so.
 5. If the LLM used a tool to recover from an error in a way not described by the skill → **LLM autonomous (error recovery)**.
 6. If no skill rule accounts for the tool call → **LLM autonomous**.
 
@@ -273,6 +351,10 @@ Use this exact structure:
 **Date:** <from file mtime or session metadata>
 **Model:** <from main_session.model>
 **Wall time:** <totals.wall_seconds formatted as Hh Mm Ss — e.g. "12m 3s"; omit this line when wall_seconds is null>
+**Team:** <coverage.team_name> — <N> teammate sessions across <M> project(s) <omit when no teammates>
+**This session was teammate `<agent_name>` of team `<team_name>`.** <only when main_session.team_membership is non-null>
+
+> **Coverage:** <one of the four mandated sentences below>
 
 ---
 
@@ -291,6 +373,30 @@ For each distinct subagent type, summarize: type, count of instances, tool calls
 
 | Agent type | Instances | Key tools used | Errors |
 |-----------|-----------|----------------|--------|
+
+### Teammate Sessions (if any)
+
+Grouped by role, from `totals.by_agent` rows keyed `teammate:*` and the
+`teammate_sessions[]` entries with `kind == "teammate"`.
+
+| Role* | Sessions | Models | Tool calls | Errors | Cost |
+|-------|----------|--------|-----------|--------|------|
+
+*Role is a heuristic read of each teammate's opening brief; `unclassified` = no match.
+
+Top 10 teammates by cost (of <N>):
+
+| # | Agent name | Role* | Model | Tool calls | Errors | Cost |
+|---|-----------|-------|-------|-----------|--------|------|
+
+Remaining <N-10> teammate sessions: <n> tool calls, <n> errors, $X.XX.
+
+The remainder line is **required** whenever N > 10 — a silent top-10 reads as
+"covered everything". Also state both count mismatches plainly, without trying to
+reconcile them: `<coverage.spawns.detected_teammate>` spawns detected,
+`<coverage.teammates.adopted>` transcripts adopted, `<coverage.spawns.failed>` spawns
+failed (name each), `<coverage.teammates.orphan_adopted>` transcripts with no spawn
+(name each).
 
 ### Workflows (if any)
 
@@ -343,15 +449,19 @@ to identify which workflow agent failed):
 
 ## 4. Token Usage and Cost
 
-| Metric | Main session | Subagents | Workflows | Total |
-|--------|-------------|-----------|-----------|-------|
-| Input tokens | | | | |
-| Output tokens | | | | |
-| Cache writes | | | | |
-| Cache reads | | | | |
-| **Estimated cost** | | | | **$X.XXXX** |
+| Metric | Main session | Subagents | Teammates | Workflows | Total |
+|--------|-------------|-----------|-----------|-----------|-------|
+| Input tokens | | | | | |
+| Output tokens | | | | | |
+| Cache writes | | | | | |
+| Cache reads | | | | | |
+| **Estimated cost** | | | | | **$X.XXXX** |
 
-(Omit the Workflows column when `workflow_sessions` is empty.)
+(Omit the Workflows column when `workflow_sessions` is empty, and the Teammates
+column when `teammate_sessions` is empty. The Total column is the **all-in**
+`totals.estimated_cost_usd`; state `totals.core_cost_usd` once beneath the table as
+the main+subagents+workflows subtotal, so a reader comparing against an older report
+can see where the difference comes from.)
 
 *Pricing is per-model — each session/agent is priced at its own model's rates, then
 summed (see Cost by model below). Costs are approximate — actual billing may differ.
@@ -375,10 +485,13 @@ is non-empty — skip entirely for a solo main-session run.)*
 | main session | 1 | <model> | <n> | <n> | <n> | <n> | $X.XXXX |
 | <agent_type> | <N> | <model(s)> | <n> | <n> | <n> | <n> | $X.XXXX |
 | workflow:<name> | <N> | <model(s)> | <n> | <n> | <n> | <n> | $X.XXXX |
+| teammate:<role> | <N> | <model(s)> | <n> | <n> | <n> | <n> | $X.XXXX |
 
 *Rows from `totals.by_agent`. Subagent groups use the `agent_type` field as the key
 (e.g. `Explore`, `Plan`, `caveman:cavecrew-builder`). Workflow groups use
-`workflow:<workflow_name>`. Unpriced groups show "—" for cost.*
+`workflow:<workflow_name>`. Teammate groups use `teammate:<role>` (and
+`teammate-subagent:<role>` / `teammate-workflow:<name>` for what teammates spawned in
+turn). Unpriced groups show "—" for cost.*
 
 When `subagent_sessions` is non-empty, add a per-instance detail table
 (subagents only — workflow agents stay in the grouped table above to avoid flooding):
@@ -401,6 +514,39 @@ Omit this table when no `subagent_sessions` ran.*
 - Cache utilization (low cache-read ratio suggests cold context)
 ```
 
+### Teammate-specific recommendation rules
+
+When `teammate_sessions` is non-empty, check each of these and raise one numbered
+recommendation per rule that fires, quoting the actual figures:
+
+- **Role/model mismatch** — one role's mean cost per session is more than 3x
+  another's *and* that role is majority-opus → recommend downgrading that role's
+  default model, quoting both roles' totals.
+- **Review-vs-implement ROI** — review sessions outnumber implement sessions by more
+  than 1.5x while costing under 20% of the implement total → the cheap signal is
+  under-used; scale reviews up rather than implementations.
+- **Failed spawns** — every `coverage.failed_spawns` entry becomes its own
+  recommendation, naming the dead spawn and the exact error.
+- **Serial fan-out** — `concurrency_ratio < 2` with more than 10 teammates → the
+  fan-out ran effectively serially; batch the spawns.
+- **Error-prone role** — one role's errors-per-tool-call exceeds 2x the session mean
+  → tighten that role's brief.
+
+### Coverage banner wording (mandated)
+
+Emit the `complete` sentence first, then the `reconciled` sentence when it applies.
+The literal phrase **"lower bound"** is required on the cost line whenever `complete`
+is false.
+
+- `complete and reconciled` →
+  `> **Coverage:** complete. All <N> teammate spawns matched a transcript, and all <M> adopted transcripts matched a spawn. Totals below are the full cost of this run.`
+- `complete and not reconciled` →
+  `> **Coverage:** complete but unreconciled. <N> adopted teammate transcript(s) (<names>) match no Agent call in the parent. They are counted in the totals below — the totals are not a lower bound — but their spawn point is unknown.`
+- `not complete` →
+  `> **Coverage: INCOMPLETE — every figure below is a lower bound, not a total.** <reasons from incomplete_reasons>. Those sessions' tokens, tool calls, errors, and cost are missing from every number in this report.`
+- `enabled == false` →
+  `> **Coverage: teammate sessions were NOT scanned (--no-teammates).** Every figure in this report — cost, tool calls, errors, session count — is a lower bound covering only the parent session and its in-process subagents. Re-run without --no-teammates for the full picture.`
+
 ## Report quality checklist
 
 Before finishing:
@@ -419,6 +565,15 @@ Before finishing:
       see Step 2), `totals.by_agent_is_estimate` is `true` and the by-agent rows are
       *not* expected to sum exactly to the ground-truth total — state that explicitly
       in the note under the table instead of forcing reconciliation.
+- [ ] The coverage blockquote is present directly under the header block, uses the
+      mandated wording, and matches `totals.coverage.complete` / `.reconciled`. It
+      contains the phrase "lower bound" whenever `complete` is false.
+- [ ] §4 totals equal the **all-in** `totals.estimated_cost_usd`, with
+      `totals.core_cost_usd` stated exactly once as the main+subagents subtotal.
+- [ ] Every `teammate_sessions[]` entry with `kind == "teammate"` is counted in the
+      §1 role table, and the "Remaining <N-10>" line is present when N > 10.
+- [ ] Both spawn/transcript count mismatches are reported with names, and no attempt
+      is made to explain them away.
 - [ ] §5 recommendations are specific to this session (not generic advice).
 - [ ] Report path is stated in the final response to the user.
 
