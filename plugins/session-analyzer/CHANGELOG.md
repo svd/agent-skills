@@ -2,7 +2,7 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
-## [Unreleased]
+## [0.5.0] - 2026-08-11
 
 ### Added
 - **Teammate session discovery.** The `Agent` tool's second spawn mode creates a full, independent
