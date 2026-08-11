@@ -2,7 +2,7 @@
 
 All notable changes to the `manage-claude-projects` plugin are documented here.
 
-## [Unreleased]
+## [0.1.1] - 2026-08-11
 
 ### Changed
 - **`deepstats` prices Sonnet 5 at its own rate.** Anthropic made Sonnet 5's $2/$10 the standard
