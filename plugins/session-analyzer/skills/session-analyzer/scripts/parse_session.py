@@ -483,29 +483,35 @@ def extract_agent_spawns(lines):
 
 # Per-MTok USD. Matched by substring on the model id; unmatched models are unpriced.
 # Cache write = 1.25x input, cache read = 0.1x input (standard Anthropic prompt-cache rates).
+#
+# Insertion order is load-bearing: the first key that is a substring of the model id wins,
+# in both _match_price() and the totals["pricing_tier"] lookup. More specific keys must come
+# before the generic family key -- "sonnet-5" before "sonnet", or every Sonnet 5 session is
+# silently priced at the Sonnet 4.x rate. Do not sort this dict.
 PRICING = {
-    "fable":  {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
-    "mythos": {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
-    "opus":   {"input": 5.0,   "output": 25.0,  "cache_write": 6.25,  "cache_read": 0.50},
-    "sonnet": {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
-    "haiku":  {"input": 1.0,   "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
+    "fable":    {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
+    "mythos":   {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
+    "opus":     {"input": 5.0,   "output": 25.0,  "cache_write": 6.25,  "cache_read": 0.50},
+    "sonnet-5": {"input": 2.0,   "output": 10.0,  "cache_write": 2.50,  "cache_read": 0.20},
+    "sonnet":   {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
+    "haiku":    {"input": 1.0,   "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
 }
 
 # Sonnet 5 introductory pricing, effective through 2026-08-31 (inclusive).
 # Applied only when a session's own start time falls in the window; standard
 # PRICING["sonnet"] used otherwise.
-SONNET_INTRO_PRICING = {"input": 2.0, "output": 10.0, "cache_write": 2.50, "cache_read": 0.20}
-SONNET_INTRO_START = datetime(2026, 7, 1, tzinfo=timezone.utc)
-SONNET_INTRO_END = datetime(2026, 9, 1, tzinfo=timezone.utc)  # exclusive -> Aug 31 fully included
+# SONNET_INTRO_PRICING = {"input": 2.0, "output": 10.0, "cache_write": 2.50, "cache_read": 0.20}
+# SONNET_INTRO_START = datetime(2026, 7, 1, tzinfo=timezone.utc)
+# SONNET_INTRO_END = datetime(2026, 9, 1, tzinfo=timezone.utc)  # exclusive -> Aug 31 fully included
 
 
 def _match_price(model_str, session_dt=None):
     ml = (model_str or "").lower()
     for key, price in PRICING.items():
         if key in ml:
-            if (key == "sonnet" and session_dt is not None
-                    and SONNET_INTRO_START <= session_dt < SONNET_INTRO_END):
-                return SONNET_INTRO_PRICING
+            # if (key == "sonnet" and session_dt is not None
+            #         and SONNET_INTRO_START <= session_dt < SONNET_INTRO_END):
+            #     return SONNET_INTRO_PRICING
             return price
     return None
 

@@ -33,12 +33,17 @@ HISTORY = CLAUDE / "history.jsonl"
 
 # Per-MTok USD. Matched by substring on the model id; unmatched models report tokens only.
 # Cache write = 1.25x input, cache read = 0.1x input (standard Anthropic prompt-cache rates).
+#
+# Insertion order is load-bearing: the first key that is a substring of the model id wins.
+# More specific keys must come before the generic family key -- "sonnet-5" before "sonnet",
+# or every Sonnet 5 session is silently priced at the Sonnet 4.x rate. Do not sort this dict.
 PRICING = {
-    "fable":  {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
-    "mythos": {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
-    "opus":   {"input": 5.0,  "output": 25.0,  "cache_write": 6.25,  "cache_read": 0.50},
-    "sonnet": {"input": 3.0,  "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
-    "haiku":  {"input": 1.0,  "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
+    "fable":    {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
+    "mythos":   {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
+    "opus":     {"input": 5.0,  "output": 25.0,  "cache_write": 6.25,  "cache_read": 0.50},
+    "sonnet-5": {"input": 2.0,  "output": 10.0,  "cache_write": 2.50,  "cache_read": 0.20},
+    "sonnet":   {"input": 3.0,  "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
+    "haiku":    {"input": 1.0,  "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
 }
 
 

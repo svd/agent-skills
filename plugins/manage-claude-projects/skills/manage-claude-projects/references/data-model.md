@@ -38,10 +38,14 @@ Cache write = 1.25× input, cache read = 0.1× input (standard Anthropic prompt-
 | `fable` | 10 | 50 | 12.50 | 1.00 |
 | `mythos` | 10 | 50 | 12.50 | 1.00 |
 | `opus` | 5 | 25 | 6.25 | 0.50 |
+| `sonnet-5` | 2 | 10 | 2.50 | 0.20 |
 | `sonnet` | 3 | 15 | 3.75 | 0.30 |
 | `haiku` | 1 | 5 | 1.25 | 0.10 |
 
-Covers Fable 5, Mythos 5, Opus 4.5–4.8, Sonnet 4.5/4.6, Haiku 4.5. `opus` rates are the
+Row order matters: the first key that is a substring of the model id wins, so `sonnet-5` must
+precede `sonnet` — otherwise Sonnet 5 sessions are priced at the Sonnet 4.x rate.
+
+Covers Fable 5, Mythos 5, Opus 4.5–4.8, Sonnet 5, Sonnet 4.5/4.6, Haiku 4.5. `opus` rates are the
 current Opus 4.5+ prices; the deprecated Opus 4 / 4.1 billed at 15/75 and still match the
 `opus` key, so their cost would be under-reported. Models not matching any key (e.g.
 `glm-5.1`, `<synthetic>`) are reported tokens-only and excluded from the dollar total.

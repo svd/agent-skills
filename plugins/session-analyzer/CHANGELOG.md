@@ -2,6 +2,21 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
+## [Unreleased]
+
+### Changed
+- **Sonnet 5's $2/$10 rate is now the standard price, not an introductory one.** Anthropic
+  cancelled the increase to $3/$15 that was scheduled for 2026-09-01, so the date window added in
+  0.3.0 — which applied the lower rate only between 2026-07-01 and 2026-08-31 — no longer matches
+  how the model is billed. Rates within that window were already correct; what changes is that the
+  same rate now applies outside it too. Pricing keys on the model id instead of the session's start
+  time: a new `sonnet-5` entry in `PRICING` carries 2.00/10.00/2.50/0.20 and is matched ahead of the
+  generic `sonnet` entry, which stays at $3/$15 for Sonnet 4.5/4.6. Because `PRICING` keys match by
+  substring and the first hit wins, the specific key must precede the family key — the table is
+  order-dependent and must not be sorted.
+- `totals.pricing_tier` reports `"sonnet-5"` for Sonnet 5 sessions (previously `"sonnet"`). It
+  names the table row that priced the session, so the more specific value is the accurate one.
+
 ## [0.5.0] - 2026-08-11
 
 ### Added
