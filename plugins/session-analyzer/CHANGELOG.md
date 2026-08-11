@@ -2,6 +2,37 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
+## [Unreleased]
+
+### Added
+- **Teammate session discovery.** The `Agent` tool's second spawn mode creates a full, independent
+  Claude Code session whose transcript lives in the project directory matching the *teammate's own*
+  cwd — no filesystem containment, no meta sidecar, so the parser could not see it. Teammates are
+  now found by scanning session heads for `teamName == "session-" + <leader id>[:8]`, recursively,
+  including each teammate's own subagents and workflow agents. On a validated real run this moved
+  the reported figures from 11 sessions / 1,019 tool calls / $333.32 to 54 / 3,589 / $793.34.
+- `teammate_sessions[]` in the output, each entry carrying `role` (a labelled heuristic read of the
+  opening brief), `agent_name`, `team_name`, `depth`, `project_slug`, `cwd`, and `git_branch`.
+  Teammate usage folds into `totals`, `by_model`, and `by_agent` (keyed `teammate:<role>`).
+- `totals.coverage`: counts the parent-side spawn list and the filesystem-side transcript list
+  separately — they disagree in both directions by design — plus two independent flags, `complete`
+  ("is the total a floor?") and `reconciled` ("is every session explained?"), and a human-readable
+  `incomplete_reasons`. The report now leads with a coverage banner, so a partial total can no
+  longer be presented as a total.
+- `totals.span_wall_seconds`, `agent_seconds`, `concurrency_ratio`, and `wall_seconds_covers_team`,
+  since teammates can run outside the main session's span.
+- `--no-teammates` to skip the scan, and `scripts/smoke_test.py` (45 checks, stdlib only, entirely
+  synthetic fixtures — it never reads real `~/.claude` data).
+
+### Changed
+- **`totals.estimated_cost_usd` is now the all-in figure** and will exceed what earlier versions
+  reported for any session that used teammates. `totals.core_cost_usd` preserves the previous
+  main+subagents+workflows value and `totals.cost_scope` names which is which.
+
+### Unchanged
+- The Claude Desktop path is byte-for-byte identical: it emits no `teammate_sessions` key, no
+  `coverage`, and no new `totals` keys.
+
 ## [0.4.0] - 2026-07-14
 
 ### Added
