@@ -2,7 +2,7 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
-## [Unreleased]
+## [0.6.0] - 2026-08-11
 
 ### Changed
 - **Sonnet 5's $2/$10 rate is now the standard price, not an introductory one.** Anthropic
