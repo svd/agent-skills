@@ -242,6 +242,15 @@ sessions and $333; the true all-in figure was 54 sessions and $793 — **$460 wa
 - Teammates own their own in-process subagents (`kind: "teammate-subagent"`) and workflow agents
   (`kind: "teammate-workflow-agent"`), flattened as siblings in the same array. Filter on `kind`
   when counting "how many teammates".
+- The spawn side is **team-wide**: `coverage.spawns` (including `failed_spawns` and
+  `resolved_in_process`) and `unresolved_spawns` merge the `Agent` calls made by every adopted
+  teammate, not just the target's, so a teammate spawned by a teammate is reconciled the same way.
+  Agent names are unique only *within* one transcript, so the reconciliation is **by count per
+  name**: two sessions spawning `reviewer` with one `reviewer` transcript is one missing teammate,
+  not a match.
+- A session cut off by the depth cap had its spawns merged but never *searched for*. Those names are
+  **not** listed in `unresolved_spawns` — the depth-cap reason already covers them. Never report an
+  agent as having no transcript when nothing looked for one.
 - **Two count mismatches are normal and must not be reconciled.** Some `Agent` spawns never produce
   a transcript (the spawn failed), and some transcripts match no `Agent` call at all (3 of 35 in the
   validated case). Report both counts and both lists; do not invent an explanation.
@@ -256,9 +265,11 @@ sessions and $333; the true all-in figure was 54 sessions and $793 — **$460 wa
 `totals.coverage` reports the two populations separately, and carries **two independent flags**:
 
 - **`complete`** — "is the total a floor, or the real number?" False when volume is missing: the
-  scan was disabled, a spawn has no transcript, the depth cap was hit, a file was unreadable, or two
-  sessions claim one `teamName`. Orphans do **not** clear it (they are *extra* coverage), and
-  neither do failed spawns (a spawn that never started produced no tokens to miss).
+  scan was disabled, the scan could not run at all (no `~/.claude/projects` on this machine — an
+  exported transcript, say — in which case `discovery.broad_scan` is also `false`), a spawn at
+  *any* depth has no transcript, the depth cap was hit, a file was unreadable, or two sessions
+  claim one `teamName`. Orphans do **not** clear it (they are *extra* coverage), and neither do
+  failed spawns (a spawn that never started produced no tokens to miss).
 - **`reconciled`** — "is every adopted session explained by a spawn?" False when orphans exist.
 
 `incomplete_reasons` is a human-readable list, empty only when both flags are true.

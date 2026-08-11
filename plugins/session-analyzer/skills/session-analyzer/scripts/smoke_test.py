@@ -301,6 +301,131 @@ def main():
               ps.build_coverage(True, team, None, [], None, stats)["discovery"]["broad_scan"]
               is True)
 
+        # A scan that never ran is not a scan that found nothing: enabled=True with
+        # scan_stats=None (no projects root — e.g. an exported transcript) must not
+        # claim a broad scan happened, and must not claim completeness.
+        never_ran = ps.build_coverage(True, team, None, [], None, None)
+        check("coverage: skipped scan is not reported as a successful one",
+              never_ran["discovery"]["broad_scan"] is False
+              and never_ran["complete"] is False
+              and never_ran["reconciled"] is False,
+              str(never_ran["discovery"]["broad_scan"]) + "/" + str(never_ran["complete"]))
+        check("coverage: skipped scan says why it is incomplete",
+              any("scan did not run" in r for r in never_ran["incomplete_reasons"]),
+              str(never_ran["incomplete_reasons"]))
+
+        # ---------------------------------------------------------------
+        # 9b. Nested spawns count toward coverage. A teammate that spawns a
+        #     teammate whose transcript is missing is missing volume exactly
+        #     like a top-level spawn, and must clear `complete`.
+        # ---------------------------------------------------------------
+        def teammate_with_spawn(team_name, agent_name, spawn_name):
+            """A teammate transcript that itself spawns a further teammate."""
+            head = {"teamName": team_name, "agentName": agent_name, "cwd": "/tmp/x",
+                    "gitBranch": "main", "isSidechain": False}
+            return [
+                rec_user(BRIEF.format(verb="implementing"), **head),
+                rec_assistant([{"type": "tool_use", "id": "n1", "name": "Agent",
+                                "input": {"name": spawn_name, "description": "go deeper"}}],
+                              request_id="req-n", **head),
+            ]
+
+        proj_n = tmp / "projects_nested"
+        slug_n = proj_n / "-nested"
+        n_lead = "11111111-0000-4000-8000-00000000000a"
+        n_mid = "22222222-0000-4000-8000-00000000000b"
+        n_deep = "33333333-0000-4000-8000-00000000000c"
+        mid_team = ps.team_name_for(n_mid)
+
+        write_session(slug_n, n_lead, [rec_user("lead session")])
+        write_session(slug_n, n_mid,
+                      teammate_with_spawn(ps.team_name_for(n_lead), "mid", "deep"))
+
+        def nested_coverage(projects_dir, slug, lead_sid, spawns=None, **kw):
+            """Scan `projects_dir`, adopt the team under `lead_sid`, build coverage."""
+            idx, st_stats = ps.scan_team_index(projects_dir)
+            st = ps.new_team_state()
+            v = {str((slug / f"{lead_sid}.jsonl").resolve()), lead_sid}
+            spawns = spawns or {}
+            adopted_n = ps.collect_team(lead_sid, idx, v, spawns=spawns, state=st, **kw)
+            return ps.build_coverage(
+                True, ps.team_name_for(lead_sid),
+                {"agent_tool_calls": 0, "in_process_subagent_spawns": 0,
+                 "teammate_spawns": spawns, "failed_spawns": []},
+                adopted_n, st, st_stats), adopted_n
+
+        cov_missing, _ = nested_coverage(proj_n, slug_n, n_lead)
+        check("coverage: nested spawn with no transcript is detected",
+              cov_missing["unresolved_spawns"] == ["deep"],
+              str(cov_missing["unresolved_spawns"]))
+        check("coverage: nested missing transcript clears complete",
+              cov_missing["complete"] is False,
+              str(cov_missing["incomplete_reasons"]))
+        check("coverage: nested Agent call counts in team-wide spawn totals",
+              cov_missing["spawns"]["agent_tool_calls"] == 1
+              and cov_missing["spawns"]["detected_teammate"] == 1,
+              str(cov_missing["spawns"]))
+
+        # Positive control: same tree, with the nested transcript present.
+        proj_n2 = tmp / "projects_nested_ok"
+        slug_n2 = proj_n2 / "-nested"
+        for sid_, recs in ((n_lead, [rec_user("lead session")]),
+                           (n_mid, teammate_with_spawn(ps.team_name_for(n_lead), "mid", "deep")),
+                           (n_deep, teammate_records(mid_team, "deep",
+                                                     BRIEF.format(verb="reviewing")))):
+            write_session(slug_n2, sid_, recs)
+        cov_ok, adopted2 = nested_coverage(proj_n2, slug_n2, n_lead)
+        check("coverage: nested teammate is adopted at depth 2",
+              any(t["kind"] == "teammate" and t["agent_name"] == "deep" and t["depth"] == 2
+                  for t in adopted2),
+              str([(t["agent_name"], t["depth"]) for t in adopted2 if t["kind"] == "teammate"]))
+        check("coverage: nested spawn with a transcript stays complete",
+              cov_ok["complete"] is True and cov_ok["unresolved_spawns"] == [],
+              str(cov_ok["incomplete_reasons"]))
+
+        # ---------------------------------------------------------------
+        # 9c. Agent names are unique only WITHIN one transcript. Two sessions
+        #     spawning the same name with one transcript to show for it is one
+        #     missing teammate — set membership would call it fully covered.
+        # ---------------------------------------------------------------
+        proj_d = tmp / "projects_dupname"
+        slug_d = proj_d / "-dup"
+        d_lead = "44444444-0000-4000-8000-00000000000d"
+        d_mid = "55555555-0000-4000-8000-00000000000e"
+        d_rev = "66666666-0000-4000-8000-00000000000f"
+        lead_team = ps.team_name_for(d_lead)
+        write_session(slug_d, d_lead, [rec_user("lead session")])
+        write_session(slug_d, d_mid, teammate_with_spawn(lead_team, "mid", "reviewer"))
+        write_session(slug_d, d_rev,
+                      teammate_records(lead_team, "reviewer", BRIEF.format(verb="reviewing")))
+
+        def spawn_meta(tuid):
+            return {"description": "d", "subagent_type": None, "tool_use_id": tuid}
+
+        cov_dup, _ = nested_coverage(
+            proj_d, slug_d, d_lead,
+            spawns={"mid": spawn_meta("t1"), "reviewer": spawn_meta("t2")})
+        check("coverage: same name spawned twice with one transcript is unresolved",
+              cov_dup["unresolved_spawns"] == ["reviewer"],
+              str(cov_dup["unresolved_spawns"]))
+        check("coverage: duplicate-name shortfall clears complete",
+              cov_dup["complete"] is False,
+              str(cov_dup["incomplete_reasons"]))
+
+        # ---------------------------------------------------------------
+        # 9d. A session cut off by the depth cap had its spawns MERGED but never
+        #     SEARCHED. Reporting them as "no transcript" would name specific
+        #     agents as missing on no evidence; the depth-cap reason covers them.
+        # ---------------------------------------------------------------
+        cov_capped, _ = nested_coverage(proj_n2, slug_n2, n_lead, max_depth=1)
+        check("coverage: depth-capped spawns are not reported as missing transcripts",
+              cov_capped["unresolved_spawns"] == [],
+              str(cov_capped["unresolved_spawns"]))
+        check("coverage: depth cap still clears complete and says so",
+              cov_capped["complete"] is False
+              and any("MAX_TEAM_DEPTH" in r for r in cov_capped["incomplete_reasons"]),
+              str(cov_capped["incomplete_reasons"]))
+
         # ---------------------------------------------------------------
         # 10. main(): team_membership is populated when the analyzed target is
         #     itself a teammate, and null otherwise. Exercised through main()
@@ -329,6 +454,29 @@ def main():
         check("main: broad scan stayed inside the temp tree",
               as_lead["totals"]["coverage"]["discovery"]["files_scanned"] == 4,
               str(as_lead["totals"]["coverage"]["discovery"]["files_scanned"]))
+
+        # An exported transcript analyzed where ~/.claude/projects does not exist:
+        # discovery could not run, so coverage must say so instead of claiming complete.
+        def run_main_no_projects(target):
+            saved_argv, saved_dir = sys.argv, ps.CLAUDE_PROJECTS_DIR
+            ps.CLAUDE_PROJECTS_DIR = tmp / "no-such-projects-dir"
+            sys.argv = ["parse_session.py", str(target)]
+            try:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    ps.main()
+                return json.loads(buf.getvalue())
+            finally:
+                sys.argv, ps.CLAUDE_PROJECTS_DIR = saved_argv, saved_dir
+
+        exported = run_main_no_projects(slug_a / f"{lead_sid}.jsonl")
+        exp_cov = exported["totals"]["coverage"]
+        check("main: missing projects root is incomplete, not complete",
+              exp_cov["complete"] is False and exp_cov["discovery"]["broad_scan"] is False,
+              str(exp_cov["complete"]) + "/" + str(exp_cov["discovery"]["broad_scan"]))
+        check("main: missing projects root explains itself",
+              any("scan did not run" in r for r in exp_cov["incomplete_reasons"]),
+              str(exp_cov["incomplete_reasons"]))
 
         as_teammate = run_main(slug_a / f"{tm1}.jsonl")
         check("main: teammate target reports its own membership",

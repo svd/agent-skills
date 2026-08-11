@@ -647,6 +647,11 @@ def analyze_teammate(path: Path, depth: int, parent_sid: str, spawn_meta=None):
 
     Deliberately does not sum tokens or call estimate_cost — build_result owns all
     pricing and rollups.
+
+    Returns `(data, spawn_info)`. The teammate's own `Agent` calls are extracted here,
+    off the lines already in hand, because a teammate can spawn further teammates and
+    coverage has to see those spawns too — a nested spawn with no transcript is missing
+    volume exactly like a top-level one.
     """
     lines = parse_jsonl(path)
     role, role_source, brief_excerpt = infer_role(lines)
@@ -685,7 +690,7 @@ def analyze_teammate(path: Path, depth: int, parent_sid: str, spawn_meta=None):
         ),
         "matched_spawn": spawn_meta is not None,
     })
-    return data
+    return data, extract_agent_spawns(lines)
 
 
 def _windows_overlap(a_start, a_end, b_start, b_end):
@@ -708,6 +713,9 @@ def new_team_state():
         "ambiguous_team_name": False,
         "max_depth_reached": 0,
         "windows": {},
+        # {child_sid: spawn_info} for every adopted teammate, so build_coverage can
+        # reconcile spawns raised at ANY depth, not only the target's own.
+        "spawn_tables": {},
     }
 
 
@@ -771,7 +779,8 @@ def collect_team(parent_sid, index, visited, depth=0, max_depth=MAX_TEAM_DEPTH,
                 visited.add(resolved)
                 visited.add(child_sid)
 
-                tm = analyze_teammate(path, d + 1, sid, spawn_meta=None)
+                tm, child_spawns = analyze_teammate(path, d + 1, sid, spawn_meta=None)
+                state["spawn_tables"][child_sid] = child_spawns
                 # Match by the teammate's own agentName against the parent's spawn
                 # table; the spawn list is a strict subset of reality, so a miss is
                 # normal and only affects reporting.
@@ -818,8 +827,10 @@ def collect_team(parent_sid, index, visited, depth=0, max_depth=MAX_TEAM_DEPTH,
                         ag["agent_type"] = wf_key
                         out.append(ag)
 
-                # Only the top-level parent has a spawn table; deeper levels pass none.
-                next_queue.append((child_sid, d + 1, None))
+                # Each level carries its own spawn table down, so a teammate spawned by
+                # a teammate is matched (and, when its transcript is missing, reported
+                # as unresolved) the same way a top-level spawn is.
+                next_queue.append((child_sid, d + 1, child_spawns["teammate_spawns"]))
         queue = next_queue
 
     return out
@@ -989,21 +1000,66 @@ def build_coverage(enabled, team_name, spawn_info, teammate_data, state, scan_st
     never one "N of M": parent-side `Agent` calls (some of which never produced a
     transcript) and filesystem-side transcripts (some of which match no `Agent` call).
     No attempt is made to reconcile them — mismatches in both directions are normal.
+
+    The spawn side is team-wide, not target-only: `state["spawn_tables"]` carries every
+    adopted teammate's own `Agent` calls, and they are merged in here. Without that, a
+    teammate spawned by a teammate whose transcript is missing would be invisible and
+    `complete` would stay true while its tokens and cost were absent. Because that merge
+    spans N transcripts and agent names are only unique within one, the spawn side is
+    reconciled by count per name, never by set membership.
+
+    `scan_stats is None` means the filesystem scan never ran (disabled, or no projects
+    root on this machine — e.g. an exported transcript). That is NOT a scan that found
+    nothing: discovery is unreliable, so `broad_scan` and `complete` are both false.
     """
     spawn_info = spawn_info or {"agent_tool_calls": 0, "in_process_subagent_spawns": 0,
                                 "teammate_spawns": {}, "failed_spawns": []}
     state = state or new_team_state()
+    scan_ran = scan_stats is not None
     scan_stats = scan_stats or {"files_scanned": 0, "scan_seconds": 0.0, "unreadable_files": []}
 
     teammates = [t for t in teammate_data if t.get("kind") == "teammate"]
     adopted_names = {t.get("agent_name") for t in teammates if t.get("agent_name")}
 
+    # A session whose own candidates were never scanned (BFS stopped at the depth cap)
+    # has a spawn table, but its spawns were never LOOKED for. Counting them as
+    # "no transcript" would name specific agents as missing on no evidence; the
+    # depth_capped reason already clears `complete` for them.
+    capped = set(state["depth_capped"])
+
+    # Target's table first, then each teammate's, so a name spawned at two depths keeps
+    # the shallowest metadata — matching the BFS attribution collect_team already uses.
     detected = dict(spawn_info["teammate_spawns"])
-    failed_names = {f["name"] for f in spawn_info["failed_spawns"]}
+    failed_list = list(spawn_info["failed_spawns"])
+    agent_tool_calls = spawn_info["agent_tool_calls"]
+    in_process = spawn_info["in_process_subagent_spawns"]
+    # Reconciliation is by COUNT, not by set membership: agent names are only unique
+    # within one transcript, and the team-wide merge spans N of them. Two sessions each
+    # spawning "reviewer" when one transcript exists is one missing teammate, and a
+    # name-keyed match would call it fully covered.
+    searched_counts = {n: 1 for n in spawn_info["teammate_spawns"]}
+    for sid, child in state["spawn_tables"].items():
+        for name, meta in child["teammate_spawns"].items():
+            detected.setdefault(name, meta)
+            if sid not in capped:
+                searched_counts[name] = searched_counts.get(name, 0) + 1
+        failed_list.extend(child["failed_spawns"])
+        agent_tool_calls += child["agent_tool_calls"]
+        in_process += child["in_process_subagent_spawns"]
+
+    adopted_counts = {}
+    for t in teammates:
+        n = t.get("agent_name")
+        if n:
+            adopted_counts[n] = adopted_counts.get(n, 0) + 1
+    failed_counts = {}
+    for f in failed_list:
+        failed_counts[f["name"]] = failed_counts.get(f["name"], 0) + 1
 
     matched = sorted(n for n in detected if n in adopted_names)
     unresolved = sorted(
-        n for n in detected if n not in adopted_names and n not in failed_names
+        n for n, c in searched_counts.items()
+        if c > adopted_counts.get(n, 0) + failed_counts.get(n, 0)
     )
     orphans = sorted(
         ({"agent_name": t.get("agent_name"), "session_id": t.get("session_id")}
@@ -1018,6 +1074,11 @@ def build_coverage(enabled, team_name, spawn_info, teammate_data, state, scan_st
     reasons = []
     if not enabled:
         reasons.append("teammate scanning disabled (--no-teammates)")
+    elif not scan_ran:
+        reasons.append(
+            f"teammate index scan did not run ({CLAUDE_PROJECTS_DIR} not found); "
+            "no transcript could be discovered"
+        )
     if unresolved:
         reasons.append(
             f"{len(unresolved)} teammate spawn(s) have no transcript: "
@@ -1036,7 +1097,8 @@ def build_coverage(enabled, team_name, spawn_info, teammate_data, state, scan_st
     # `complete` answers "is the total a floor, or the real number?" — orphans are
     # EXTRA coverage, not missing coverage, so they never clear it. A failed spawn
     # provably never started, so it produced no tokens to miss.
-    complete = enabled and not unresolved and not depth_capped and not unparseable and not ambiguous
+    complete = (enabled and scan_ran and not unresolved and not depth_capped
+                and not unparseable and not ambiguous)
     # `reconciled` answers the different question "is every adopted session explained?"
     reconciled = complete and not orphans
     if complete and orphans:
@@ -1048,11 +1110,11 @@ def build_coverage(enabled, team_name, spawn_info, teammate_data, state, scan_st
         "enabled": enabled,
         "team_name": team_name,
         "spawns": {
-            "agent_tool_calls": spawn_info["agent_tool_calls"],
-            "resolved_in_process": spawn_info["in_process_subagent_spawns"],
+            "agent_tool_calls": agent_tool_calls,
+            "resolved_in_process": in_process,
             "detected_teammate": len(detected),
             "matched_to_transcript": len(matched),
-            "failed": len(spawn_info["failed_spawns"]),
+            "failed": len(failed_list),
         },
         "teammates": {
             "adopted": len(teammates),
@@ -1062,11 +1124,11 @@ def build_coverage(enabled, team_name, spawn_info, teammate_data, state, scan_st
         "unresolved_spawns": unresolved,
         "failed_spawns": [
             {"name": f["name"], "reason": f["error"], "tool_use_id": f["tool_use_id"]}
-            for f in spawn_info["failed_spawns"]
+            for f in failed_list
         ],
         "orphan_teammates": orphans,
         "discovery": {
-            "broad_scan": enabled,
+            "broad_scan": enabled and scan_ran,
             "files_scanned": scan_stats["files_scanned"],
             "scan_seconds": scan_stats["scan_seconds"],
             "max_depth_reached": state["max_depth_reached"],

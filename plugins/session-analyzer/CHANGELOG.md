@@ -14,14 +14,22 @@ All notable changes to the `session-analyzer` plugin are documented here.
 - `teammate_sessions[]` in the output, each entry carrying `role` (a labelled heuristic read of the
   opening brief), `agent_name`, `team_name`, `depth`, `project_slug`, `cwd`, and `git_branch`.
   Teammate usage folds into `totals`, `by_model`, and `by_agent` (keyed `teammate:<role>`).
-- `totals.coverage`: counts the parent-side spawn list and the filesystem-side transcript list
-  separately — they disagree in both directions by design — plus two independent flags, `complete`
-  ("is the total a floor?") and `reconciled` ("is every session explained?"), and a human-readable
+- `totals.coverage`: counts the spawn list and the filesystem-side transcript list separately —
+  they disagree in both directions by design — plus two independent flags, `complete` ("is the
+  total a floor?") and `reconciled` ("is every session explained?"), and a human-readable
   `incomplete_reasons`. The report now leads with a coverage banner, so a partial total can no
-  longer be presented as a total.
+  longer be presented as a total. The spawn side is team-wide: every adopted teammate's own `Agent`
+  calls are merged in, so a teammate spawned by a teammate whose transcript is missing clears
+  `complete` instead of vanishing. Because that merge spans N transcripts and agent names are only
+  unique within one, the spawn side reconciles by count per name — two sessions spawning `reviewer`
+  against one `reviewer` transcript is one missing teammate, not a match. Spawns belonging to a
+  session cut off by the depth cap are excluded: they were merged but never searched for, and the
+  depth-cap reason already covers them. A scan that never ran (no `~/.claude/projects` on this
+  machine) is likewise reported as `broad_scan: false` and incomplete, never as a scan that found
+  nothing.
 - `totals.span_wall_seconds`, `agent_seconds`, `concurrency_ratio`, and `wall_seconds_covers_team`,
   since teammates can run outside the main session's span.
-- `--no-teammates` to skip the scan, and `scripts/smoke_test.py` (45 checks, stdlib only, entirely
+- `--no-teammates` to skip the scan, and `scripts/smoke_test.py` (58 checks, stdlib only, entirely
   synthetic fixtures — it never reads real `~/.claude` data).
 
 ### Changed
