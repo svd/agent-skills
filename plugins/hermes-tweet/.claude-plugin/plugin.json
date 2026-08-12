@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "hermes-tweet",
+  "version": "0.1.0",
+  "description": "Set up and safely operate the maintained Hermes Tweet integration from Claude Code.",
+  "author": {
+    "name": "Xquik",
+    "url": "https://github.com/Xquik-dev"
+  },
+  "homepage": "https://github.com/Xquik-dev/hermes-tweet#readme",
+  "repository": "https://github.com/Xquik-dev/hermes-tweet",
+  "license": "MIT",
+  "keywords": ["hermes-agent", "xquik", "twitter", "x", "integration"]
+}

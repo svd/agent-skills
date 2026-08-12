@@ -36,9 +36,10 @@ plugins/<name>/
 .claude/skills/releasing-a-version/  # repo-local skill for cutting releases (see below)
 ```
 
-Current plugins: `manage-claude-projects`, `session-analyzer`, `session-handoff`. A fourth,
-`mcp-client-kit`, is listed in `marketplace.json` but sourced from a separate GitHub repo
-(`svd/mcp-client-kit`), not present here.
+Current local plugins: `manage-claude-projects`, `session-analyzer`,
+`session-handoff`, and the prompt-only `hermes-tweet` integration guide.
+`mcp-client-kit` is also listed in `marketplace.json`, but is sourced from the
+separate `svd/mcp-client-kit` repository.
 
 ## Architecture pattern (applies to every plugin)
 
