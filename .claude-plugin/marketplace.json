@@ -31,7 +31,7 @@
         "source": "github",
         "repo": "svd/mcp-client-kit"
       },
-      "description": "Generate typed Python wrappers for any MCP server (skills: generate-mcp-wrappers, generate-mcp-runner)."
+      "description": "Turn any MCP server into typed Python you own — one async def per tool, return types probed from real responses (skills: generate-mcp-wrappers, generate-mcp-runner)."
     }
   ]
 }
