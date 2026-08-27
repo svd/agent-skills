@@ -30,7 +30,7 @@
       "source": {
         "source": "github",
         "repo": "svd/mcp-client-kit",
-        "ref": "plugin-v0.3.0"
+        "ref": "plugin-v0.4.0"
       },
       "description": "Turn any MCP server into typed Python you own — one async def per tool, return types probed from real responses (skills: generate-mcp-wrappers, generate-mcp-runner)."
     }
