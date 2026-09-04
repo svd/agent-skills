@@ -2,13 +2,14 @@
 
 All notable changes to the `manage-claude-projects` plugin are documented here.
 
-## [Unreleased]
+## [0.1.2] - 2026-09-04
 
-### Added
+### Fixed
 
-- Pricing tiers for Claude Fable 5.1 and Mythos 5.1 (`fable-5-1`, `mythos-5-1`), placed ahead
-  of the `fable`/`mythos` keys. Same $10/$50 input/output and $12.50 cache write as 5.0, but
-  cache reads are $0.25/MTok (0.025x base input) instead of $1.00.
+- Claude Fable 5.1 and Mythos 5.1 cost estimates. Their model ids matched the `fable` /
+  `mythos` keys, which price cache reads at $1.00/MTok — 4x the actual $0.25/MTok (0.025x
+  base input, where every other model uses 0.1x). Added `fable-5-1` / `mythos-5-1` tiers
+  ahead of those keys; input, output, and cache write are unchanged from 5.0.
 
 ## [0.1.1] - 2026-08-11
 
