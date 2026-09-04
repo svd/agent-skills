@@ -13,6 +13,7 @@ Personal Claude Code plugin marketplace. Marketplace name: `svd-agent-skills`.
 /plugin install session-analyzer@svd-agent-skills
 /plugin install mcp-client-kit@svd-agent-skills
 /plugin install session-handoff@svd-agent-skills
+/plugin install mgraphctl@svd-agent-skills
 ```
 
 ## Plugins
@@ -66,6 +67,19 @@ Skills: `/session-handoff:session-handoff`
 
 Trigger phrases: "handoff", "hand off this session", "continue this in a new chat",
 "context is getting long", "park this project", "resume where we left off".
+
+### mgraphctl
+
+Work with Microsoft 365 through the Microsoft Graph API — Outlook mail and calendar, Teams
+chats, channels and presence, meetings with transcripts and Copilot insights, SharePoint,
+OneDrive, OneNote, Planner, To Do, people and org chart. Backed by a Python CLI (`mgraphctl`)
+run with `uv`; every write verb supports `--dry-run`, and auth uses MSAL with a token cache in
+the OS keychain.
+
+Skills: `/mgraphctl:mgraphctl`
+
+Trigger phrases: "check my inbox", "what meetings do I have", "send a Teams message",
+"find that SharePoint doc", "summarize this meeting transcript", "my tasks".
 
 ## Pricing
 

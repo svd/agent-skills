@@ -33,6 +33,15 @@
         "ref": "plugin-v0.4.1"
       },
       "description": "Turn any MCP server into typed Python you own — one async def per tool, return types probed from real responses (skills: generate-mcp-wrappers, generate-mcp-runner)."
+    },
+    {
+      "name": "mgraphctl",
+      "source": {
+        "source": "github",
+        "repo": "svd/mgraphctl",
+        "ref": "mgraphctl--v0.1.0"
+      },
+      "description": "Work with Microsoft 365 — Outlook mail and calendar, Teams chats and channels, presence, meetings and transcripts, SharePoint, OneDrive, OneNote, Planner, To Do, people and org chart — through the Microsoft Graph API (Python CLI run with uv)."
     }
   ]
 }
