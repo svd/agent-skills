@@ -38,6 +38,9 @@ HISTORY = CLAUDE / "history.jsonl"
 # More specific keys must come before the generic family key -- "sonnet-5" before "sonnet",
 # or every Sonnet 5 session is silently priced at the Sonnet 4.x rate. Do not sort this dict.
 PRICING = {
+    # Fable/Mythos 5.1 differ from 5.0 only in cache reads: 0.025x base input, not 0.1x.
+    "fable-5-1":  {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 0.25},
+    "mythos-5-1": {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 0.25},
     "fable":    {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
     "mythos":   {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
     "opus":     {"input": 5.0,  "output": 25.0,  "cache_write": 6.25,  "cache_read": 0.50},

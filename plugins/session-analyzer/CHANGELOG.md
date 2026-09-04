@@ -2,6 +2,14 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Pricing tiers for Claude Fable 5.1 and Mythos 5.1 (`fable-5-1`, `mythos-5-1`), placed ahead
+  of the `fable`/`mythos` keys. Same $10/$50 input/output and $12.50 cache write as 5.0, but
+  cache reads are $0.25/MTok (0.025x base input) instead of $1.00.
+
 ## [0.6.0] - 2026-08-11
 
 ### Changed
