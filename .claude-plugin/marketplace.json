@@ -39,7 +39,7 @@
       "source": {
         "source": "github",
         "repo": "svd/mgraphctl",
-        "ref": "mgraphctl--v0.2.1"
+        "ref": "mgraphctl--v0.4.0"
       },
       "description": "Work with Microsoft 365 — Outlook mail and calendar, Teams chats and channels, presence, meetings and transcripts, SharePoint, OneDrive, OneNote, Planner, To Do, people and org chart — through the Microsoft Graph API (Python CLI run with uv)."
     }
