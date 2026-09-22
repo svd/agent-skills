@@ -39,6 +39,7 @@ Cache write = 1.25× input, cache read = 0.1× input (standard Anthropic prompt-
 | `mythos-5-1` | 10 | 50 | 12.50 | 0.25 |
 | `fable` | 10 | 50 | 12.50 | 1.00 |
 | `mythos` | 10 | 50 | 12.50 | 1.00 |
+| `opus-5-5` | 4 | 20 | 5.00 | 0.20 |
 | `opus` | 5 | 25 | 6.25 | 0.50 |
 | `sonnet-5` | 2 | 10 | 2.50 | 0.20 |
 | `sonnet` | 3 | 15 | 3.75 | 0.30 |
@@ -47,10 +48,11 @@ Cache write = 1.25× input, cache read = 0.1× input (standard Anthropic prompt-
 Row order matters: the first key that is a substring of the model id wins, so `sonnet-5` must
 precede `sonnet` — otherwise Sonnet 5 sessions are priced at the Sonnet 4.x rate, and
 `fable-5-1`/`mythos-5-1` must precede `fable`/`mythos` — otherwise 5.1 cache reads are priced
-at the 5.0 rate (4x too high).
+at the 5.0 rate (4x too high), and `opus-5-5` must precede `opus` — otherwise Opus 5.5 is
+priced at the older Opus rate.
 
-Covers Fable 5/5.1, Mythos 5/5.1, Opus 4.5–4.8, Sonnet 5, Sonnet 4.5/4.6, Haiku 4.5. `opus` rates are the
-current Opus 4.5+ prices; the deprecated Opus 4 / 4.1 billed at 15/75 and still match the
+Covers Fable 5/5.1, Mythos 5/5.1, Opus 5.5, Opus 5, Opus 4.5–4.8, Sonnet 5, Sonnet 4.5/4.6, Haiku 4.5.
+`opus` rates are the Opus 4.5–5 prices (Opus 5.5 has its own cheaper `opus-5-5` tier); the deprecated Opus 4 / 4.1 billed at 15/75 and still match the
 `opus` key, so their cost would be under-reported. Models not matching any key (e.g.
 `glm-5.1`, `<synthetic>`) are reported tokens-only and excluded from the dollar total.
 Update `PRICING` in `scripts/projects.py` if rates change.

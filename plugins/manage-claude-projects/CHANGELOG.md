@@ -2,6 +2,15 @@
 
 All notable changes to the `manage-claude-projects` plugin are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Claude Opus 5.5 cost estimates. Its model id matched the generic `opus` key, which prices it
+  at the Opus 4.5–5 rate ($5/$25, cache write $6.25, cache read $0.50/MTok) instead of the
+  actual $4/$20, cache write $5.00, cache read $0.20/MTok (0.05x base input). Added an
+  `opus-5-5` tier ahead of `opus`.
+
 ## [0.1.2] - 2026-09-04
 
 ### Fixed
