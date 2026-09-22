@@ -490,9 +490,9 @@ def extract_agent_spawns(lines):
 
 
 # Per-MTok USD. Matched by substring on the model id; unmatched models are unpriced.
-# Cache write = 1.25x input, cache read = 0.1x input (standard Anthropic prompt-cache rates).
-# "cache_write" is the default 5-minute-TTL rate; 1-hour-TTL writes bill at
-# CACHE_WRITE_1H_MULT x input instead (see estimate_cost).
+# Cache write = 1.25x input for the default 5-minute TTL ("cache_write"), 2x input for the
+# 1-hour TTL ("cache_write_1h"); cache read = 0.1x input (standard Anthropic prompt-cache rates).
+# Keep in sync with projects.py.
 #
 # Insertion order is load-bearing: the first key that is a substring of the model id wins,
 # in both _match_price() and the totals["pricing_tier"] lookup. More specific keys must come
@@ -501,25 +501,22 @@ def extract_agent_spawns(lines):
 # this dict.
 PRICING = {
     # Fable/Mythos 5.1 differ from 5.0 only in cache reads: 0.025x base input, not 0.1x.
-    "fable-5-1":  {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_read": 0.25},
-    "mythos-5-1": {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_read": 0.25},
-    "fable":    {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
-    "mythos":   {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
+    "fable-5-1":  {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 0.25},
+    "mythos-5-1": {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 0.25},
+    "fable":    {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00},
+    "mythos":   {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00},
     # Opus 5.5 cache reads are 0.05x base input, not 0.1x.
-    "opus-5-5": {"input": 4.0,   "output": 20.0,  "cache_write": 5.00,  "cache_read": 0.20},
-    "opus":     {"input": 5.0,   "output": 25.0,  "cache_write": 6.25,  "cache_read": 0.50},
-    "sonnet-5": {"input": 2.0,   "output": 10.0,  "cache_write": 2.50,  "cache_read": 0.20},
-    "sonnet":   {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
-    "haiku":    {"input": 1.0,   "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
+    "opus-5-5": {"input": 4.0,   "output": 20.0,  "cache_write": 5.00,  "cache_write_1h": 8.00,  "cache_read": 0.20},
+    "opus":     {"input": 5.0,   "output": 25.0,  "cache_write": 6.25,  "cache_write_1h": 10.00, "cache_read": 0.50},
+    "sonnet-5": {"input": 2.0,   "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
+    "sonnet":   {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_write_1h": 6.00,  "cache_read": 0.30},
+    "haiku":    {"input": 1.0,   "output": 5.0,   "cache_write": 1.25,  "cache_write_1h": 2.00,  "cache_read": 0.10},
 }
-
-# 1-hour-TTL cache writes bill at 2x base input (vs. 1.25x for the 5-minute TTL).
-CACHE_WRITE_1H_MULT = 2.0
 
 # Sonnet 5 introductory pricing, effective through 2026-08-31 (inclusive).
 # Applied only when a session's own start time falls in the window; standard
 # PRICING["sonnet"] used otherwise.
-# SONNET_INTRO_PRICING = {"input": 2.0, "output": 10.0, "cache_write": 2.50, "cache_read": 0.20}
+# SONNET_INTRO_PRICING = {"input": 2.0, "output": 10.0, "cache_write": 2.50, "cache_write_1h": 4.00, "cache_read": 0.20}
 # SONNET_INTRO_START = datetime(2026, 7, 1, tzinfo=timezone.utc)
 # SONNET_INTRO_END = datetime(2026, 9, 1, tzinfo=timezone.utc)  # exclusive -> Aug 31 fully included
 
@@ -547,7 +544,7 @@ def estimate_cost(usage, model_str, session_ts=None):
         usage["input_tokens"] * p["input"] / M
         + usage["output_tokens"] * p["output"] / M
         + cw_5m * p["cache_write"] / M
-        + cw_1h * p["input"] * CACHE_WRITE_1H_MULT / M
+        + cw_1h * p["cache_write_1h"] / M
         + usage["cache_read_input_tokens"] * p["cache_read"] / M,
         4,
     )

@@ -84,18 +84,18 @@ Trigger phrases: "check my inbox", "what meetings do I have", "send a Teams mess
 ## Pricing
 
 Both plugins use the same pricing table (USD per 1M tokens), matched by substring on the
-model id. Cache write = 1.25× input, cache read = 0.1× input (0.025× on Fable/Mythos 5.1, 0.05× on Opus 5.5).
-The cache-write column is the default 5-minute-TTL rate; 1-hour-TTL writes are billed at 2× input:
+model id. Cache write = 1.25× input for the default 5-minute TTL, 2× input for the 1-hour TTL;
+cache read = 0.1× input (0.025× on Fable/Mythos 5.1, 0.05× on Opus 5.5):
 
-| Model                     | Input | Output | Cache write | Cache read |
-|---------------------------|-------|--------|-------------|------------|
-| fable-5-1 / mythos-5-1    | 10.00 | 50.00  | 12.50       | 0.25       |
-| fable / mythos            | 10.00 | 50.00  | 12.50       | 1.00       |
-| opus-5-5                  | 4.00  | 20.00  | 5.00        | 0.20       |
-| opus                      | 5.00  | 25.00  | 6.25        | 0.50       |
-| sonnet-5                  | 2.00  | 10.00  | 2.50        | 0.20       |
-| sonnet                    | 3.00  | 15.00  | 3.75        | 0.30       |
-| haiku                     | 1.00  | 5.00   | 1.25        | 0.10       |
+| Model                     | Input | Output | Cache write 5m | Cache write 1h | Cache read |
+|---------------------------|-------|--------|----------------|----------------|------------|
+| fable-5-1 / mythos-5-1    | 10.00 | 50.00  | 12.50          | 20.00          | 0.25       |
+| fable / mythos            | 10.00 | 50.00  | 12.50          | 20.00          | 1.00       |
+| opus-5-5                  | 4.00  | 20.00  | 5.00           | 8.00           | 0.20       |
+| opus                      | 5.00  | 25.00  | 6.25           | 10.00          | 0.50       |
+| sonnet-5                  | 2.00  | 10.00  | 2.50           | 4.00           | 0.20       |
+| sonnet                    | 3.00  | 15.00  | 3.75           | 6.00           | 0.30       |
+| haiku                     | 1.00  | 5.00   | 1.25           | 2.00           | 0.10       |
 
 Covers Fable 5/5.1, Mythos 5/5.1, Opus 5.5, Opus 5, Opus 4.5–4.8, Sonnet 5, Sonnet 4.5/4.6, Haiku 4.5
 (`opus` = Opus 4.5–5 rate). Row order matters — the first key that is a substring of the model id

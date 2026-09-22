@@ -559,6 +559,8 @@ def main():
           c5m == 5.0, str(c5m))
     check("1h cache: 1-hour writes priced at 2x input", c1h == 8.0, str(c1h))
     check("1h cache: mixed writes split by TTL", cmix == 13.0, str(cmix))
+    bad_1h = [k for k, p in ps.PRICING.items() if p.get("cache_write_1h") != 2 * p["input"]]
+    check("1h cache: every PRICING row has cache_write_1h = 2x input", not bad_1h, str(bad_1h))
 
     failed =[r for r in results if not r[1]]
     print()

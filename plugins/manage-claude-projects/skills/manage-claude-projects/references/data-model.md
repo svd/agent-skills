@@ -31,19 +31,20 @@ Each assistant line in a transcript carries `message.usage` with
 `cache_read_input_tokens`, and `message.model`. `deepstats` sums these per model.
 
 Static price table (USD per 1M tokens), matched by substring on the model id.
-Cache write = 1.25× input, cache read = 0.1× input (standard Anthropic prompt-cache rates):
+Cache write = 1.25× input for the default 5-minute TTL, 2× input for the 1-hour TTL; cache
+read = 0.1× input (standard Anthropic prompt-cache rates):
 
-| Match | Input | Output | Cache write | Cache read |
-|---|---|---|---|---|
-| `fable-5-1` | 10 | 50 | 12.50 | 0.25 |
-| `mythos-5-1` | 10 | 50 | 12.50 | 0.25 |
-| `fable` | 10 | 50 | 12.50 | 1.00 |
-| `mythos` | 10 | 50 | 12.50 | 1.00 |
-| `opus-5-5` | 4 | 20 | 5.00 | 0.20 |
-| `opus` | 5 | 25 | 6.25 | 0.50 |
-| `sonnet-5` | 2 | 10 | 2.50 | 0.20 |
-| `sonnet` | 3 | 15 | 3.75 | 0.30 |
-| `haiku` | 1 | 5 | 1.25 | 0.10 |
+| Match | Input | Output | Cache write 5m | Cache write 1h | Cache read |
+|---|---|---|---|---|---|
+| `fable-5-1` | 10 | 50 | 12.50 | 20.00 | 0.25 |
+| `mythos-5-1` | 10 | 50 | 12.50 | 20.00 | 0.25 |
+| `fable` | 10 | 50 | 12.50 | 20.00 | 1.00 |
+| `mythos` | 10 | 50 | 12.50 | 20.00 | 1.00 |
+| `opus-5-5` | 4 | 20 | 5.00 | 8.00 | 0.20 |
+| `opus` | 5 | 25 | 6.25 | 10.00 | 0.50 |
+| `sonnet-5` | 2 | 10 | 2.50 | 4.00 | 0.20 |
+| `sonnet` | 3 | 15 | 3.75 | 6.00 | 0.30 |
+| `haiku` | 1 | 5 | 1.25 | 2.00 | 0.10 |
 
 Row order matters: the first key that is a substring of the model id wins, so `sonnet-5` must
 precede `sonnet` — otherwise Sonnet 5 sessions are priced at the Sonnet 4.x rate, and

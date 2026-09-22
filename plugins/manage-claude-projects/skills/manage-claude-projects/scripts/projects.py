@@ -32,7 +32,9 @@ BACKUPS = CLAUDE / "backups"
 HISTORY = CLAUDE / "history.jsonl"
 
 # Per-MTok USD. Matched by substring on the model id; unmatched models report tokens only.
-# Cache write = 1.25x input, cache read = 0.1x input (standard Anthropic prompt-cache rates).
+# Cache write = 1.25x input for the default 5-minute TTL ("cache_write"), 2x input for the
+# 1-hour TTL ("cache_write_1h"); cache read = 0.1x input (standard Anthropic prompt-cache rates).
+# Keep in sync with parse_session.py.
 #
 # Insertion order is load-bearing: the first key that is a substring of the model id wins.
 # More specific keys must come before the generic family key -- "sonnet-5" before "sonnet",
@@ -40,21 +42,17 @@ HISTORY = CLAUDE / "history.jsonl"
 # older family rate. Do not sort this dict.
 PRICING = {
     # Fable/Mythos 5.1 differ from 5.0 only in cache reads: 0.025x base input, not 0.1x.
-    "fable-5-1":  {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 0.25},
-    "mythos-5-1": {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 0.25},
-    "fable":    {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
-    "mythos":   {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_read": 1.00},
+    "fable-5-1":  {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 0.25},
+    "mythos-5-1": {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 0.25},
+    "fable":    {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00},
+    "mythos":   {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00},
     # Opus 5.5 cache reads are 0.05x base input, not 0.1x.
-    "opus-5-5": {"input": 4.0,  "output": 20.0,  "cache_write": 5.00,  "cache_read": 0.20},
-    "opus":     {"input": 5.0,  "output": 25.0,  "cache_write": 6.25,  "cache_read": 0.50},
-    "sonnet-5": {"input": 2.0,  "output": 10.0,  "cache_write": 2.50,  "cache_read": 0.20},
-    "sonnet":   {"input": 3.0,  "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
-    "haiku":    {"input": 1.0,  "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
+    "opus-5-5": {"input": 4.0,  "output": 20.0,  "cache_write": 5.00,  "cache_write_1h": 8.00,  "cache_read": 0.20},
+    "opus":     {"input": 5.0,  "output": 25.0,  "cache_write": 6.25,  "cache_write_1h": 10.00, "cache_read": 0.50},
+    "sonnet-5": {"input": 2.0,  "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
+    "sonnet":   {"input": 3.0,  "output": 15.0,  "cache_write": 3.75,  "cache_write_1h": 6.00,  "cache_read": 0.30},
+    "haiku":    {"input": 1.0,  "output": 5.0,   "cache_write": 1.25,  "cache_write_1h": 2.00,  "cache_read": 0.10},
 }
-
-# "cache_write" above is the default 5-minute-TTL rate; 1-hour-TTL writes bill at
-# 2x base input instead. Keep in sync with parse_session.py.
-CACHE_WRITE_1H_MULT = 2.0
 
 
 def encode_path(p: str) -> str:
@@ -293,7 +291,7 @@ def cmd_deepstats(args):
                 m["input_tokens"] * price["input"]
                 + m["output_tokens"] * price["output"]
                 + (m["cache_creation_input_tokens"] - cw_1h) * price["cache_write"]
-                + cw_1h * price["input"] * CACHE_WRITE_1H_MULT
+                + cw_1h * price["cache_write_1h"]
                 + m["cache_read_input_tokens"] * price["cache_read"]
             ) / 1_000_000
             m["est_cost_usd"] = round(cost, 4)
