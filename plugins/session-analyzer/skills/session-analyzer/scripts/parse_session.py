@@ -239,6 +239,18 @@ def infer_role(lines):
     return stem, "brief_heuristic", excerpt
 
 
+def _add_usage(total, usage):
+    """Add one API request's `usage` into `total`, including the 1-hour-TTL share of
+    its cache writes (nested under usage.cache_creation; absent on older records,
+    which then price entirely at the 5-minute rate)."""
+    for k in ("input_tokens", "output_tokens",
+              "cache_creation_input_tokens", "cache_read_input_tokens"):
+        total[k] += usage.get(k) or 0
+    total["cache_creation_1h_input_tokens"] += (
+        (usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0
+    )
+
+
 def analyze_records(lines, ts_key="timestamp", agent_type=None, agent_name=None,
                      session_id=None, path=None, extra_skills=None):
     """
@@ -254,30 +266,25 @@ def analyze_records(lines, ts_key="timestamp", agent_type=None, agent_name=None,
         "output_tokens": 0,
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
+        # Subset of cache_creation_input_tokens written with the 1-hour TTL,
+        # which bills at a higher rate than the default 5-minute TTL.
+        "cache_creation_1h_input_tokens": 0,
     }
     model = None
-    turns = 0
     skills_in_context = list(extra_skills or [])
     started_at = None
     ended_at = None
-    # Desktop's audit log emits one "assistant" JSONL record per streamed content
-    # block (thinking, tool_use, text, ...), all sharing one snake_case "request_id"
-    # and each carrying an identical *copy* of that call's usage — not a per-block
-    # delta. Summing every record double/triple-counts usage. Claude Code has no
-    # such field (its request id is camelCase "requestId" at the envelope level, a
-    # different key), so this dedup is a no-op there. Only usage/turns are deduped;
-    # tool_use content is extracted from every record since the tool_use block
-    # itself typically appears on only one of the duplicate records.
-    #
-    # Some Desktop records additionally omit "request_id" (null) while still
-    # duplicating via a shared message.id with identical usage (verified on real
-    # logs) — fall back to message.id as the dedup key, but ONLY for Desktop
-    # (ts_key == "_audit_timestamp"). Claude Code assistant records legitimately
-    # reuse the same message.id across genuinely separate JSONL turns (verified:
-    # applying this fallback there corrupted turns/usage by ~2x on a real
-    # transcript), so it must never apply to the Claude Code path.
-    is_desktop = ts_key == "_audit_timestamp"
-    counted_dedup_keys = set()
+    # Both formats emit one "assistant" JSONL record per streamed content block
+    # (thinking, tool_use, text, ...) of a single API request, and every copy repeats
+    # that request's input/cache usage — summing every record double/triple-counts
+    # it. The request id is camelCase "requestId" in Claude Code and snake_case
+    # "request_id" in Desktop; some records of either format have neither, and those
+    # still share message.id with the other copies (verified on real transcripts: a
+    # message.id never spans two request ids). output_tokens can grow across copies,
+    # so the LAST copy's usage is kept. Only usage/turns are deduped; tool_use
+    # content is extracted from every record since each block appears on only one.
+    usage_by_request = {}
+    keyless_usages = []
 
     for entry in lines:
         ts = entry.get(ts_key)
@@ -290,18 +297,14 @@ def analyze_records(lines, ts_key="timestamp", agent_type=None, agent_name=None,
 
         if t == "assistant":
             msg = entry.get("message", {})
-            dedup_key = entry.get("request_id")
-            if dedup_key is None and is_desktop:
-                dedup_key = msg.get("id")
-            if dedup_key is None or dedup_key not in counted_dedup_keys:
-                if dedup_key is not None:
-                    counted_dedup_keys.add(dedup_key)
-                turns += 1
-                if not model:
-                    model = msg.get("model")
-                usage = msg.get("usage", {})
-                for k in usage_total:
-                    usage_total[k] += usage.get(k, 0)
+            if not model:
+                model = msg.get("model")
+            dedup_key = entry.get("requestId") or entry.get("request_id") or msg.get("id")
+            usage = msg.get("usage", {})
+            if dedup_key is None:
+                keyless_usages.append(usage)
+            else:
+                usage_by_request[dedup_key] = usage
             for item in msg.get("content", []):
                 if isinstance(item, dict) and item.get("type") == "tool_use":
                     tool_calls.append({
@@ -337,6 +340,11 @@ def analyze_records(lines, ts_key="timestamp", agent_type=None, agent_name=None,
                     re.MULTILINE,
                 ):
                     skills_in_context.append(m)
+
+    request_usages = list(usage_by_request.values()) + keyless_usages
+    turns = len(request_usages)
+    for usage in request_usages:
+        _add_usage(usage_total, usage)
 
     annotated = []
     errors = []
@@ -483,6 +491,8 @@ def extract_agent_spawns(lines):
 
 # Per-MTok USD. Matched by substring on the model id; unmatched models are unpriced.
 # Cache write = 1.25x input, cache read = 0.1x input (standard Anthropic prompt-cache rates).
+# "cache_write" is the default 5-minute-TTL rate; 1-hour-TTL writes bill at
+# CACHE_WRITE_1H_MULT x input instead (see estimate_cost).
 #
 # Insertion order is load-bearing: the first key that is a substring of the model id wins,
 # in both _match_price() and the totals["pricing_tier"] lookup. More specific keys must come
@@ -502,6 +512,9 @@ PRICING = {
     "sonnet":   {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_read": 0.30},
     "haiku":    {"input": 1.0,   "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
 }
+
+# 1-hour-TTL cache writes bill at 2x base input (vs. 1.25x for the 5-minute TTL).
+CACHE_WRITE_1H_MULT = 2.0
 
 # Sonnet 5 introductory pricing, effective through 2026-08-31 (inclusive).
 # Applied only when a session's own start time falls in the window; standard
@@ -528,10 +541,13 @@ def estimate_cost(usage, model_str, session_ts=None):
     if p is None:
         return None
     M = 1_000_000
+    cw_1h = usage.get("cache_creation_1h_input_tokens", 0)
+    cw_5m = usage["cache_creation_input_tokens"] - cw_1h
     return round(
         usage["input_tokens"] * p["input"] / M
         + usage["output_tokens"] * p["output"] / M
-        + usage["cache_creation_input_tokens"] * p["cache_write"] / M
+        + cw_5m * p["cache_write"] / M
+        + cw_1h * p["input"] * CACHE_WRITE_1H_MULT / M
         + usage["cache_read_input_tokens"] * p["cache_read"] / M,
         4,
     )
@@ -582,6 +598,7 @@ def analyze_workflow(wf_id: str, wf_dir: Path, meta_file: Path):
         "output_tokens": 0,
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
+        "cache_creation_1h_input_tokens": 0,
     }
     errors = []
     phase_rollup = {}
@@ -936,12 +953,13 @@ def build_result(session_id, session_dir, main_data, subagent_data, workflow_dat
             "output_tokens": 0,
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
+            "cache_creation_1h_input_tokens": 0,
             "sessions": 0,
             "estimated_cost_usd": 0.0,
             "priced": True,
         })
-        for k in ("input_tokens", "output_tokens",
-                  "cache_creation_input_tokens", "cache_read_input_tokens"):
+        for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens",
+                  "cache_read_input_tokens", "cache_creation_1h_input_tokens"):
             b[k] += s["usage"].get(k, 0)
         b["sessions"] += 1
         c = estimate_cost(s["usage"], m, s.get("started_at"))
@@ -971,13 +989,14 @@ def build_result(session_id, session_dir, main_data, subagent_data, workflow_dat
             "output_tokens": 0,
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
+            "cache_creation_1h_input_tokens": 0,
             "instances": 0,
             "models": [],
             "estimated_cost_usd": 0.0,
             "priced": True,
         })
-        for k in ("input_tokens", "output_tokens",
-                  "cache_creation_input_tokens", "cache_read_input_tokens"):
+        for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens",
+                  "cache_read_input_tokens", "cache_creation_1h_input_tokens"):
             b[k] += s["usage"].get(k, 0)
         b["instances"] += 1
         m = s.get("model") or "unknown"
@@ -1284,9 +1303,10 @@ def analyze_desktop_run(records, conversation_id, source_path, run_index):
     # Prefer the result event's modelUsage as the run TOTAL's usage/cost source.
     # Empirically, Desktop emits one "assistant" JSONL record per streamed content
     # block (thinking, tool_use, text, ...) rather than one per completed turn, and
-    # even after deduping by request_id, summing per-record usage still
+    # even after deduping to one usage per request, the per-record usage still
     # undercounts output_tokens by ~4-5x against the result event's modelUsage on
-    # inspected samples. The per-record sum (main_session/subagent_sessions usage,
+    # inspected samples (every copy of a request carries only a partial
+    # output_tokens; input/cache counts do match). The per-record sum (main_session/subagent_sessions usage,
     # by_agent split) is kept as-is for its correctly-attributed relative shape
     # (main vs. subagent, tool-call sequence, errors) but is NOT trustworthy as an
     # absolute total, so it is not used for totals/by_model when ground truth exists.

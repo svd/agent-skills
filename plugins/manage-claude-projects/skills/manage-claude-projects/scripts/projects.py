@@ -52,6 +52,10 @@ PRICING = {
     "haiku":    {"input": 1.0,  "output": 5.0,   "cache_write": 1.25,  "cache_read": 0.10},
 }
 
+# "cache_write" above is the default 5-minute-TTL rate; 1-hour-TTL writes bill at
+# 2x base input instead. Keep in sync with parse_session.py.
+CACHE_WRITE_1H_MULT = 2.0
+
 
 def encode_path(p: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "-", p)
@@ -241,6 +245,11 @@ def cmd_deepstats(args):
         sub = sd / mf.stem / "subagents"
         if sub.is_dir():
             scan_files.extend(sorted(sub.glob("agent-*.jsonl")))
+    # Claude Code writes one record per content block of a single API request, and
+    # every copy repeats that request's input/cache usage, so records are deduped by
+    # request id ("requestId"; "request_id" in Desktop-style logs; message.id when
+    # neither is set). output_tokens can grow across copies, so the last copy wins.
+    requests = {}
     for f in scan_files:
         for line in _iter_lines(f):
             try:
@@ -255,16 +264,23 @@ def cmd_deepstats(args):
             usage = msg.get("usage")
             if not usage:
                 continue
-            model = msg.get("model") or "unknown"
-            m = by_model.setdefault(model, {
-                "input_tokens": 0, "output_tokens": 0,
-                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-                "messages": 0,
-            })
-            m["messages"] += 1
-            for k in ("input_tokens", "output_tokens",
-                      "cache_creation_input_tokens", "cache_read_input_tokens"):
-                m[k] += usage.get(k) or 0
+            key = d.get("requestId") or d.get("request_id") or msg.get("id") or object()
+            requests[key] = (msg.get("model") or "unknown", usage)
+
+    for model, usage in requests.values():
+        m = by_model.setdefault(model, {
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_creation_1h_input_tokens": 0,
+            "messages": 0,
+        })
+        m["messages"] += 1
+        for k in ("input_tokens", "output_tokens",
+                  "cache_creation_input_tokens", "cache_read_input_tokens"):
+            m[k] += usage.get(k) or 0
+        m["cache_creation_1h_input_tokens"] += (
+            (usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0
+        )
 
     total_cost = 0.0
     priced_any = False
@@ -272,10 +288,12 @@ def cmd_deepstats(args):
     for model, m in by_model.items():
         price = _match_price(model)
         if price:
+            cw_1h = m["cache_creation_1h_input_tokens"]
             cost = (
                 m["input_tokens"] * price["input"]
                 + m["output_tokens"] * price["output"]
-                + m["cache_creation_input_tokens"] * price["cache_write"]
+                + (m["cache_creation_input_tokens"] - cw_1h) * price["cache_write"]
+                + cw_1h * price["input"] * CACHE_WRITE_1H_MULT
                 + m["cache_read_input_tokens"] * price["cache_read"]
             ) / 1_000_000
             m["est_cost_usd"] = round(cost, 4)

@@ -84,7 +84,8 @@ Trigger phrases: "check my inbox", "what meetings do I have", "send a Teams mess
 ## Pricing
 
 Both plugins use the same pricing table (USD per 1M tokens), matched by substring on the
-model id. Cache write = 1.25× input, cache read = 0.1× input (0.025× on Fable/Mythos 5.1, 0.05× on Opus 5.5):
+model id. Cache write = 1.25× input, cache read = 0.1× input (0.025× on Fable/Mythos 5.1, 0.05× on Opus 5.5).
+The cache-write column is the default 5-minute-TTL rate; 1-hour-TTL writes are billed at 2× input:
 
 | Model                     | Input | Output | Cache write | Cache read |
 |---------------------------|-------|--------|-------------|------------|

@@ -86,7 +86,8 @@ orphan session dirs with no config entry (safe cleanup candidates).
 
 Run `deepstats --path "<path>"`. It scans every transcript and aggregates token
 usage **per model**, then estimates cost from a static Claude price table
-(cache-write billed at 1.25× input, cache-read at 0.1× input). Present:
+(cache-write billed at 1.25× input, or 2× input for 1-hour-TTL writes; cache-read at 0.1× input).
+Usage is counted once per API request, and `messages` is the request count. Present:
 
 - A per-model row: input / output / cache tokens and estimated `$`
 - **Total estimated cost** across priced models

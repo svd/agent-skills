@@ -2,6 +2,20 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Claude Code costs were overstated about 2x (1.1x to 14x per session, median 1.9x). A
+  transcript writes one `assistant` record per content block, and every copy repeats the
+  request's full usage. The dedup only read Desktop's snake_case `request_id`, but Claude Code
+  uses `requestId`, so nothing was deduped. Usage is now counted once per request (`requestId`,
+  else `request_id`, else `message.id`) for both formats, keeping the last copy, because
+  `output_tokens` is only final there. `turns` now counts API requests, not records.
+- 1-hour-TTL cache writes (`usage.cache_creation.ephemeral_1h_input_tokens`) are now priced at
+  2x base input instead of the 5-minute 1.25x rate. Usage objects gain a
+  `cache_creation_1h_input_tokens` field.
+
 ## [0.6.2] - 2026-09-23
 
 ### Fixed

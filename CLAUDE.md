@@ -107,7 +107,9 @@ care with `remove`, the only destructive subcommand: dry-run first.
 ## Pricing table (shared across manage-claude-projects and session-analyzer)
 
 Both `projects.py` (`deepstats`) and `parse_session.py` embed the same static USD-per-1M-token
-pricing table, matched by substring against the model id (cache write = 1.25× input, cache read =
-0.1× input). If you update pricing in one script, update the other to match — see the table in
-`README.md`. Non-Claude models (e.g. `glm-5.1`) have no matching tier and are reported as
+pricing table, matched by substring against the model id (cache write = 1.25× input, or 2× input
+for 1-hour-TTL writes; cache read = 0.1× input). Both dedupe usage to one row per API request
+(`requestId`, else `request_id`, else `message.id`; last copy wins), because transcripts write
+one record per content block and each repeats the request's usage. If you update pricing in one
+script, update the other to match — see the table in `README.md`. Non-Claude models (e.g. `glm-5.1`) have no matching tier and are reported as
 "tokens only", excluded from cost totals.

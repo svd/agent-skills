@@ -37,16 +37,20 @@ def rec_user(text, ts="2026-01-01T00:00:00.000Z", **extra):
 
 
 def rec_assistant(content, ts="2026-01-01T00:01:00.000Z", model="claude-sonnet-5",
-                  request_id=None, **extra):
+                  request_id=None, usage=None, msg_id=None, **extra):
+    # Claude Code stores the request id as camelCase "requestId" on the envelope
+    # (Desktop uses snake_case "request_id" — see the Desktop dedup check).
     return {
         "type": "assistant",
         "timestamp": ts,
-        "request_id": request_id,
+        "requestId": request_id,
         "message": {
+            "id": msg_id,
             "model": model,
             "content": content,
-            "usage": {"input_tokens": 10, "output_tokens": 5,
-                      "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            "usage": usage or {"input_tokens": 10, "output_tokens": 5,
+                               "cache_creation_input_tokens": 0,
+                               "cache_read_input_tokens": 0},
         },
         **extra,
     }
@@ -485,7 +489,78 @@ def main():
         check("main: teammate target adopts nothing (leads no team)",
               as_teammate["teammate_sessions"] == [])
 
-    failed = [r for r in results if not r[1]]
+    # ---------------------------------------------------------------
+    # Usage dedup: Claude Code writes one assistant record per content block,
+    # each repeating the request's input/cache usage; output_tokens is only
+    # final on the last copy.
+    # ---------------------------------------------------------------
+    def u(out, cw=0, cr=0, inp=1, cw1h=None):
+        d = {"input_tokens": inp, "output_tokens": out,
+             "cache_creation_input_tokens": cw, "cache_read_input_tokens": cr}
+        if cw1h is not None:
+            d["cache_creation"] = {"ephemeral_1h_input_tokens": cw1h,
+                                   "ephemeral_5m_input_tokens": cw - cw1h}
+        return d
+
+    think = [{"type": "thinking", "thinking": "..."}]
+    cc = ps.analyze_records([
+        rec_assistant(think, request_id="req-A", msg_id="m-A", usage=u(2, 100, 1000)),
+        rec_assistant([{"type": "text", "text": "hi"}], request_id="req-A",
+                      msg_id="m-A", usage=u(2, 100, 1000)),
+        rec_assistant([{"type": "tool_use", "id": "tA", "name": "Read", "input": {}}],
+                      request_id="req-A", msg_id="m-A", usage=u(500, 100, 1000)),
+        rec_assistant(think, request_id="req-B", msg_id="m-B", usage=u(7, 10, 2000)),
+    ])
+    check("dedup: Claude Code requestId counts each request once",
+          cc["turns"] == 2, str(cc["turns"]))
+    check("dedup: Claude Code keeps the last copy's output_tokens",
+          cc["usage"]["output_tokens"] == 507, str(cc["usage"]))
+    check("dedup: Claude Code cache usage counted once per request",
+          cc["usage"]["cache_creation_input_tokens"] == 110
+          and cc["usage"]["cache_read_input_tokens"] == 3000, str(cc["usage"]))
+    check("dedup: tool_use still extracted from a duplicate record",
+          [t["name"] for t in cc["tool_calls"]] == ["Read"])
+
+    no_rid = ps.analyze_records([
+        rec_assistant(think, msg_id="m-X", usage=u(3, 50, 400)),
+        rec_assistant(think, msg_id="m-X", usage=u(90, 50, 400)),
+        rec_assistant(think, msg_id="m-Y", usage=u(4, 0, 400)),
+    ])
+    check("dedup: Claude Code falls back to message.id without requestId",
+          no_rid["turns"] == 2 and no_rid["usage"]["output_tokens"] == 94
+          and no_rid["usage"]["cache_read_input_tokens"] == 800, str(no_rid["usage"]))
+
+    def desk(rid, out):
+        r = rec_assistant(think, usage=u(out, 20, 300), msg_id="m-" + rid)
+        del r["requestId"]
+        r["request_id"] = rid
+        r["_audit_timestamp"] = r.pop("timestamp")
+        return r
+    dk = ps.analyze_records([desk("d-1", 1), desk("d-1", 1), desk("d-2", 1)],
+                            ts_key="_audit_timestamp")
+    check("dedup: Desktop snake_case request_id still deduped",
+          dk["turns"] == 2 and dk["usage"]["cache_read_input_tokens"] == 600,
+          str(dk["usage"]))
+
+    # ---------------------------------------------------------------
+    # 1-hour cache writes cost 2x base input, not the 5-minute 1.25x.
+    # ---------------------------------------------------------------
+    M = 1_000_000
+    one_h = ps.analyze_records([rec_assistant(think, request_id="r1", usage=u(0, M, 0, 0, cw1h=M))])
+    check("1h cache: ephemeral_1h split carried into usage",
+          one_h["usage"].get("cache_creation_1h_input_tokens") == M, str(one_h["usage"]))
+    base = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}
+    c5m = ps.estimate_cost({**base, "cache_creation_input_tokens": M}, "claude-opus-5-5")
+    c1h = ps.estimate_cost({**base, "cache_creation_input_tokens": M,
+                            "cache_creation_1h_input_tokens": M}, "claude-opus-5-5")
+    cmix = ps.estimate_cost({**base, "cache_creation_input_tokens": 2 * M,
+                             "cache_creation_1h_input_tokens": M}, "claude-opus-5-5")
+    check("1h cache: 5-minute writes (no split) priced at cache_write",
+          c5m == 5.0, str(c5m))
+    check("1h cache: 1-hour writes priced at 2x input", c1h == 8.0, str(c1h))
+    check("1h cache: mixed writes split by TTL", cmix == 13.0, str(cmix))
+
+    failed =[r for r in results if not r[1]]
     print()
     print(f"{len(results) - len(failed)}/{len(results)} checks passed.")
     if failed:

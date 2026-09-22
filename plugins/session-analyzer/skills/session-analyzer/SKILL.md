@@ -64,7 +64,8 @@ The per-run analysis object shape (used directly for Claude Code, and per-elemen
     "tool_calls": [
       {"seq": 1, "name": "Bash", "input_summary": "...", "result_preview": "...", "is_error": false}
     ],
-    "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+    "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+              "cache_creation_1h_input_tokens": 0},
     "errors": [...],
     "skills_in_context": ["staffing-assistant:staffing-analysis", "caveman:caveman-commit"],
     "started_at": "2026-06-11T16:12:14.966Z",
@@ -127,6 +128,7 @@ The per-run analysis object shape (used directly for Claude Code, and per-elemen
   "totals": {
     "input_tokens": 0, "output_tokens": 0,
     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+    "cache_creation_1h_input_tokens": 0,
     "estimated_cost_usd": 0.0,
     "core_cost_usd": 0.0,
     "cost_scope": "main+subagents+teammates",
@@ -168,6 +170,12 @@ The per-run analysis object shape (used directly for Claude Code, and per-elemen
 }
 ```
 
+`turns` counts API requests, not JSONL records: a transcript writes one `assistant`
+record per content block, each repeating the request's usage, so the parser keeps one
+usage row per request id (the last copy). `cache_creation_1h_input_tokens` is the share
+of `cache_creation_input_tokens` written with the 1-hour cache TTL, priced at 2x base
+input (5-minute writes use the table's 1.25x rate).
+
 Exit code 2 means multiple sessions were found — the JSON lists them; ask the user to pick one.
 
 ### Desktop-only `totals` fields
@@ -179,8 +187,9 @@ For a Desktop run, `totals` carries one extra field, `"usage_source"`:
   `result` event `modelUsage` block, **not** from summing the transcript's
   `assistant` records. Desktop emits one `assistant` JSONL line per streamed
   content block (thinking, tool_use, text, ...) rather than one per completed
-  turn, so summing them under/over-counts tokens (observed: output tokens off by
-  ~4-5x even after deduping repeated `request_id`s). The `result` event's
+  turn, and every copy of a request carries only a partial `output_tokens`, so the
+  transcript sum undercounts output (observed: ~4-5x) even after keeping one usage
+  row per request. Input and cache counts do match. The `result` event's
   `modelUsage` is authoritative — use it. The (unreliable) transcript sum is kept
   at `totals["transcript_estimate_usd"]` for reference only; don't report it as
   the cost.
@@ -475,7 +484,8 @@ the main+subagents+workflows subtotal, so a reader comparing against an older re
 can see where the difference comes from.)
 
 *Pricing is per-model — each session/agent is priced at its own model's rates, then
-summed (see Cost by model below). Costs are approximate — actual billing may differ.
+summed (see Cost by model below). 1-hour-TTL cache writes are priced at 2x base
+input; 5-minute writes at the table's cache-write rate. Costs are approximate — actual billing may differ.
 When a workflow ran a different model than the main loop, list both tiers' rates.*
 
 ### Cost by model

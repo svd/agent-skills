@@ -2,6 +2,17 @@
 
 All notable changes to the `manage-claude-projects` plugin are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- `deepstats` overstated cost about 2x. It summed usage from every transcript record, but
+  Claude Code writes one record per content block and each repeats the request's full usage.
+  Usage is now counted once per API request (`requestId`, else `request_id`, else
+  `message.id`), keeping the last copy. `messages` now counts requests.
+- 1-hour-TTL cache writes are now priced at 2x base input instead of the 5-minute 1.25x rate.
+  Each model row gains a `cache_creation_1h_input_tokens` field.
+
 ## [0.1.3] - 2026-09-23
 
 ### Fixed
