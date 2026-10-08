@@ -85,7 +85,7 @@ Trigger phrases: "check my inbox", "what meetings do I have", "send a Teams mess
 
 Both plugins use the same pricing table (USD per 1M tokens), matched by substring on the
 model id. Cache write = 1.25× input for the default 5-minute TTL, 2× input for the 1-hour TTL;
-cache read = 0.1× input (0.025× on Fable/Mythos 5.1, 0.05× on Opus 5.5). Haiku 5.5 rates apply to
+cache read = 0.1× input (0.025× on Fable/Mythos 5.1, 0.05× on Opus 5.5 and Sonnet 5.5). Haiku 5.5 rates apply to
 prompts up to 100K tokens; a longer request bills every token type at 5×:
 
 | Model                     | Input | Output | Cache write 5m | Cache write 1h | Cache read |
@@ -94,7 +94,8 @@ prompts up to 100K tokens; a longer request bills every token type at 5×:
 | fable / mythos            | 10.00 | 50.00  | 12.50          | 20.00          | 1.00       |
 | opus-5-5                  | 4.00  | 20.00  | 5.00           | 8.00           | 0.20       |
 | opus                      | 5.00  | 25.00  | 6.25           | 10.00          | 0.50       |
-| sonnet-5-5 / sonnet-5     | 2.00  | 10.00  | 2.50           | 4.00           | 0.20       |
+| sonnet-5-5                | 2.00  | 10.00  | 2.50           | 4.00           | 0.10       |
+| sonnet-5                  | 2.00  | 10.00  | 2.50           | 4.00           | 0.20       |
 | sonnet                    | 3.00  | 15.00  | 3.75           | 6.00           | 0.30       |
 | haiku-5-5 (≤100K prompt)  | 0.10  | 0.50   | 0.125          | 0.20           | 0.01       |
 | haiku                     | 1.00  | 5.00   | 1.25           | 2.00           | 0.10       |

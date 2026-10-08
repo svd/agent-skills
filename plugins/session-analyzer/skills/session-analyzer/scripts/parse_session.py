@@ -524,10 +524,10 @@ PRICING = {
     "mythos-5-1": {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 0.25},
     "fable":    {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00},
     "mythos":   {"input": 10.0,  "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00},
-    # Opus 5.5 cache reads are 0.05x base input, not 0.1x.
+    # Opus 5.5 and Sonnet 5.5 cache reads are 0.05x base input, not 0.1x.
     "opus-5-5": {"input": 4.0,   "output": 20.0,  "cache_write": 5.00,  "cache_write_1h": 8.00,  "cache_read": 0.20},
     "opus":     {"input": 5.0,   "output": 25.0,  "cache_write": 6.25,  "cache_write_1h": 10.00, "cache_read": 0.50},
-    "sonnet-5-5": {"input": 2.0, "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
+    "sonnet-5-5": {"input": 2.0, "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.10},
     "sonnet-5": {"input": 2.0,   "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
     "sonnet":   {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_write_1h": 6.00,  "cache_read": 0.30},
     # Haiku 5.5 rates are for prompts up to LONG_CONTEXT_THRESHOLD tokens; longer prompts

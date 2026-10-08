@@ -14,6 +14,11 @@ All notable changes to the `manage-claude-projects` plugin are documented here.
 - `deepstats` counts fast-mode requests per model (`fast_requests`) and warns in `note` that
   they are priced at the standard rate.
 
+### Fixed
+
+- Claude Sonnet 5.5 cache reads are priced at $0.10 per MTok (0.05x input, as on Opus 5.5),
+  not $0.20. The `sonnet-5-5` row added in this release overstated them 2x.
+
 ## [0.1.5] - 2026-09-23
 
 ### Changed

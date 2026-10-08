@@ -22,6 +22,11 @@ All notable changes to the `session-analyzer` plugin are documented here.
 - The commented-out Sonnet 5 introductory-pricing block. The $2 / $10 price became Sonnet 5's
   standard rate and the planned September 1 increase was cancelled, so the block was never needed.
 
+### Fixed
+
+- Claude Sonnet 5.5 cache reads are priced at $0.10 per MTok (0.05x input, as on Opus 5.5),
+  not $0.20. The `sonnet-5-5` row added in this release overstated them 2x.
+
 ## [0.6.4] - 2026-09-23
 
 ### Changed
