@@ -2,7 +2,7 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
-## [Unreleased]
+## [0.7.0] - 2026-10-08
 
 ### Added
 
