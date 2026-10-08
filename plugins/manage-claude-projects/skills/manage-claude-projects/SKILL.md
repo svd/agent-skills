@@ -92,6 +92,8 @@ Usage is counted once per API request, and `messages` is the request count. Pres
 - A per-model row: input / output / cache tokens and estimated `$`
 - **Total estimated cost** across priced models
 - Any **unpriced models** (e.g. non-Claude like `glm-5.1`) shown as "tokens only"
+- If any model has `fast_requests` > 0, repeat the `note` field's fast-mode warning: those
+  requests are priced at the standard rate, so the total is understated
 
 Always state that the dollar figure is an **estimate** from token counts, not a
 billed amount, and that non-Claude models are excluded from the total.

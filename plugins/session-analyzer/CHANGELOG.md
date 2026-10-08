@@ -2,6 +2,26 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Claude Haiku 5.5 pricing (`haiku-5-5`: $0.10 / $0.50 per MTok, cache read $0.01). Haiku 5.5
+  sessions were previously matched by the generic `haiku` row and overstated 10x. Requests whose
+  prompt (input + cache writes + cache reads) exceeds 100K tokens are priced at Haiku 5.5's
+  long-context rate (5x, $0.50 / $2.50). Usage objects gain `long_context_*` counters for that
+  subset.
+- An explicit `sonnet-5-5` row. Costs are unchanged: Sonnet 5.5 was already matched by
+  `sonnet-5` at the same rates.
+- Fast-mode requests (`usage.speed == "fast"`) are counted in `usage.fast_requests`. When any are
+  present, `totals.fast_mode_note` says the cost is understated, because they are priced at the
+  standard rate.
+
+### Removed
+
+- The commented-out Sonnet 5 introductory-pricing block. The $2 / $10 price became Sonnet 5's
+  standard rate and the planned September 1 increase was cancelled, so the block was never needed.
+
 ## [0.6.4] - 2026-09-23
 
 ### Changed

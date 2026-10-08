@@ -34,7 +34,8 @@ HISTORY = CLAUDE / "history.jsonl"
 # Per-MTok USD. Matched by substring on the model id; unmatched models report tokens only.
 # Cache write = 1.25x input for the default 5-minute TTL ("cache_write"), 2x input for the
 # 1-hour TTL ("cache_write_1h"); cache read = 0.1x input (standard Anthropic prompt-cache rates).
-# Keep in sync with parse_session.py.
+# Optional "long_context_multiplier" scales every rate for requests whose prompt exceeds
+# LONG_CONTEXT_THRESHOLD tokens. Keep in sync with parse_session.py.
 #
 # Insertion order is load-bearing: the first key that is a substring of the model id wins.
 # More specific keys must come before the generic family key -- "sonnet-5" before "sonnet",
@@ -49,10 +50,19 @@ PRICING = {
     # Opus 5.5 cache reads are 0.05x base input, not 0.1x.
     "opus-5-5": {"input": 4.0,  "output": 20.0,  "cache_write": 5.00,  "cache_write_1h": 8.00,  "cache_read": 0.20},
     "opus":     {"input": 5.0,  "output": 25.0,  "cache_write": 6.25,  "cache_write_1h": 10.00, "cache_read": 0.50},
+    "sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
     "sonnet-5": {"input": 2.0,  "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
     "sonnet":   {"input": 3.0,  "output": 15.0,  "cache_write": 3.75,  "cache_write_1h": 6.00,  "cache_read": 0.30},
+    # Haiku 5.5 rates are for prompts up to LONG_CONTEXT_THRESHOLD tokens; longer prompts
+    # bill every token type at 5x ($0.50 / $2.50).
+    "haiku-5-5": {"input": 0.10, "output": 0.50, "cache_write": 0.125, "cache_write_1h": 0.20,  "cache_read": 0.01,
+                  "long_context_multiplier": 5},
     "haiku":    {"input": 1.0,  "output": 5.0,   "cache_write": 1.25,  "cache_write_1h": 2.00,  "cache_read": 0.10},
 }
+
+# Prompt size (input + cache writes + cache reads) above which a request bills at a
+# model's long-context rate, for rows that define long_context_multiplier.
+LONG_CONTEXT_THRESHOLD = 100_000
 
 
 def encode_path(p: str) -> str:
@@ -271,35 +281,59 @@ def cmd_deepstats(args):
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cache_creation_1h_input_tokens": 0,
             "messages": 0,
+            "long_context_messages": 0,
+            "fast_requests": 0,
+            "est_cost_usd": 0.0,
         })
         m["messages"] += 1
-        for k in ("input_tokens", "output_tokens",
-                  "cache_creation_input_tokens", "cache_read_input_tokens"):
-            m[k] += usage.get(k) or 0
-        m["cache_creation_1h_input_tokens"] += (
+        req = {k: usage.get(k) or 0 for k in ("input_tokens", "output_tokens",
+               "cache_creation_input_tokens", "cache_read_input_tokens")}
+        req["cache_creation_1h_input_tokens"] = (
             (usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0
         )
+        for k, v in req.items():
+            m[k] += v
+        if usage.get("speed") == "fast":
+            m["fast_requests"] += 1
+        # Priced per request: a long-context surcharge depends on that request's prompt size.
+        price = _match_price(model)
+        if price is None:
+            m["est_cost_usd"] = None
+            continue
+        cw_1h = req["cache_creation_1h_input_tokens"]
+        cost = (
+            req["input_tokens"] * price["input"]
+            + req["output_tokens"] * price["output"]
+            + (req["cache_creation_input_tokens"] - cw_1h) * price["cache_write"]
+            + cw_1h * price["cache_write_1h"]
+            + req["cache_read_input_tokens"] * price["cache_read"]
+        ) / 1_000_000
+        prompt = (req["input_tokens"] + req["cache_creation_input_tokens"]
+                  + req["cache_read_input_tokens"])
+        mult = price.get("long_context_multiplier")
+        if mult and prompt > LONG_CONTEXT_THRESHOLD:
+            cost *= mult
+            m["long_context_messages"] += 1
+        m["est_cost_usd"] += cost
 
     total_cost = 0.0
     priced_any = False
     unpriced = []
+    fast_total = 0
     for model, m in by_model.items():
-        price = _match_price(model)
-        if price:
-            cw_1h = m["cache_creation_1h_input_tokens"]
-            cost = (
-                m["input_tokens"] * price["input"]
-                + m["output_tokens"] * price["output"]
-                + (m["cache_creation_input_tokens"] - cw_1h) * price["cache_write"]
-                + cw_1h * price["cache_write_1h"]
-                + m["cache_read_input_tokens"] * price["cache_read"]
-            ) / 1_000_000
-            m["est_cost_usd"] = round(cost, 4)
-            total_cost += cost
-            priced_any = True
-        else:
-            m["est_cost_usd"] = None
+        fast_total += m["fast_requests"]
+        if m["est_cost_usd"] is None:
             unpriced.append(model)
+        else:
+            total_cost += m["est_cost_usd"]
+            m["est_cost_usd"] = round(m["est_cost_usd"], 4)
+            priced_any = True
+
+    note = ("Cost is an estimate from token counts and a static Claude price table. "
+            "Unpriced models report tokens only.")
+    if fast_total:
+        note += (f" {fast_total} fast-mode request(s) are priced at the standard rate; fast "
+                 "mode costs about 2x on Opus 5/5.5, so the total is understated.")
 
     print(json.dumps({
         "path": path,
@@ -309,8 +343,7 @@ def cmd_deepstats(args):
         "by_model": by_model,
         "total_est_cost_usd": round(total_cost, 2) if priced_any else None,
         "unpriced_models": unpriced,
-        "note": "Cost is an estimate from token counts and a static Claude price table. "
-                "Unpriced models report tokens only.",
+        "note": note,
     }, indent=2))
 
 

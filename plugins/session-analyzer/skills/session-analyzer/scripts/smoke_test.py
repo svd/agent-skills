@@ -562,6 +562,52 @@ def main():
     bad_1h = [k for k, p in ps.PRICING.items() if p.get("cache_write_1h") != 2 * p["input"]]
     check("1h cache: every PRICING row has cache_write_1h = 2x input", not bad_1h, str(bad_1h))
 
+    # ---------------------------------------------------------------
+    # Key order and new rows: specific keys must win over family keys.
+    # ---------------------------------------------------------------
+    expect = {"claude-sonnet-5-5": "sonnet-5-5", "claude-sonnet-5": "sonnet-5",
+              "claude-sonnet-4-6": "sonnet", "claude-haiku-5-5": "haiku-5-5",
+              "claude-haiku-4-5": "haiku", "claude-opus-5-5": "opus-5-5",
+              "claude-fable-5-1": "fable-5-1"}
+    got = {mid: next((k for k in ps.PRICING if k in mid), None) for mid in expect}
+    check("pricing: model ids match their specific PRICING key", got == expect, str(got))
+
+    # ---------------------------------------------------------------
+    # Haiku 5.5 long-context tier: requests with prompt > 100K bill at 5x.
+    # ---------------------------------------------------------------
+    short = ps.analyze_records([rec_assistant(think, model="claude-haiku-5-5", request_id="s1",
+                                              usage=u(0, inp=M // 10))])
+    long_ = ps.analyze_records([rec_assistant(think, model="claude-haiku-5-5", request_id="l1",
+                                              usage=u(0, inp=M))])
+    mixed = ps.analyze_records([
+        rec_assistant(think, model="claude-haiku-5-5", request_id="s1", usage=u(0, inp=M // 10)),
+        rec_assistant(think, model="claude-haiku-5-5", request_id="l1", usage=u(0, inp=M)),
+    ])
+    c_short = ps.estimate_cost(short["usage"], "claude-haiku-5-5")
+    c_long = ps.estimate_cost(long_["usage"], "claude-haiku-5-5")
+    c_mixed = ps.estimate_cost(mixed["usage"], "claude-haiku-5-5")
+    check("long context: 100K-token haiku-5-5 prompt at base $0.10/M", c_short == 0.01, str(c_short))
+    check("long context: 1M-token haiku-5-5 prompt at 5x ($0.50/M)", c_long == 0.5, str(c_long))
+    check("long context: mixed session prices each request at its own tier",
+          c_mixed == 0.51, str(c_mixed))
+    c_opus_long = ps.estimate_cost(long_["usage"], "claude-opus-5-5")
+    check("long context: no surcharge on models without a multiplier",
+          c_opus_long == 4.0, str(c_opus_long))
+
+    # ---------------------------------------------------------------
+    # Fast mode: counted and flagged, not priced.
+    # ---------------------------------------------------------------
+    fast_u = {**u(10), "speed": "fast"}
+    fast = ps.analyze_records([rec_assistant(think, request_id="f1", usage=fast_u),
+                               rec_assistant(think, request_id="f2", usage=u(10))])
+    check("fast mode: speed=fast requests counted", fast["usage"]["fast_requests"] == 1,
+          str(fast["usage"]))
+    fr = ps.build_result("sid", "/dir", fast, [], [], "2026-01-01-0000")
+    check("fast mode: totals carry fast_mode_note", "fast_mode_note" in fr["totals"],
+          str(fr["totals"].get("fast_mode_note")))
+    std = ps.build_result("sid", "/dir", one_h, [], [], "2026-01-01-0000")
+    check("fast mode: no note on standard-only sessions", "fast_mode_note" not in std["totals"])
+
     failed =[r for r in results if not r[1]]
     print()
     print(f"{len(results) - len(failed)}/{len(results)} checks passed.")

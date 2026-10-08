@@ -488,6 +488,10 @@ summed (see Cost by model below). 1-hour-TTL cache writes are priced at 2x base
 input; 5-minute writes at the table's cache-write rate. Costs are approximate — actual billing may differ.
 When a workflow ran a different model than the main loop, list both tiers' rates.*
 
+If `totals.fast_mode_note` is present, add it under the table as a blockquote: fast-mode requests
+are priced at the standard rate, so the cost shown is understated. Requests whose prompt exceeded
+100K tokens are already priced at the long-context rate where the model has one (Haiku 5.5, 5x).
+
 ### Cost by model
 
 | Model | Sessions | Input | Output | Cache write | Cache read | Cost |

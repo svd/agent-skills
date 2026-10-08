@@ -239,16 +239,40 @@ def infer_role(lines):
     return stem, "brief_heuristic", excerpt
 
 
+PRICED_USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens",
+                     "cache_read_input_tokens", "cache_creation_1h_input_tokens")
+# Prompt size (input + cache writes + cache reads) above which a request bills at a
+# model's long-context rate, for rows in PRICING that define long_context_multiplier.
+LONG_CONTEXT_THRESHOLD = 100_000
+
+
+def new_usage_total():
+    """Zeroed per-session usage counters. long_context_* hold the subset of each counter
+    from requests whose prompt exceeded LONG_CONTEXT_THRESHOLD; fast_requests counts
+    requests served in fast mode (usage.speed == "fast"), which are not priced
+    separately -- see estimate_cost."""
+    total = {k: 0 for k in PRICED_USAGE_KEYS}
+    total.update({f"long_context_{k}": 0 for k in PRICED_USAGE_KEYS})
+    total["fast_requests"] = 0
+    return total
+
+
 def _add_usage(total, usage):
     """Add one API request's `usage` into `total`, including the 1-hour-TTL share of
     its cache writes (nested under usage.cache_creation; absent on older records,
     which then price entirely at the 5-minute rate)."""
-    for k in ("input_tokens", "output_tokens",
-              "cache_creation_input_tokens", "cache_read_input_tokens"):
-        total[k] += usage.get(k) or 0
-    total["cache_creation_1h_input_tokens"] += (
+    req = {k: usage.get(k) or 0 for k in PRICED_USAGE_KEYS[:4]}
+    req["cache_creation_1h_input_tokens"] = (
         (usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0
     )
+    prompt = (req["input_tokens"] + req["cache_creation_input_tokens"]
+              + req["cache_read_input_tokens"])
+    for k, v in req.items():
+        total[k] += v
+        if prompt > LONG_CONTEXT_THRESHOLD:
+            total[f"long_context_{k}"] += v
+    if usage.get("speed") == "fast":
+        total["fast_requests"] += 1
 
 
 def analyze_records(lines, ts_key="timestamp", agent_type=None, agent_name=None,
@@ -261,15 +285,9 @@ def analyze_records(lines, ts_key="timestamp", agent_type=None, agent_name=None,
     """
     tool_calls = []
     tool_results = {}
-    usage_total = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        # Subset of cache_creation_input_tokens written with the 1-hour TTL,
-        # which bills at a higher rate than the default 5-minute TTL.
-        "cache_creation_1h_input_tokens": 0,
-    }
+    # cache_creation_1h_input_tokens is the subset of cache_creation_input_tokens
+    # written with the 1-hour TTL, which bills higher than the default 5-minute TTL.
+    usage_total = new_usage_total()
     model = None
     skills_in_context = list(extra_skills or [])
     started_at = None
@@ -492,7 +510,8 @@ def extract_agent_spawns(lines):
 # Per-MTok USD. Matched by substring on the model id; unmatched models are unpriced.
 # Cache write = 1.25x input for the default 5-minute TTL ("cache_write"), 2x input for the
 # 1-hour TTL ("cache_write_1h"); cache read = 0.1x input (standard Anthropic prompt-cache rates).
-# Keep in sync with projects.py.
+# Optional "long_context_multiplier" scales every rate for requests whose prompt exceeds
+# LONG_CONTEXT_THRESHOLD tokens. Keep in sync with projects.py.
 #
 # Insertion order is load-bearing: the first key that is a substring of the model id wins,
 # in both _match_price() and the totals["pricing_tier"] lookup. More specific keys must come
@@ -508,46 +527,49 @@ PRICING = {
     # Opus 5.5 cache reads are 0.05x base input, not 0.1x.
     "opus-5-5": {"input": 4.0,   "output": 20.0,  "cache_write": 5.00,  "cache_write_1h": 8.00,  "cache_read": 0.20},
     "opus":     {"input": 5.0,   "output": 25.0,  "cache_write": 6.25,  "cache_write_1h": 10.00, "cache_read": 0.50},
+    "sonnet-5-5": {"input": 2.0, "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
     "sonnet-5": {"input": 2.0,   "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
     "sonnet":   {"input": 3.0,   "output": 15.0,  "cache_write": 3.75,  "cache_write_1h": 6.00,  "cache_read": 0.30},
+    # Haiku 5.5 rates are for prompts up to LONG_CONTEXT_THRESHOLD tokens; longer prompts
+    # bill every token type at 5x ($0.50 / $2.50).
+    "haiku-5-5": {"input": 0.10, "output": 0.50,  "cache_write": 0.125, "cache_write_1h": 0.20,  "cache_read": 0.01,
+                  "long_context_multiplier": 5},
     "haiku":    {"input": 1.0,   "output": 5.0,   "cache_write": 1.25,  "cache_write_1h": 2.00,  "cache_read": 0.10},
 }
 
-# Sonnet 5 introductory pricing, effective through 2026-08-31 (inclusive).
-# Applied only when a session's own start time falls in the window; standard
-# PRICING["sonnet"] used otherwise.
-# SONNET_INTRO_PRICING = {"input": 2.0, "output": 10.0, "cache_write": 2.50, "cache_write_1h": 4.00, "cache_read": 0.20}
-# SONNET_INTRO_START = datetime(2026, 7, 1, tzinfo=timezone.utc)
-# SONNET_INTRO_END = datetime(2026, 9, 1, tzinfo=timezone.utc)  # exclusive -> Aug 31 fully included
-
-
-def _match_price(model_str, session_dt=None):
+def _match_price(model_str):
     ml = (model_str or "").lower()
     for key, price in PRICING.items():
         if key in ml:
-            # if (key == "sonnet" and session_dt is not None
-            #         and SONNET_INTRO_START <= session_dt < SONNET_INTRO_END):
-            #     return SONNET_INTRO_PRICING
             return price
     return None
 
 
+def _usage_cost(usage, p, prefix=""):
+    cw_1h = usage.get(f"{prefix}cache_creation_1h_input_tokens", 0)
+    cw_5m = usage.get(f"{prefix}cache_creation_input_tokens", 0) - cw_1h
+    return (
+        usage.get(f"{prefix}input_tokens", 0) * p["input"]
+        + usage.get(f"{prefix}output_tokens", 0) * p["output"]
+        + cw_5m * p["cache_write"]
+        + cw_1h * p["cache_write_1h"]
+        + usage.get(f"{prefix}cache_read_input_tokens", 0) * p["cache_read"]
+    ) / 1_000_000
+
+
 def estimate_cost(usage, model_str, session_ts=None):
-    session_dt = _parse_iso(session_ts) if session_ts else None
-    p = _match_price(model_str, session_dt)
+    """USD estimate for one session's usage at its model's rate. Long-context requests
+    (long_context_* counters) add the row's surcharge on top. Fast-mode requests are
+    priced at the standard rate; build_result flags them via fast_mode_note.
+    session_ts is accepted for call-site compatibility and unused."""
+    p = _match_price(model_str)
     if p is None:
         return None
-    M = 1_000_000
-    cw_1h = usage.get("cache_creation_1h_input_tokens", 0)
-    cw_5m = usage["cache_creation_input_tokens"] - cw_1h
-    return round(
-        usage["input_tokens"] * p["input"] / M
-        + usage["output_tokens"] * p["output"] / M
-        + cw_5m * p["cache_write"] / M
-        + cw_1h * p["cache_write_1h"] / M
-        + usage["cache_read_input_tokens"] * p["cache_read"] / M,
-        4,
-    )
+    cost = _usage_cost(usage, p)
+    mult = p.get("long_context_multiplier")
+    if mult:
+        cost += (mult - 1) * _usage_cost(usage, p, prefix="long_context_")
+    return round(cost, 4)
 
 
 def find_workflow_runs(parent: Path, session_id: str):
@@ -590,13 +612,7 @@ def analyze_workflow(wf_id: str, wf_dir: Path, meta_file: Path):
     default_model = meta.get("defaultModel")
 
     agents = []
-    usage_total = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_1h_input_tokens": 0,
-    }
+    usage_total = new_usage_total()
     errors = []
     phase_rollup = {}
     cost_sum, any_priced = 0.0, False
@@ -909,6 +925,12 @@ def build_result(session_id, session_dir, main_data, subagent_data, workflow_dat
     totals["pricing_tier"] = next((k for k in PRICING if k in main_model.lower()), None)
     if unpriced:
         totals["unpriced_models"] = sorted(set(unpriced))
+    fast = totals.get("fast_requests", 0)
+    if fast:
+        totals["fast_mode_note"] = (
+            f"{fast} fast-mode request(s) priced at the standard rate; fast mode costs "
+            "about 2x on Opus 5/5.5, so estimated_cost_usd is understated."
+        )
     # Wall time reflects the main session span; subagents/workflow agents run
     # concurrently within it, so summing their walls would double-count.
     totals["wall_seconds"] = main_data.get("wall_seconds")

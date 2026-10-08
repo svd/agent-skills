@@ -2,6 +2,18 @@
 
 All notable changes to the `manage-claude-projects` plugin are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Claude Haiku 5.5 pricing (`haiku-5-5`: $0.10 / $0.50 per MTok, cache read $0.01). Haiku 5.5
+  usage was previously matched by the generic `haiku` row and overstated 10x. `deepstats` now
+  prices each request on its own, and requests with a prompt over 100K tokens are priced at
+  Haiku 5.5's 5x long-context rate. Per-model rows gain `long_context_messages`.
+- An explicit `sonnet-5-5` row. Costs are unchanged.
+- `deepstats` counts fast-mode requests per model (`fast_requests`) and warns in `note` that
+  they are priced at the standard rate.
+
 ## [0.1.5] - 2026-09-23
 
 ### Changed
