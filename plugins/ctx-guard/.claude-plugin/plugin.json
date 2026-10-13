@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "ctx-guard",
+  "version": "0.1.0",
+  "description": "Configurable context and usage guard: per-role notes, tool blocks, guarded handoff with clear-and-resume or compact, and subagent context budgets.",
+  "author": {
+    "name": "Sviatoslav Sviridov",
+    "email": "sviridov@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": ["claude-code", "context", "usage-limits", "handoff", "compact", "subagents", "mod"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Turn ctx-guard on. false makes it do nothing in every project, whatever the project config says.",
+      "default": true
+    },
+    "configPath": {
+      "type": "string",
+      "title": "Config file",
+      "description": "Project config file, relative to the project root. A .local.json file beside it overrides it for you alone.",
+      "default": ".claude/ctx-guard.json"
+    },
+    "defaultRole": {
+      "type": "string",
+      "title": "Default role",
+      "description": "Role for an interactive session when no command, CTX_GUARD_ROLE or project defaultRole sets one. Empty for none.",
+      "default": ""
+    },
+    "blocking": {
+      "type": "boolean",
+      "title": "Block tools",
+      "description": "Let triggers deny tool calls. false keeps notes and toasts and lifts every deny.",
+      "default": true
+    },
+    "autoActions": {
+      "type": "boolean",
+      "title": "Automatic clear and compact",
+      "description": "Let ctx-guard run /clear with a resume, or /compact, when every guard holds. false keeps the notes and leaves restarts to you.",
+      "default": true
+    },
+    "display": {
+      "type": "string",
+      "title": "Display",
+      "description": "band: a line above the prompt where the surface has one, else status-line text. status: status-line text only. off: nothing drawn.",
+      "options": ["band", "status", "off"],
+      "default": "band"
+    }
+  }
+}
