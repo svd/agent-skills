@@ -2,9 +2,8 @@
 // this module only reads the engine's figures and acts on their verdicts.
 // Hooks never throw: every piece of I/O is wrapped, and a failure leaves the
 // session as it would be without ctx-guard.
-import { update } from 'claude-code'
-import type { CommandRunInput, CommandRunResult, EngineInterface, FsStat, RenderSurface, Timer, TurnCompleteInput } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { CommandRunInput, CommandRunResult, EngineInterface, FsStat, RenderSurface, Timer, TurnCompleteInput, TurnStepResult } from 'claude-code'
+import type { PluginState, Register } from 'claude-code'
 
 import type {
   Activity,
@@ -48,6 +47,7 @@ import {
 } from './commands'
 import type { Preset, RestartReport, SubagentReport } from './commands'
 import {
+  DEFAULT_SELF_GAP,
   DEFAULT_SWITCHES,
   asConfigState,
   asTrustRecord,
@@ -102,6 +102,7 @@ import {
   pendingFresh,
   quietVerdict,
   raceVerdict,
+  renoteRisk,
   restartFailedText,
   resumeArgs,
   sessionHandoffDir,
@@ -113,10 +114,12 @@ import type { CheckRun, Facts, HandoffFact, RefusalCode, StampRead, Verdict } fr
 import { claimFromResume, heartbeatDue, leasePath, leaseState, ownerJson, parseOwner, parseResumeArgs, parseRoleArg, resolveRole, roleProblem } from './roles'
 import type { Lease, RoleResolution } from './roles'
 import {
+  contextFloor,
   crossesGates,
   deniedBy,
   evaluate,
   idleMs,
+  inFlightTokens,
   liveDenies,
   markHeld,
   metricsOf,
@@ -154,6 +157,7 @@ const ROLE_CLAIM = { plugin: 'ctx-guard', key: 'roleClaim' } as const
 const CONFIG = { plugin: 'ctx-guard', key: 'config' } as const
 const PAUSE = { plugin: 'ctx-guard', key: 'pause' } as const
 const LAST_CLEAR = { plugin: 'ctx-guard', key: 'lastClearAt' } as const
+const LAST_RESTART = { plugin: 'ctx-guard', key: 'lastRestartAt' } as const
 const ACTIVITY = { plugin: 'ctx-guard', key: 'activity' } as const
 const PENDING = { plugin: 'ctx-guard', key: 'pendingResume' } as const
 const LAST_VERDICT = { plugin: 'ctx-guard', key: 'lastVerdict' } as const
@@ -188,7 +192,7 @@ type Reading = {
 type BandWrite = 'always' | 'changed' | 'never'
 
 // Module state: lost on a hot reload, which fires session.start again and
-// rebuilds it. Whatever must outlive a reload is in `$.state`.
+// rebuilds it. Whatever must outlive a reload is in `$.state`, which `mem` (see state below) writes through to.
 type Mod = {
   started: boolean
   interactive: boolean
@@ -207,6 +211,14 @@ type Mod = {
   timers: Timer[]
   // The newest main-loop fill, updated on every step with no I/O.
   lastMain: MainReading | null
+  // Main-loop steps started; a tool call is counted against the step that was newest when it started.
+  mainGen: number
+  // The newest main step is still streaming: its tool calls run before its usage arrives.
+  mainOpen: boolean
+  // The output tokens of the last main step that reported usage.
+  lastOut: number | null
+  // Characters of main-loop tool results, by the step whose response called the tool.
+  added: Map<number, number>
   // Where a step's tokens must land to matter; null evaluates the next step.
   gates: TokenGates | null
   // The step model the gates were placed for: percent gates move with its window.
@@ -254,6 +266,10 @@ const fresh = (): Mod => ({
   standIn: false,
   timers: [],
   lastMain: null,
+  mainGen: 0,
+  mainOpen: false,
+  lastOut: null,
+  added: new Map(),
   gates: null,
   gatesModel: null,
   measures: 0,
@@ -318,37 +334,235 @@ function asActivity(v: unknown): Activity {
 
 // ---- state ------------------------------------------------------------------
 
-async function activity($: EngineInterface): Promise<Activity> {
-  return asActivity((await $.state.get(ACTIVITY)).value)
+// What ctx-guard keeps lives in `mem`, a module variable, and every write goes
+// through to `$.state` as well. Neither store alone outlives everything: a /clear
+// empties `$.state` right after its session.end (it fires no session.start and
+// does not reload the module), while a hot reload drops the module and keeps
+// `$.state`. So every read comes from memory, every session.start fills memory
+// from `$.state` (it fires on startup, resume and reload, never on /clear), and
+// the first hook or timer after a /clear writes all of memory back to `$.state`.
+// One gap is left: a hot reload landing after a /clear and before that first
+// hook starts from the emptied `$.state`.
+type Stored = PluginState['ctx-guard']
+type Key = keyof Stored
+
+const emptyMem = (): Stored => ({
+  band: null,
+  marks: null,
+  roleClaim: null,
+  config: null,
+  pendingResume: null,
+  pendingCompact: null,
+  lastCompact: null,
+  pause: null,
+  lastClearAt: null,
+  lastRestartAt: null,
+  lastVerdict: null,
+  lease: null,
+  work: null,
+  subagents: null,
+  spawned: null,
+  stamp: null,
+  activity: null,
+})
+
+let mem: Stored = emptyMem()
+// Memory holds what `$.state` held at the last session start (or the first hook, after an install mid-session).
+let hydrated = false
+let hydrating: Promise<void> | null = null
+let hydrations = 0
+// Keys put while a hydrate reads: memory's value is the newer, so the read leaves them.
+let putSince: Set<Key> | null = null
+// A /clear emptied `$.state`: the next hook or timer writes memory back.
+let flushOwed = false
+// The session start could not read `$.state`: once a hook reads it, the start's work from memory runs again.
+let recoverOwed = false
+// A /clear came while a start ran: it is applied once the start is done.
+let clearOwed = false
+// The write of each key still under way, so `$.state` ends on the latest value.
+const writing: Partial<Record<Key, Promise<void>>> = {}
+
+// One literal ref per key: `claude plugin validate` reads each from the source.
+function stateSet($: EngineInterface, key: Key, value: unknown): Promise<unknown> {
+  switch (key) {
+    case 'band':
+      return $.state.set(BAND, value as Stored['band'])
+    case 'marks':
+      return $.state.set(MARKS, value as Stored['marks'])
+    case 'roleClaim':
+      return $.state.set(ROLE_CLAIM, value as Stored['roleClaim'])
+    case 'config':
+      return $.state.set(CONFIG, value as Stored['config'])
+    case 'pendingResume':
+      return $.state.set(PENDING, value as Stored['pendingResume'])
+    case 'pendingCompact':
+      return $.state.set(PENDING_COMPACT, value as Stored['pendingCompact'])
+    case 'lastCompact':
+      return $.state.set(LAST_COMPACT, value as Stored['lastCompact'])
+    case 'pause':
+      return $.state.set(PAUSE, value as Stored['pause'])
+    case 'lastClearAt':
+      return $.state.set(LAST_CLEAR, value as Stored['lastClearAt'])
+    case 'lastRestartAt':
+      return $.state.set(LAST_RESTART, value as Stored['lastRestartAt'])
+    case 'lastVerdict':
+      return $.state.set(LAST_VERDICT, value as Stored['lastVerdict'])
+    case 'lease':
+      return $.state.set(LEASE, value as Stored['lease'])
+    case 'work':
+      return $.state.set(WORK, value as Stored['work'])
+    case 'subagents':
+      return $.state.set(SUBAGENTS, value as Stored['subagents'])
+    case 'spawned':
+      return $.state.set(SPAWNED, value as Stored['spawned'])
+    case 'stamp':
+      return $.state.set(STAMP, value as Stored['stamp'])
+    case 'activity':
+      return $.state.set(ACTIVITY, value as Stored['activity'])
+  }
 }
 
-// Read-modify-write with ifVersion, so two hooks never lose each other's change.
+// Queued behind the key's last write; a failed write is dropped, memory keeps the value.
+function persist($: EngineInterface, key: Key, value: unknown): Promise<void> {
+  const run = (writing[key] ?? Promise.resolve()).then(() => quietly(() => stateSet($, key, value)))
+  writing[key] = run
+  void run.then(() => {
+    if (writing[key] === run) delete writing[key]
+  })
+  return run
+}
+
+function put<K extends Key>($: EngineInterface, key: K, value: Stored[K]): Promise<void> {
+  mem[key] = value
+  putSince?.add(key)
+  return persist($, key, value)
+}
+
+// Read-modify-write on memory: synchronous, so two hooks never lose each other's change.
+function change<K extends Key>($: EngineInterface, key: K, fn: (v: Stored[K]) => Stored[K]): Promise<void> {
+  return put($, key, fn(mem[key]))
+}
+
+const writesSettled = (): Promise<unknown> => Promise.all(Object.values(writing))
+
+// Shape-checked, as another version may have written them; a key never written is its default.
+async function readStored($: EngineInterface): Promise<Stored> {
+  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, lastVerdict, lease, work, subagents, spawned, stamp, activity] = await Promise.all([
+    $.state.get(BAND),
+    $.state.get(MARKS),
+    $.state.get(ROLE_CLAIM),
+    $.state.get(CONFIG),
+    $.state.get(PENDING),
+    $.state.get(PENDING_COMPACT),
+    $.state.get(LAST_COMPACT),
+    $.state.get(PAUSE),
+    $.state.get(LAST_CLEAR),
+    $.state.get(LAST_RESTART),
+    $.state.get(LAST_VERDICT),
+    $.state.get(LEASE),
+    $.state.get(WORK),
+    $.state.get(SUBAGENTS),
+    $.state.get(SPAWNED),
+    $.state.get(STAMP),
+    $.state.get(ACTIVITY),
+  ])
+  const opt = <T,>(v: unknown, as: (v: unknown) => T): T | null => (v === undefined || v === null ? null : as(v))
+  return {
+    band: band.value ?? null,
+    marks: marks.value ?? null,
+    roleClaim: roleClaim.value ?? null,
+    config: asConfigState(config.value),
+    pendingResume: asPendingResume(pendingResume.value ?? null),
+    pendingCompact: asPendingCompact(pendingCompact.value ?? null),
+    lastCompact: asLastCompact(lastCompact.value ?? null),
+    pause: pause.value ?? null,
+    lastClearAt: num(lastClearAt.value),
+    lastRestartAt: num(lastRestartAt.value),
+    lastVerdict: lastVerdict.value ?? null,
+    lease: asLease(lease.value),
+    work: opt(work.value, asWork),
+    subagents: opt(subagents.value, asMarks),
+    spawned: opt(spawned.value, asSpawned),
+    stamp: asHeldStamp(stamp.value),
+    activity: opt(activity.value, asActivity),
+  }
+}
+
+/** Memory replaced by what `$.state` holds, once this copy's own writes landed; a failed read keeps memory. */
+function hydrate($: EngineInterface): Promise<void> {
+  hydrated = false
+  putSince = new Set()
+  const run = fill($, ++hydrations)
+  hydrating = run
+  return run
+}
+
+async function fill($: EngineInterface, gen: number): Promise<void> {
+  let next: Stored | null = null
+  try {
+    await writesSettled()
+    next = await readStored($)
+  } catch {
+    // Unreadable: memory stays as it is, and the next hook tries again.
+  }
+  // A later hydrate replaced this one: its read is the newer.
+  if (gen !== hydrations) return
+  hydrating = null
+  const kept = putSince
+  putSince = null
+  if (!next) return
+  for (const key of kept ?? []) setMem(next, key, mem[key])
+  mem = next
+  hydrated = true
+}
+
+function setMem<K extends Key>(into: Stored, key: K, value: Stored[K]): void {
+  into[key] = value
+}
+
+// Fire-and-forget: reads never wait on it, since they come from memory.
+function flush($: EngineInterface): void {
+  flushOwed = false
+  for (const key of Object.keys(mem) as Key[]) void persist($, key, mem[key])
+}
+
+const needsReady = (): boolean => !hydrated || flushOwed || recoverOwed
+
+// First thing in every hook and timer: memory filled, and `$.state` rewritten if a /clear emptied it.
+async function ready($: EngineInterface): Promise<void> {
+  while (!hydrated) {
+    await (hydrating ?? hydrate($))
+    // The read failed: this hook goes on with memory as it is.
+    if (!hydrated && hydrating === null) break
+  }
+  if (flushOwed) flush($)
+  if (recoverOwed && hydrated && mod.started) {
+    recoverOwed = false
+    // The role now, for this hook; the rest off its path, since a hook may run inside the evaluation chain.
+    await quietly(() => resolveNow($))
+    $.clock.after(0, () => void quietly(() => timed($, () => fromMemory($))))
+  }
+}
+
+const activity = (): Activity => mem.activity ?? asActivity(null)
+
 async function patchActivity($: EngineInterface, fn: (a: Activity) => Activity): Promise<void> {
-  await update($, ACTIVITY, v => fn(asActivity(v)))
+  await change($, 'activity', a => fn(a ?? asActivity(null)))
 }
 
 // A toast once per session for `key`, reloads included.
 async function noticeOnce($: EngineInterface, key: string, text: string): Promise<void> {
-  let isNew = false
-  await patchActivity($, a => {
-    isNew = !a.shown.includes(key)
-    return isNew ? { ...a, shown: [...a.shown, key].slice(-MAX_SHOWN) } : a
-  })
-  if (isNew) $.ui.toast(text)
+  if (activity().shown.includes(key)) return
+  await patchActivity($, a => ({ ...a, shown: [...a.shown, key].slice(-MAX_SHOWN) }))
+  $.ui.toast(text)
 }
 
-async function paused($: EngineInterface, now: number): Promise<boolean> {
-  return isPaused((await $.state.get(PAUSE)).value ?? null, now)
-}
+const paused = (now: number): boolean => isPaused(mem.pause, now)
 
 // ---- config -----------------------------------------------------------------
 
 const sameFiles = (a: readonly ConfigFile[], b: readonly ConfigFile[]): boolean =>
   a.length === b.length && a.every((f, i) => f.path === b[i]?.path && f.mtime === b[i]?.mtime)
-
-async function storedConfig($: EngineInterface): Promise<ConfigState | null> {
-  return asConfigState((await $.state.get(CONFIG)).value)
-}
 
 // The engine's own compaction window: per-model settings, the env override and its defaults.
 async function readEngineWindow($: EngineInterface): Promise<void> {
@@ -367,7 +581,7 @@ async function readEngineWindow($: EngineInterface): Promise<void> {
  */
 async function loadConfig($: EngineInterface, force: boolean): Promise<boolean> {
   const root = await $.session.root()
-  const prev = await storedConfig($)
+  const prev = mem.config
   const rels = [switches.configPath, localPathFor(switches.configPath)]
   const readErrors: string[] = []
   const stats: ConfigFile[] = []
@@ -408,7 +622,7 @@ async function loadConfig($: EngineInterface, force: boolean): Promise<boolean> 
     files: stats,
     loadedAt: await $.clock.now(),
   }
-  await $.state.set(CONFIG, state)
+  await put($, 'config', state)
   mod.eff = eff
   mod.gates = null
   mod.budgeted = Object.keys(eff.config.subagents).length > 0
@@ -428,9 +642,8 @@ async function loadConfig($: EngineInterface, force: boolean): Promise<boolean> 
 async function resolveNow($: EngineInterface): Promise<RoleResolution> {
   const eff = mod.eff
   if (!eff) return (mod.role = NO_ROLE)
-  const claim = (await $.state.get(ROLE_CLAIM)).value ?? null
   const r = resolveRole({
-    claim,
+    claim: mem.roleClaim,
     env: mod.env,
     repoDefault: eff.config.defaultRole,
     switchDefault: eff.switchDefaultRole,
@@ -454,7 +667,7 @@ function windowFor(modelWindow: number): WindowInfo {
 }
 
 async function metricsFor($: EngineInterface, reading: Reading, now: number): Promise<Metrics> {
-  const a = await activity($)
+  const a = activity()
   // A turn start with no end for hours is a lost turn.complete, not a running turn.
   const busy = a.mainTurnAt !== null && now - a.mainTurnAt < STALE_TURN_MS
   const idle = idleMs(a.lastMainEndAt, busy, now)
@@ -462,12 +675,31 @@ async function metricsFor($: EngineInterface, reading: Reading, now: number): Pr
   return metricsOf({ tokens: reading.context.tokens, rateLimits: reading.rateLimits, cost: reading.cost }, window, idle, now)
 }
 
-// usage() can lag the newest main step mid-turn; the step's fill wins.
+// usage() can lag the newest main step mid-turn; the step's fill wins. While a
+// step streams, its own fill is not reported yet: the estimate stands in, or
+// usage() when the engine already has a larger figure.
 async function currentReading($: EngineInterface): Promise<Reading> {
   const u = await $.session.usage()
   const last = mod.lastMain
   if (!last) return u
-  return { ...u, context: last.tokens === null ? { window: u.context.window } : { window: u.context.window, tokens: last.tokens } }
+  if (last.tokens === null) return { ...u, context: { window: u.context.window } }
+  const tokens = mod.mainOpen
+    ? Math.max(inFlightTokens(last.tokens, mod.lastOut, mod.added.get(mod.mainGen - 1) ?? 0), num(u.context.tokens) ?? 0)
+    : last.tokens
+  return { ...u, context: { window: u.context.window, tokens } }
+}
+
+// A main-loop step begins: what it sends is the last one's context plus what was added since.
+function openMainStep(): number {
+  const gen = ++mod.mainGen
+  mod.mainOpen = true
+  for (const g of mod.added.keys()) if (g < gen - 1) mod.added.delete(g)
+  return gen
+}
+
+// A main-loop tool result, as the model reads it, counted toward the next request.
+function addResult(gen: number, text: unknown): void {
+  if (typeof text === 'string' && text.length) mod.added.set(gen, (mod.added.get(gen) ?? 0) + text.length)
 }
 
 async function rememberMain($: EngineInterface, tokens: number | null, now: number): Promise<void> {
@@ -500,11 +732,18 @@ async function setBand($: EngineInterface, metrics: Metrics, isPaused: boolean, 
   const eff = mod.eff
   const denies =
     eff && mod.role.role !== null ? liveDenies(roleTriggers(), metrics, { blocking: eff.blocking, paused: isPaused }) : []
-  const prev = (await $.state.get(BAND)).value ?? null
+  const prev = mem.band
   const band: Band = { ...bandOf(mod.role.role, metrics, denies, prev), subagentsOver: subagentsOver() }
   if (write === 'changed' && sameBand(prev, band)) return
-  await $.state.set(BAND, band)
+  await drawBand($, band)
+}
+
+// Memory first, so the redraw shows it; `$.state` follows, and its write redraws the band too.
+async function drawBand($: EngineInterface, band: Band): Promise<void> {
+  const written = put($, 'band', band)
+  if (!mod.standIn) $.ui.invalidate('ui.render')
   if (mod.standIn) $.ui.status(bandText(band) || undefined)
+  await written
 }
 
 /** Rising edges since the stored marks → note, toast, notify; then the band. */
@@ -514,15 +753,15 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
   const metrics = await metricsFor($, reading, now)
   const role = mod.role.role
   const triggers = roleTriggers()
-  const prev = (await $.state.get(MARKS)).value ?? null
+  const prev = mem.marks
   const ev = evaluate(triggers, metrics, prev, role)
   // Written before acting, so a failed note never fires twice.
   if (JSON.stringify(ev.marks) !== JSON.stringify(prev)) {
-    await $.state.set(MARKS, ev.marks)
+    await put($, 'marks', ev.marks)
     await quietly(() => dropRearmedCompact($, ev.marks))
   }
   mod.gates = tokenGates(triggers, ev.marks, role, metrics.window)
-  const isPaused = await paused($, now)
+  const isPaused = paused(now)
   await act($, planActions(ev.fire), isPaused)
   // A pause that ran out frees a blocked compact here.
   await quietly(() => unblockCompact($, isPaused))
@@ -536,7 +775,7 @@ async function evaluateCurrent($: EngineInterface, write: BandWrite): Promise<vo
 async function refreshBand($: EngineInterface): Promise<void> {
   if (!active()) return
   const now = await $.clock.now()
-  await setBand($, await metricsFor($, await currentReading($), now), await paused($, now), 'always')
+  await setBand($, await metricsFor($, await currentReading($), now), paused(now), 'always')
 }
 
 // A main-loop step's evaluation, run off the step's critical path.
@@ -561,41 +800,13 @@ async function onMeasure($: EngineInterface, e: Reading & { changed: readonly st
   await quietly(() => leaseBeat($, false))
 }
 
-// ---- state that must outlive /clear -------------------------------------------
+// A pending resume dropped as never cleared, in case its queued /clear still runs.
+let dropped: { at: number; pending: PendingResume } | null = null
 
-// `$.state` is held "for the session" and survives a hot reload (documented);
-// whether it survives a /clear (a new session id, no session.start) is what
-// the live probe must confirm. /clear does not reload the module, so these
-// mirrors carry the lease id, the last clear and a pending resume across it
-// should `$.state` come back empty: only a reload and a wipe at once lose them.
-type Carry = {
-  lease: LeaseState | null
-  lastClearAt: number | null
-  pending: PendingResume | null
-  // A pending resume dropped as never cleared, in case its queued /clear still runs.
-  dropped: { at: number; pending: PendingResume } | null
-}
-const emptyCarry = (): Carry => ({ lease: null, lastClearAt: null, pending: null, dropped: null })
-let carry: Carry = emptyCarry()
-
-async function getPending($: EngineInterface): Promise<PendingResume | null> {
-  const v = (await $.state.get(PENDING)).value
-  return v === undefined ? carry.pending : asPendingResume(v)
-}
-
-async function setPending($: EngineInterface, p: PendingResume | null): Promise<void> {
-  carry.pending = p
-  await $.state.set(PENDING, p)
-}
-
-async function getLastClear($: EngineInterface): Promise<number | null> {
-  const v = (await $.state.get(LAST_CLEAR)).value
-  return v === undefined ? carry.lastClearAt : num(v)
-}
-
-async function setLastClear($: EngineInterface, at: number): Promise<void> {
-  carry.lastClearAt = at
-  await $.state.set(LAST_CLEAR, at)
+// A timer's work, after what a reload or a /clear may still owe, as every hook does first.
+async function timed($: EngineInterface, fn: () => Promise<void>): Promise<void> {
+  if (needsReady()) await quietly(() => ready($))
+  await fn()
 }
 
 // ---- busy work ----------------------------------------------------------------
@@ -617,9 +828,7 @@ function asWork(v: unknown): Work {
   return { steps, background: bg }
 }
 
-async function work($: EngineInterface): Promise<Work> {
-  return asWork((await $.state.get(WORK)).value)
-}
+const work = (): Work => mem.work ?? asWork(null)
 
 // Off the step's path: the step returns first, then the time is read and written.
 function noteStep($: EngineInterface, id: string): void {
@@ -632,10 +841,9 @@ function noteStep($: EngineInterface, id: string): void {
     const last = mod.stepWrites.get(id)
     if (last !== undefined && t - last < STEP_WRITE_MS) return
     mod.stepWrites.set(id, t)
-    await update($, WORK, v => {
-      const w = asWork(v)
-      return mod.ended.has(id) ? w : { ...w, steps: { ...w.steps, [id]: t } }
-    })
+    if (mod.ended.has(id)) return
+    const w = work()
+    await put($, 'work', { ...w, steps: { ...w.steps, [id]: t } })
   })
 }
 
@@ -643,20 +851,18 @@ async function endStep($: EngineInterface, id: string): Promise<void> {
   mod.ended.add(id)
   mod.steps.delete(id)
   mod.stepWrites.delete(id)
-  await update($, WORK, v => {
-    const w = asWork(v)
-    if (!(id in w.steps)) return w
-    const steps = { ...w.steps }
-    delete steps[id]
-    return { ...w, steps }
-  })
+  const w = work()
+  if (!(id in w.steps)) return
+  const steps = { ...w.steps }
+  delete steps[id]
+  await put($, 'work', { ...w, steps })
 }
 
 // Ids seen stepping within STEP_SEEN_MS (this copy's and, across a reload, the stored ones).
 async function recentSteps($: EngineInterface, now: number): Promise<string[]> {
   const ids = new Set<string>()
   for (const [id, at] of mod.steps) if (Number.isNaN(at) || now - at < STEP_SEEN_MS) ids.add(id)
-  for (const [id, at] of Object.entries((await work($)).steps)) if (now - at < STEP_SEEN_MS && !mod.ended.has(id)) ids.add(id)
+  for (const [id, at] of Object.entries(work().steps)) if (now - at < STEP_SEEN_MS && !mod.ended.has(id)) ids.add(id)
   return [...ids]
 }
 
@@ -674,19 +880,15 @@ function rejudgeAll(): void {
 }
 
 async function patchMarks($: EngineInterface, fn: (m: Record<string, SubagentMark>) => Record<string, SubagentMark>): Promise<void> {
-  await update($, SUBAGENTS, v => {
-    const cur = asMarks(v)
-    const next = fn(cur)
-    return JSON.stringify(next) === JSON.stringify(cur) ? (v ?? null) : next
-  })
+  const cur = mem.subagents ?? {}
+  const next = fn(cur)
+  if (JSON.stringify(next) !== JSON.stringify(cur)) await put($, 'subagents', next)
 }
 
 async function patchSpawned($: EngineInterface, fn: (m: Record<string, SpawnedAgent>) => Record<string, SpawnedAgent>): Promise<void> {
-  await update($, SPAWNED, v => {
-    const cur = asSpawned(v)
-    const next = fn(cur)
-    return JSON.stringify(next) === JSON.stringify(cur) ? (v ?? null) : next
-  })
+  const cur = mem.spawned ?? {}
+  const next = fn(cur)
+  if (JSON.stringify(next) !== JSON.stringify(cur)) await put($, 'spawned', next)
 }
 
 /** An agent.spawn that started an agent: its type and kind, kept so its steps know what budget it has. */
@@ -719,7 +921,7 @@ function subagentStep($: EngineInterface, id: string, tokens: number | null): vo
   // One evaluation at a time per agent; it sets the next gate.
   t.gate = Number.POSITIVE_INFINITY
   const tracked = t
-  $.clock.after(0, () => void serial(() => judgeSubagent($, id, tracked)))
+  $.clock.after(0, () => void serial(() => timed($, () => judgeSubagent($, id, tracked))))
 }
 
 /** The budget of who the agent is (asked of `$.agent.list` only when no spawn named it), and the warn or stop note to the agent itself; marked before it is sent. */
@@ -785,11 +987,11 @@ async function pruneSubagents($: EngineInterface): Promise<void> {
 /** At a session start: the spawns and the agents past a step before a reload are followed again, so a stop's deny holds. */
 async function loadSubagents($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
-  const steps = new Map(Object.entries((await work($)).steps))
-  const spawned = asSpawned((await $.state.get(SPAWNED)).value)
+  const steps = new Map(Object.entries(work().steps))
+  const spawned = mem.spawned ?? {}
   const oldSpawns = new Set(staleSpawns(spawned, steps, now))
   for (const [id, rec] of Object.entries(spawned)) if (!oldSpawns.has(id)) mod.spawned.set(id, rec)
-  const stored = asMarks((await $.state.get(SUBAGENTS)).value)
+  const stored = mem.subagents ?? {}
   const stale: string[] = []
   for (const [id, m] of Object.entries(stored)) {
     const step = steps.get(id)
@@ -975,14 +1177,12 @@ function asLease(v: unknown): LeaseState | null {
 }
 
 async function setLease($: EngineInterface, lease: LeaseState): Promise<void> {
-  carry.lease = lease
-  await $.state.set(LEASE, lease)
+  await put($, 'lease', lease)
 }
 
 // The id this session writes into owner files and stamps; minted once, kept across /clear and reloads.
 async function leaseOf($: EngineInterface): Promise<LeaseState> {
-  const v = (await $.state.get(LEASE)).value
-  const held = v === undefined ? carry.lease : asLease(v)
+  const held = mem.lease
   if (held) return held
   const sid = await $.session.id().catch(() => '')
   const lease: LeaseState = { id: sid || `session-${await $.clock.now()}`, role: null, beatAt: null, sharedWith: null }
@@ -1048,13 +1248,13 @@ async function leaseBeat($: EngineInterface, force: boolean): Promise<void> {
 
 // One band field changed with no new reading; nothing is written when it already holds `value`.
 async function patchBand<K extends 'restartFailed' | 'subagentsOver'>($: EngineInterface, key: K, value: Band[K]): Promise<void> {
-  const prev = (await $.state.get(BAND)).value ?? null
-  if ((prev?.[key] ?? (key === 'subagentsOver' ? 0 : null)) === value) return
+  if ((mem.band?.[key] ?? (key === 'subagentsOver' ? 0 : null)) === value) return
   const now = await $.clock.now()
+  // Read after the await: a band written meanwhile is the base.
+  const prev = mem.band
   const base: Band = prev ?? { role: mod.role.role, tokens: null, percent: null, window: null, limits: [], subagentsOver: 0, denies: [], restartFailed: null, now }
   const band: Band = { ...base, [key]: value }
-  await $.state.set(BAND, band)
-  if (mod.standIn) $.ui.status(bandText(band) || undefined)
+  await drawBand($, band)
 }
 
 async function setRestartFailed($: EngineInterface, text: string | null): Promise<void> {
@@ -1062,7 +1262,7 @@ async function setRestartFailed($: EngineInterface, text: string | null): Promis
 }
 
 async function setVerdict($: EngineInterface, code: RefusalCode | 'ok', text: string): Promise<void> {
-  await $.state.set(LAST_VERDICT, { code, text, at: await $.clock.now() })
+  await put($, 'lastVerdict', { code, text, at: await $.clock.now() })
 }
 
 async function refuse($: EngineInterface, code: RefusalCode, text: string): Promise<void> {
@@ -1099,8 +1299,20 @@ async function restartBusy($: EngineInterface, now: number): Promise<string | nu
 }
 
 async function pendingBusy($: EngineInterface, now: number): Promise<string | null> {
-  const p = await getPending($)
+  const p = mem.pendingResume
   return pendingFresh(p, now) ? `a resume of ${p?.role ?? 'this role'} is pending since ${humanDuration(now - (p?.at ?? now))} ago` : null
+}
+
+// The fill now against the role's lowest context threshold; unknown when it cannot be read.
+async function contextFact($: EngineInterface, role: string): Promise<Facts['context']> {
+  const eff = mod.eff
+  try {
+    const reading = await currentReading($)
+    const triggers = eff ? triggersFor(eff.config, role) : []
+    return { tokens: num(reading.context.tokens), floor: contextFloor(triggers, windowFor(reading.context.window).tokens) }
+  } catch {
+    return { tokens: null, floor: null }
+  }
 }
 
 /** Every fact the verdict needs, read fresh: nothing cached by a timer is trusted. */
@@ -1119,6 +1331,10 @@ async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: st
     trusted: trusted(),
     untrustedWhy: untrustedWhy(),
     busy,
+    context: await contextFact($, role),
+    lastRestartAt: mem.lastRestartAt,
+    // A config another version stored may lack it.
+    selfGap: spec.restart.selfGap ?? DEFAULT_SELF_GAP,
     command: via === 'compact' ? 'compact' : spec.restart.command,
     commands: [],
     agents: [],
@@ -1140,9 +1356,9 @@ async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: st
     facts.commands = (await $.command.list()).map(c => c.name)
     facts.agents = await $.agent.list()
     facts.steps = await recentSteps($, now)
-    facts.background = (await work($)).background
+    facts.background = work().background
     facts.startedAt = (await $.session.usage()).startedAt
-    facts.lastClearAt = await getLastClear($)
+    facts.lastClearAt = mem.lastClearAt
     if (via === 'clear') {
       const eff = mod.eff
       if (!eff) throw new Error('the config is not loaded')
@@ -1195,14 +1411,14 @@ async function judge($: EngineInterface, g: Gathered, spec: RoleSpec): Promise<V
 // The ready checks can take minutes: just before the stamp and again before /clear, nothing new may have started.
 async function quiet($: EngineInterface, tokenAt: number): Promise<Verdict> {
   const now = await $.clock.now()
-  const a = await activity($)
+  const a = activity()
   return quietVerdict({
     tokenAt,
     turnRunning: turnRunningIn(a, now),
     lastMainEndAt: a.lastMainEndAt,
     agents: await $.agent.list(),
     steps: await recentSteps($, now),
-    background: (await work($)).background,
+    background: work().background,
   })
 }
 
@@ -1218,7 +1434,7 @@ const settle = ($: EngineInterface, ms: number): Promise<void> =>
  */
 async function resume($: EngineInterface, p: PendingResume, gen: Mod): Promise<void> {
   const args = resumeArgs(p.role, p.handoff, p.prompt)
-  await setPending($, { ...p, step: 'sent' })
+  await put($, 'pendingResume', { ...p, step: 'sent' })
   try {
     await $.command.run({ command: p.command, args })
     if (gen === mod) await setRestartFailed($, null)
@@ -1228,7 +1444,7 @@ async function resume($: EngineInterface, p: PendingResume, gen: Mod): Promise<v
     await setVerdict($, 'error', `cleared, but /${p.command} did not run: ${errorText(e)}`)
     $.ui.toast(`ctx-guard: ${p.role} was cleared, but /${p.command} did not run; type /${p.command} role=${p.role} handoff=${p.handoff}`)
   } finally {
-    if (gen === mod) await setPending($, null)
+    if (gen === mod) await put($, 'pendingResume', null)
   }
 }
 
@@ -1268,10 +1484,10 @@ async function restartFlow($: EngineInterface, tokenAt: number): Promise<void> {
     const lease = await leaseOf($)
     const restore = async (): Promise<void> => {
       await $.fs.write(stamps.own, stamps.ownText ?? stampJson(lease.id, 0))
-      await $.state.set(STAMP, null)
+      await put($, 'stamp', null)
     }
     const at = await $.clock.now()
-    await $.state.set(STAMP, { path: stamps.own, previous: stamps.ownText, at, owner: lease.id, peerGap: spec.restart.peerGap })
+    await put($, 'stamp', { path: stamps.own, previous: stamps.ownText, at, owner: lease.id, peerGap: spec.restart.peerGap })
     await $.fs.write(stamps.own, stampJson(lease.id, at))
     await settle($, RACE_SETTLE_MS)
     if (gen !== mod) return await quietly(restore)
@@ -1289,23 +1505,26 @@ async function restartFlow($: EngineInterface, tokenAt: number): Promise<void> {
       return await refuse($, last.code, last.text)
     }
     const pending: PendingResume = { role, handoff: g.facts.handoff.path, command: spec.restart.command, prompt: spec.restart.prompt, step: 'clear', at }
-    await setPending($, pending)
+    await put($, 'pendingResume', pending)
     // From here the stamp stands for a real restart.
-    await $.state.set(STAMP, null)
+    await put($, 'stamp', null)
     await setVerdict($, 'ok', `cleared and resumed from ${pending.handoff}`)
     $.ui.toast(`ctx-guard: clearing ${role}; resuming from ${pending.handoff}`)
     try {
       await $.command.run({ command: 'clear' })
       cleared = true
+      // The /clear emptied `$.state`: memory goes back into it.
+      if (needsReady()) await ready($)
+      await put($, 'lastRestartAt', await $.clock.now())
     } catch (e) {
-      await setPending($, null)
+      await put($, 'pendingResume', null)
       await quietly(restore)
       return await refuse($, 'error', `/clear was refused: ${errorText(e)}`)
     }
     // A reload during /clear leaves the resume to the new copy's session start.
     if (gen !== mod) return
     const next: PendingResume = { ...pending, step: 'resume' }
-    await setPending($, next)
+    await put($, 'pendingResume', next)
     await resume($, next, gen)
   } catch (e) {
     await refuse($, 'error', errorText(e))
@@ -1327,10 +1546,10 @@ async function onReadyToken($: EngineInterface, e: TurnCompleteInput): Promise<b
   // Manual mode, auto actions off or a pause: the notes already told the model to ask the operator.
   if (!spec || spec.restart.mode !== 'auto' || !eff.autoActions) return false
   const now = await $.clock.now()
-  if (await paused($, now)) return false
+  if (paused(now)) return false
   // This turn's end, just recorded: any later turn means the session moved on.
-  const tokenAt = (await activity($)).lastMainEndAt ?? now
-  $.clock.after(0, () => void quietly(() => restartFlow($, tokenAt)))
+  const tokenAt = activity().lastMainEndAt ?? now
+  $.clock.after(0, () => void quietly(() => timed($, () => restartFlow($, tokenAt))))
   return true
 }
 
@@ -1339,24 +1558,18 @@ async function onReadyToken($: EngineInterface, e: TurnCompleteInput): Promise<b
 const turnRunningIn = (a: Activity, now: number): boolean => a.mainTurnAt !== null && now - a.mainTurnAt < STALE_TURN_MS
 
 async function turnRunning($: EngineInterface, now: number): Promise<boolean> {
-  return turnRunningIn(await activity($), now)
+  return turnRunningIn(activity(), now)
 }
 
-async function getPendingCompact($: EngineInterface): Promise<PendingCompact | null> {
-  return asPendingCompact((await $.state.get(PENDING_COMPACT)).value ?? null)
-}
-
-async function lastCompact($: EngineInterface): Promise<LastCompact | null> {
-  return asLastCompact((await $.state.get(LAST_COMPACT)).value ?? null)
-}
+const getPendingCompact = (): PendingCompact | null => mem.pendingCompact
 
 async function noteCompact($: EngineInterface, outcome: LastCompact['outcome'], source: string, text: string): Promise<void> {
   const now = await $.clock.now()
-  await update($, LAST_COMPACT, v => nextLastCompact(asLastCompact(v ?? null), outcome, source, text, now))
+  await change($, 'lastCompact', v => nextLastCompact(v, outcome, source, text, now))
 }
 
 async function dropCompact($: EngineInterface, p: PendingCompact, text: string, toast: boolean): Promise<void> {
-  await $.state.set(PENDING_COMPACT, null)
+  await put($, 'pendingCompact', null)
   await noteCompact($, 'dropped', p.triggerId, text)
   if (toast) $.ui.toast(`ctx-guard: the queued /compact for trigger "${p.triggerId}" was dropped: ${text}.`)
 }
@@ -1369,13 +1582,10 @@ const samePending = (cur: PendingCompact | null, p: PendingCompact, step: Pendin
 
 // Rewrites the pending compact only while it is still `p` at `step`; answers whether it did.
 async function movePending($: EngineInterface, p: PendingCompact, step: PendingCompact['step'], fn: (cur: PendingCompact) => PendingCompact | null): Promise<boolean> {
-  let moved = false
-  await update($, PENDING_COMPACT, v => {
-    const cur = asPendingCompact(v ?? null)
-    moved = samePending(cur, p, step)
-    return moved && cur ? fn(cur) : cur
-  })
-  return moved
+  const cur = mem.pendingCompact
+  if (!samePending(cur, p, step)) return false
+  await put($, 'pendingCompact', fn(cur))
+  return true
 }
 
 function compactGateNow(isPaused: boolean): ReturnType<typeof compactGate> {
@@ -1389,11 +1599,11 @@ function scheduleCompact($: EngineInterface, delay = 0): void {
     mod.compactTimer?.cancel()
     mod.compactTimer = $.clock.after(delay, () => {
       mod.compactTimer = null
-      void quietly(() => tryCompact($))
+      void quietly(() => timed($, () => tryCompact($)))
     })
     return
   }
-  $.clock.after(0, () => void quietly(() => tryCompact($)))
+  $.clock.after(0, () => void quietly(() => timed($, () => tryCompact($))))
 }
 
 /**
@@ -1406,11 +1616,11 @@ function scheduleCompact($: EngineInterface, delay = 0): void {
 async function requestCompact($: EngineInterface, fire: Fire, role: string, isPaused: boolean): Promise<void> {
   const id = fire.trigger.id
   const now = await $.clock.now()
-  const r = compactRequest(await getPendingCompact($), await lastCompact($), now)
+  const r = compactRequest(getPendingCompact(), mem.lastCompact, now)
   if (r.kind !== 'queue') return
   const gate = compactGateNow(isPaused)
   const p: PendingCompact = { role, triggerId: id, step: gate ? 'blocked' : 'queued', at: now, notBefore: r.notBefore, waiting: gate?.text ?? null }
-  await $.state.set(PENDING_COMPACT, p)
+  await put($, 'pendingCompact', p)
   if (gate) {
     await noteCompact($, 'skipped', id, gate.text)
     await noticeOnce($, `compact-skip:${gate.code}`, `ctx-guard: /compact for trigger "${id}" skipped: ${gate.text}.`)
@@ -1422,16 +1632,16 @@ async function requestCompact($: EngineInterface, fire: Fire, role: string, isPa
 
 /** A blocked compact whose gate lifted (trust approved, a pause over, auto actions on) is queued again. */
 async function unblockCompact($: EngineInterface, isPaused: boolean): Promise<void> {
-  const p = await getPendingCompact($)
+  const p = getPendingCompact()
   if (!p || p.step !== 'blocked' || compactGateNow(isPaused)) return
-  if (!markHeld((await $.state.get(MARKS)).value ?? null, mod.role.role, p.triggerId)) return await dropCompact($, p, rearmedText(p.triggerId), false)
+  if (!markHeld(mem.marks, mod.role.role, p.triggerId)) return await dropCompact($, p, rearmedText(p.triggerId), false)
   if (!(await movePending($, p, 'blocked', cur => ({ ...cur, step: 'queued', waiting: null })))) return
   if (!(await turnRunning($, await $.clock.now()))) scheduleCompact($)
 }
 
 // The marks just moved: a waiting compact whose trigger re-armed has nothing left to do.
 async function dropRearmedCompact($: EngineInterface, marks: Marks): Promise<void> {
-  const p = await getPendingCompact($)
+  const p = getPendingCompact()
   if (p && p.step !== 'sent' && !markHeld(marks, p.role, p.triggerId)) await dropCompact($, p, rearmedText(p.triggerId), p.step === 'queued')
 }
 
@@ -1458,7 +1668,7 @@ async function tryCompact($: EngineInterface): Promise<void> {
   const gen = mod
   gen.compactTrying = true
   try {
-    const p = await getPendingCompact($)
+    const p = getPendingCompact()
     if (!p || p.step !== 'queued') return
     const eff = mod.eff
     const role = mod.role.role
@@ -1466,13 +1676,13 @@ async function tryCompact($: EngineInterface): Promise<void> {
     if (!active() || !eff || !spec) return await dropCompact($, p, 'ctx-guard is off', false)
     if (role !== p.role) return await dropCompact($, p, `the role is now ${role ?? 'none'}`, true)
     const now = await $.clock.now()
-    const gate = compactGateNow(await paused($, now))
+    const gate = compactGateNow(paused(now))
     if (gate) {
       await movePending($, p, 'queued', cur => ({ ...cur, step: 'blocked', waiting: gate.text }))
       await noteCompact($, 'skipped', p.triggerId, gate.text)
       return await noticeOnce($, `compact-skip:${gate.code}`, `ctx-guard: /compact for trigger "${p.triggerId}" skipped: ${gate.text}.`)
     }
-    if (!markHeld((await $.state.get(MARKS)).value ?? null, role, p.triggerId)) return await dropCompact($, p, rearmedText(p.triggerId), true)
+    if (!markHeld(mem.marks, role, p.triggerId)) return await dropCompact($, p, rearmedText(p.triggerId), true)
     if (p.notBefore !== null && now < p.notBefore) {
       const held = `held until ${humanDuration(COMPACT_QUIET_MS)} after the last compact (${humanDuration(p.notBefore - now)} more)`
       await movePending($, p, 'queued', cur => ({ ...cur, waiting: held }))
@@ -1495,7 +1705,7 @@ async function tryCompact($: EngineInterface): Promise<void> {
       restart: await restartBusy($, now),
       agents: await $.agent.list(),
       steps: await recentSteps($, now),
-      background: (await work($)).background,
+      background: work().background,
     })
     if (busy) {
       // One toast per wait: the first busy try, or the first after a hold ended.
@@ -1525,7 +1735,7 @@ async function tryCompact($: EngineInterface): Promise<void> {
       }
     } finally {
       gen.compacting = false
-      if (gen === mod) await $.state.set(PENDING_COMPACT, null)
+      if (gen === mod) await put($, 'pendingCompact', null)
     }
   } finally {
     gen.compactTrying = false
@@ -1535,22 +1745,22 @@ async function tryCompact($: EngineInterface): Promise<void> {
 // A main-loop turn ended with no restart on its ready token: a queued compact gets its try.
 async function compactAtTurnEnd($: EngineInterface): Promise<void> {
   if (!active()) return
-  if ((await getPendingCompact($))?.step === 'queued') scheduleCompact($)
+  if ((getPendingCompact())?.step === 'queued') scheduleCompact($)
 }
 
 async function rearmCompactHold($: EngineInterface): Promise<void> {
-  const p = await getPendingCompact($)
+  const p = getPendingCompact()
   const now = await $.clock.now()
   if (p?.step === 'queued' && p.notBefore !== null && now < p.notBefore) scheduleCompact($, p.notBefore - now)
 }
 
 /** At a session start: a waiting compact is tried again (or its hold set again); one a reload caught mid-send is never sent twice. */
 async function compactAtStart($: EngineInterface): Promise<void> {
-  const p = await getPendingCompact($)
+  const p = getPendingCompact()
   if (!p) return
   if (p.step === 'sent') return await dropCompact($, p, 'a reload came while /compact was being sent; it may not have run', false)
   const now = await $.clock.now()
-  if (p.step === 'blocked') return await unblockCompact($, await paused($, now))
+  if (p.step === 'blocked') return await unblockCompact($, paused(now))
   if (p.notBefore !== null && now < p.notBefore) return scheduleCompact($, p.notBefore - now)
   if (!(await turnRunning($, now))) scheduleCompact($)
 }
@@ -1569,7 +1779,7 @@ async function compactRestart($: EngineInterface, role: string, spec: RoleSpec, 
     return 'done'
   }
   gen.compacting = true
-  const waiting = await getPendingCompact($)
+  const waiting = getPendingCompact()
   const served = waiting && waiting.step !== 'sent' && (await movePending($, waiting, waiting.step, cur => ({ ...cur, step: 'sent' }))) ? waiting : null
   try {
     await setVerdict($, 'ok', 'compacted on the ready token')
@@ -1583,33 +1793,29 @@ async function compactRestart($: EngineInterface, role: string, spec: RoleSpec, 
   } finally {
     gen.compacting = false
   }
+  await put($, 'lastRestartAt', await $.clock.now())
   await noteCompact($, 'ran', 'ready token', 'compacted on the ready token')
   if (gen === mod && served) await movePending($, served, 'sent', () => null)
   return 'done'
 }
 
 async function clearMark($: EngineInterface, role: string, id: string): Promise<void> {
-  await update($, MARKS, v => {
-    if (!v || v.role !== role || typeof v.byId !== 'object' || v.byId === null || !Object.hasOwn(v.byId, id)) return v ?? null
+  const v = mem.marks
+  if (v && v.role === role && typeof v.byId === 'object' && v.byId !== null && Object.hasOwn(v.byId, id)) {
     const byId = { ...v.byId }
     delete byId[id]
-    return { ...v, byId }
-  })
+    await put($, 'marks', { ...v, byId })
+  }
   mod.gates = null
 }
 
 /** A pending resume a reload left behind: finished once, flagged when sent or stale, dropped when never cleared. */
 async function finishPending($: EngineInterface): Promise<void> {
-  let taken: PendingResume | null = null
-  await update($, PENDING, v => {
-    taken = asPendingResume(v ?? null)
-    return null
-  })
-  carry.pending = null
-  const p = taken as PendingResume | null
+  const p = mem.pendingResume
   if (!p) return
+  await put($, 'pendingResume', null)
   const now = await $.clock.now()
-  const a = pendingAction(p, await getLastClear($), now)
+  const a = pendingAction(p, mem.lastClearAt, now)
   const again = `type /${p.command} role=${p.role} handoff=${p.handoff}`
   switch (a.kind) {
     case 'resume': {
@@ -1633,7 +1839,7 @@ async function finishPending($: EngineInterface): Promise<void> {
       $.ui.toast(`ctx-guard: a restart of ${p.role} was interrupted and is too old to finish; ${again}`)
       return
     case 'not-cleared':
-      carry.dropped = { at: now, pending: p }
+      dropped = { at: now, pending: p }
       await setVerdict($, 'error', 'a reload interrupted the restart before /clear; nothing was cleared')
       $.ui.toast('ctx-guard: a reload interrupted a restart before /clear; nothing was cleared.')
   }
@@ -1668,10 +1874,11 @@ async function syncActive($: EngineInterface): Promise<void> {
   if (!mod.timers.length) {
     // A compact held for the quiet period lost its timer with the disarm.
     void quietly(() => rearmCompactHold($))
-    mod.timers.push($.clock.every(IDLE_TICK_MS, () => void serial(() => evaluateCurrent($, 'never'))))
+    mod.timers.push($.clock.every(IDLE_TICK_MS, () => void serial(() => timed($, () => evaluateCurrent($, 'never')))))
     mod.timers.push(
       $.clock.every(BAND_TICK_MS, () =>
         void serial(async () => {
+          if (needsReady()) await quietly(() => ready($))
           await quietly(() => pruneSubagents($))
           await refreshBand($)
           // The lease's heartbeat also beats here, so a quiet session keeps its role.
@@ -1685,6 +1892,9 @@ async function syncActive($: EngineInterface): Promise<void> {
 async function start($: EngineInterface, isInteractive: boolean, surface: RenderSurface | null): Promise<void> {
   disarm()
   mod = fresh()
+  // A start after a reload finds memory empty and `$.state` whole; one owing a flush still has the memory a /clear kept.
+  if (flushOwed) flush($)
+  else await hydrate($)
   mod.interactive = isInteractive
   mod.surface = surface
 
@@ -1693,23 +1903,40 @@ async function start($: EngineInterface, isInteractive: boolean, surface: Render
     await noticeOnce($, 'version', `ctx-guard needs Claude Code ${MIN_VERSION} or later; this is ${version.version}. Some checks may not work.`)
   }
   const clash = collidingCommand(await $.command.list().catch(() => []), 'ctx-guard', $.plugin.name)
-  if (clash) {
+  if (clash && clash.name === 'ctx-guard') {
     mod.inert = true
     mod.started = true
     const owner = clash.plugin ? `the ${clash.plugin} plugin` : `a ${clash.source} command`
     await noticeOnce($, 'collision', `ctx-guard is off: /ctx-guard already belongs to ${owner}.`)
     return
   }
-  await $.command.register({
-    name: 'ctx-guard',
-    description: 'Context and usage guard: report, role, check, trust, reload, pause, init',
-    argumentHint: ARGUMENT_HINT,
-    immediate: true,
-  })
-  mod.commandOwned = true
+  // Without its command ctx-guard still notes, blocks and draws: only the command is lost.
+  let commandProblem = clash ? `the engine maps /ctx-guard to /${clash.name}` : null
+  if (!commandProblem) {
+    try {
+      await $.command.register({
+        name: 'ctx-guard',
+        description: 'Context and usage guard: report, role, check, trust, reload, pause, init',
+        argumentHint: ARGUMENT_HINT,
+        immediate: true,
+      })
+      mod.commandOwned = true
+    } catch (e) {
+      commandProblem = errorText(e)
+    }
+  }
+  if (commandProblem) await quietly(() => noticeOnce($, 'command', `ctx-guard: the /ctx-guard command is unavailable (${commandProblem}); notes, blocks and the band still work.`))
   mod.env = await $.env.get('CTX_GUARD_ROLE')
+  // A failed read leaves memory empty: the next hook reads again and this part runs again then.
+  recoverOwed = !hydrated
+  await fromMemory($)
+}
+
+// What a start builds from memory: the config's last good copy, the role claim, subagents, a
+// held stamp, a pending resume or compact.
+async function fromMemory($: EngineInterface): Promise<void> {
   await loadConfig($, true)
-  mod.lastMain = (await activity($)).lastMain
+  mod.lastMain = activity().lastMain
   await quietly(() => loadSubagents($))
   mod.started = true
   // Again now that the session counts as started, so a role problem toasts.
@@ -1720,12 +1947,18 @@ async function start($: EngineInterface, isInteractive: boolean, surface: Render
   await quietly(() => leaseBeat($, true))
   await quietly(() => undoHeldStamp($))
   // A reload dropped a restart's timer: its pending resume is finished off the start's path.
-  if (await getPending($)) $.clock.after(0, () => void quietly(() => finishPending($)))
+  if (mem.pendingResume) $.clock.after(0, () => void quietly(() => timed($, () => finishPending($))))
   await quietly(() => compactAtStart($))
 }
 
 function begin($: EngineInterface, isInteractive: boolean, surface: RenderSurface | null): Promise<void> {
-  const run = quietly(() => start($, isInteractive, surface))
+  const run = quietly(async () => {
+    await start($, isInteractive, surface)
+    // A /clear that came while this start ran: done now that there is a session to clear.
+    if (!clearOwed) return
+    clearOwed = false
+    if (mod.started && !mod.inert) await serial(() => onClear($))
+  })
   starting = run
   void run.finally(() => {
     if (starting === run) starting = null
@@ -1749,18 +1982,17 @@ async function reloadConfig($: EngineInterface, force: boolean): Promise<void> {
 
 async function onClear($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
-  const empty: Marks = resetMarks(mod.role.role)
-  await $.state.set(MARKS, empty)
-  await setLastClear($, now)
+  await put($, 'marks', resetMarks(mod.role.role, mem.marks, roleTriggers()))
+  await put($, 'lastClearAt', now)
   mod.gates = null
   // The context starts over and is unknown until the next response; the usage windows go on.
   const reading: MainReading = { tokens: null, at: now }
   mod.lastMain = reading
   await patchActivity($, a => ({ ...a, mainTurnAt: null, lastMain: reading }))
-  const queued = await getPendingCompact($)
+  const queued = getPendingCompact()
   if (queued && queued.step !== 'sent') await dropCompact($, queued, 'a /clear came first', false)
-  const late = carry.dropped
-  carry.dropped = null
+  const late = dropped
+  dropped = null
   if (late && now - late.at < LATE_CLEAR_MS) {
     // The dropped restart's queued /clear ran after all: the context is gone and no resume follows.
     const p = late.pending
@@ -1769,7 +2001,7 @@ async function onClear($: EngineInterface): Promise<void> {
     $.ui.toast(`ctx-guard: the interrupted restart's /clear ran after all; type /${p.command} role=${p.role} handoff=${p.handoff}`)
   }
   if (!active()) return
-  await setBand($, await metricsFor($, await currentReading($), now), await paused($, now), 'always')
+  await setBand($, await metricsFor($, await currentReading($), now), paused(now), 'always')
 }
 
 function asHeldStamp(v: unknown): HeldStamp | null {
@@ -1786,10 +2018,10 @@ function asHeldStamp(v: unknown): HeldStamp | null {
  * still hold the peers off, as long as it is still this session's own.
  */
 async function undoHeldStamp($: EngineInterface): Promise<void> {
-  const held = asHeldStamp((await $.state.get(STAMP)).value)
+  const held = mem.stamp
   if (!held) return
-  await $.state.set(STAMP, null)
-  if (await getPending($)) return
+  await put($, 'stamp', null)
+  if (mem.pendingResume) return
   const now = await $.clock.now()
   if (now - held.at >= held.peerGap) return
   const realRoot = await realRootOf($, await $.session.root())
@@ -1817,7 +2049,7 @@ async function report($: EngineInterface): Promise<string> {
   const metrics = await metricsFor($, reading, now)
   const role = mod.role.role
   const spec = role === null ? null : roleSpec(config, role)
-  const pause = (await $.state.get(PAUSE)).value ?? null
+  const pause = mem.pause
   const isPausedNow = isPaused(pause, now)
   const off = !eff
     ? 'config not loaded'
@@ -1832,16 +2064,16 @@ async function report($: EngineInterface): Promise<string> {
     off,
     pause,
     role: mod.role,
-    configState: await storedConfig($),
+    configState: mem.config,
     config,
     switches: { blocking: eff?.blocking ?? true, autoActions: eff?.autoActions ?? false, display: eff?.display ?? 'band' },
     windowSource: windowFor(reading.context.window).source,
     mode: spec && eff ? effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: isPausedNow }) : null,
     metrics,
-    marks: (await $.state.get(MARKS)).value ?? null,
+    marks: mem.marks,
     triggers: roleTriggers(),
     denies: role === null || !eff ? [] : liveDenies(roleTriggers(), metrics, { blocking: eff.blocking, paused: isPausedNow }),
-    lastClearAt: await getLastClear($),
+    lastClearAt: mem.lastClearAt,
     restart: await restartReport($, role, spec, now),
     subagents: subagentReport(config, eff?.blocking ?? true, isPausedNow),
   })
@@ -1849,24 +2081,24 @@ async function report($: EngineInterface): Promise<string> {
 
 async function restartReport($: EngineInterface, role: string | null, spec: RoleSpec | null, now: number): Promise<RestartReport> {
   const t = mod.trust
-  const pending = await getPending($)
+  const pending = mem.pendingResume
   const out: RestartReport = {
     trusted: t?.trusted === true,
     changed: t?.changed ?? [],
     approvedAt: t?.record?.at ?? null,
-    lastVerdict: (await $.state.get(LAST_VERDICT)).value ?? null,
+    lastVerdict: mem.lastVerdict,
     handoff: null,
     lease: null,
     pending: pending ? `${pending.step} for ${pending.role}, ${humanDuration(now - pending.at)} ago` : null,
     pendingCompact: null,
     lastCompact: null,
   }
-  const pc = await getPendingCompact($)
+  const pc = getPendingCompact()
   if (pc) {
     const waiting = pc.waiting ? `; waiting: ${pc.waiting}` : ''
     out.pendingCompact = `${pc.step === 'sent' ? 'running' : pc.step} for trigger "${pc.triggerId}" (${pc.role}), ${humanDuration(now - pc.at)} ago${waiting}`
   }
-  const lc = await lastCompact($)
+  const lc = mem.lastCompact
   if (lc) out.lastCompact = `${lc.outcome} ${humanDuration(now - lc.at)} ago (${lc.source}): ${lc.text}`
   if (role === null || !spec) return out
   try {
@@ -1897,7 +2129,7 @@ async function roleCommand($: EngineInterface, arg: string): Promise<string> {
     const problem = roleProblem(parsed.role, config, 'command')
     if (problem) return `${PREFIX} ${problem.replace(/; running with no role$/, '')}; nothing changed.`
   }
-  await $.state.set(ROLE_CLAIM, { role: parsed.role, source: 'command', at: await $.clock.now() })
+  await put($, 'roleClaim', { role: parsed.role, source: 'command', at: await $.clock.now() })
   const r = await resolveNow($)
   await serial(() => evaluateCurrent($, 'always'))
   await quietly(() => leaseBeat($, true))
@@ -1910,7 +2142,7 @@ async function pauseCommand($: EngineInterface, arg: string): Promise<string> {
   if (!p.ok) return `${PREFIX} ${p.error}`
   const now = await $.clock.now()
   const pause: Pause | null = p.ms === null ? null : { until: now + p.ms }
-  await $.state.set(PAUSE, pause)
+  await put($, 'pause', pause)
   await serial(() => refreshBand($))
   if (!pause) await quietly(() => unblockCompact($, false))
   return pause
@@ -1969,7 +2201,7 @@ async function resumeClaim($: EngineInterface, args: string): Promise<string | n
     return text
   }
   if (c.kind === 'claim') {
-    await $.state.set(ROLE_CLAIM, { role: c.role, source: 'resume', at: await $.clock.now() })
+    await put($, 'roleClaim', { role: c.role, source: 'resume', at: await $.clock.now() })
     await resolveNow($)
     await serial(() => evaluateCurrent($, 'always'))
     await quietly(() => leaseBeat($, true))
@@ -2002,7 +2234,7 @@ async function trustCommand($: EngineInterface): Promise<string> {
     if (!spec) continue
     const r = spec.restart
     lines.push(`  ${name}:`)
-    lines.push(`    restart: mode ${r.mode}, via ${r.via}, command /${r.command}, prompt ${q(r.prompt)}, peers ${q(r.peers)}, peerGap ${humanDuration(r.peerGap)}`)
+    lines.push(`    restart: mode ${r.mode}, via ${r.via}, command /${r.command}, prompt ${q(r.prompt)}, peers ${q(r.peers)}, peerGap ${humanDuration(r.peerGap)}, selfGap ${r.selfGap ? humanDuration(r.selfGap) : "0 (off)"}`)
     for (const c of r.readyChecks) {
       const hashed = c.run.filter(a => hashes[a])
       const out = c.run.filter(a => outside.includes(a))
@@ -2015,7 +2247,7 @@ async function trustCommand($: EngineInterface): Promise<string> {
     }
     if (!r.readyChecks.length) lines.push('    ready checks: none')
     lines.push(`    handoff: path ${q(spec.handoff.path)}, style ${spec.handoff.style}`)
-    lines.push(`    compact.instructions: ${q(spec.compact.instructions)}`)
+    if (spec.compact.instructions !== null) lines.push(`    compact.instructions: ${q(spec.compact.instructions)}`)
     const compactTriggers = spec.triggers.filter(t => t.do.includes('compact')).map(t => t.id)
     if (compactTriggers.length) lines.push(`    compact triggers: ${compactTriggers.join(', ')}`)
   }
@@ -2024,7 +2256,7 @@ async function trustCommand($: EngineInterface): Promise<string> {
       'a command found elsewhere is trusted by name. Any change to these settings withdraws the approval until you run /ctx-guard trust again.',
   )
   await serial(() => evaluateCurrent($, 'always'))
-  await quietly(async () => unblockCompact($, await paused($, await $.clock.now())))
+  await quietly(async () => unblockCompact($, paused(await $.clock.now())))
   return lines.join('\n')
 }
 
@@ -2040,9 +2272,9 @@ async function checkCommand($: EngineInterface): Promise<string> {
   const why: string[] = []
   if (spec.restart.mode !== 'auto') why.push(`restart mode is ${spec.restart.mode}`)
   if (!eff.autoActions) why.push('autoActions is off in /config')
-  if (await paused($, now)) why.push('ctx-guard is paused')
-  const note = why.length ? `note: the ready token is not acted on now (${why.join('; ')}).` : null
-  return checkText(role, spec.restart.via, checkLines(g.facts), note)
+  if (paused(now)) why.push('ctx-guard is paused')
+  const notes = [why.length ? `note: the ready token is not acted on now (${why.join('; ')}).` : null, renoteRisk(g.facts)].filter(Boolean)
+  return checkText(role, spec.restart.via, checkLines(g.facts), notes.length ? notes.join('\n') : null)
 }
 
 // Changing what ctx-guard does is the person's alone, never the model's or another plugin's.
@@ -2061,7 +2293,7 @@ async function runCommand($: EngineInterface, e: CommandRunInput): Promise<Comma
     case 'reload': {
       await reloadConfig($, true)
       await serial(() => evaluateCurrent($, 'always'))
-      const cs = await storedConfig($)
+      const cs = mem.config
       const errs = cs?.errors.length ?? 0
       return { text: `${PREFIX} reloaded: ${cs?.source ?? 'built-in'} config, ${errs} error${errs === 1 ? '' : 's'}; role ${mod.role.role ?? 'none'}.` }
     }
@@ -2078,12 +2310,48 @@ async function runCommand($: EngineInterface, e: CommandRunInput): Promise<Comma
   }
 }
 
+// ---- tool denies ----------------------------------------------------------------
+
+// A subagent past its stop budget: every call but the one returning its report refused until its
+// turn ends, and nothing else of the main loop's applies.
+async function subagentDeny($: EngineInterface, agentId: string, tool: string): Promise<string | null> {
+  const eff = mod.eff
+  if (!active() || !eff || !eff.blocking || mod.role.role === null) return null
+  const t = mod.agents.get(agentId)
+  const stop = budgetsOn() && t ? stopDeny(t, budgetFor(eff.config, t.identity), tool) : null
+  if (stop === null || !t) return null
+  if (paused(await $.clock.now())) return null
+  return subagentDenyReason({ type: identityType(t.identity) ?? '*', tokens: t.tokens, warn: null, stop })
+}
+
+// Level-triggered: judged afresh from live usage on every main-loop call.
+async function mainDeny($: EngineInterface, tool: string): Promise<string | null> {
+  const eff = mod.eff
+  if (!active() || !eff || !eff.blocking || mod.role.role === null) return null
+  const triggers = roleTriggers()
+  if (!triggers.some(t => t.do.some(a => typeof a === 'object' && a.deny.includes(tool)))) return null
+  const now = await $.clock.now()
+  const isPausedNow = paused(now)
+  if (isPausedNow) return null
+  const metrics = await metricsFor($, await currentReading($), now)
+  const hit = deniedBy(tool, liveDenies(triggers, metrics, { blocking: eff.blocking, paused: isPausedNow }))
+  const trigger = hit ? triggers.find(t => t.id === hit.triggerId) : undefined
+  return trigger ? denyReason(tool, trigger, metrics) : null
+}
+
 // ---- hooks --------------------------------------------------------------------
 
 export const register: Register = (on, options) => {
   const read = readSwitches(options)
   switches = read.switches
   switchErrors = read.errors
+  // A fresh load holds nothing yet: the session start (or the first hook) fills memory from `$.state`.
+  mem = emptyMem()
+  hydrated = false
+  hydrating = null
+  flushOwed = false
+  recoverOwed = false
+  clearOwed = false
 
   on('session.start', async ($, e, next) => {
     await begin($, e.isInteractive, e.surface)
@@ -2092,6 +2360,7 @@ export const register: Register = (on, options) => {
 
   on('session.measure', async ($, e, next) => {
     await quietly(async () => {
+      if (needsReady()) await ready($)
       await ensureStarted($)
       if (!mod.started || mod.inert || !mod.interactive) return
       // A config file edited since the last load takes effect here.
@@ -2102,6 +2371,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    if (needsReady()) await quietly(() => ready($))
     await quietly(() => onMainTurnStart($))
     return next(e)
   })
@@ -2110,7 +2380,15 @@ export const register: Register = (on, options) => {
   // result goes back first; only a step whose fill crosses a gate schedules
   // an evaluation, off the turn's path.
   on('turn.step', async function* ($, e, next) {
-    const r = yield* next(e)
+    if (needsReady()) await quietly(() => ready($))
+    const main = e.agentId === undefined
+    const gen = main ? openMainStep() : 0
+    let r: TurnStepResult
+    try {
+      r = yield* next(e)
+    } finally {
+      if (main && gen === mod.mainGen) mod.mainOpen = false
+    }
     // Seen stepping: a workflow's agents are in no list, so this is the only sign they run.
     if (e.agentId !== undefined && active()) {
       noteStep($, e.agentId)
@@ -2120,9 +2398,10 @@ export const register: Register = (on, options) => {
       const tokens = stepTokens(r.usage)
       if (tokens !== null) {
         mod.lastMain = { tokens, at: mod.lastMain?.at ?? 0 }
+        mod.lastOut = num(r.usage?.output_tokens)
         const model = r.usage?.model ?? null
         if (model !== mod.gatesModel || crossesGates(tokens, mod.gates)) {
-          $.clock.after(0, () => void serial(() => onMainStep($, tokens, model)))
+          $.clock.after(0, () => void serial(() => timed($, () => onMainStep($, tokens, model))))
         }
       }
     }
@@ -2130,6 +2409,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    if (needsReady()) await quietly(() => ready($))
     if (e.agentId === undefined) {
       await quietly(() => onMainTurnEnd($))
       let restarting = false
@@ -2148,29 +2428,48 @@ export const register: Register = (on, options) => {
 
   // Background shell tasks show only here; the restart guard reads the last list.
   on('classic.Stop', async ($, e, next) => {
+    if (needsReady()) await quietly(() => ready($))
     // No list at all is unknown, not empty: the guard refuses on unknown.
     const list = Array.isArray(e.background_tasks)
       ? e.background_tasks.map(t => ({ type: String(t.type), description: String(t.description ?? '') }))
       : null
-    await quietly(() => update($, WORK, v => ({ ...asWork(v), background: list })))
+    await quietly(() => change($, 'work', v => ({ ...(v ?? asWork(null)), background: list })))
     return next(e)
   })
 
   on('session.end', async ($, e, next) => {
-    if (mod.started && !mod.inert) {
-      if (e.reason === 'clear') await quietly(() => serial(() => onClear($)))
+    if (e.reason === 'clear') {
+      // In memory: the wipe that follows empties `$.state`, so the next hook writes it all back.
+      if (mod.started && !mod.inert) await quietly(() => serial(() => onClear($)))
+      else if (starting) clearOwed = true
+      // Also while a start is still under way: what it hydrated (or is reading) is memory's now.
+      if (hydrated || hydrating !== null) flushOwed = true
+    } else {
       // A /clear keeps the session's role; any other end lets the role go.
-      else {
-        await quietly(async () => releaseLease($, await leaseOf($)))
-        // The session is over: nothing it mirrored may reach the next one in this process.
-        carry = emptyCarry()
-      }
+      const lease = mem.lease
+      if (lease && mod.started && !mod.inert) await quietly(() => releaseLease($, lease))
+      // The session is over: no timer of it runs on, and nothing it kept reaches the next one in
+      // this process, which starts and hydrates afresh.
+      disarm()
+      mod = fresh()
+      await quietly(writesSettled)
+      mem = emptyMem()
+      hydrated = false
+      // A read still under way belongs to the old session: its answer is dropped.
+      hydrations += 1
+      hydrating = null
+      putSince = null
+      flushOwed = false
+      recoverOwed = false
+      clearOwed = false
+      dropped = null
     }
     return next(e)
   })
 
   // Who each agent is, from its own spawn: only agents named here or by `$.agent.list` get a budget.
   on('agent.spawn', async ($, e, next) => {
+    if (needsReady()) await quietly(() => ready($))
     const r = await next(e)
     const id = r.agentId
     if (id !== undefined && active()) await quietly(() => onSpawn($, id, e.subagentType, kindOf(e)))
@@ -2179,6 +2478,7 @@ export const register: Register = (on, options) => {
 
   // A resume typed by the person claims its role= for a session with none.
   on('command.run', { command: 'ctx-guard:resume' }, async ($, e, next) => {
+    if (needsReady()) await quietly(() => ready($))
     if (!mod.commandOwned || !active() || e.origin.kind !== 'composer') return next(e)
     const refusal = await resumeClaim($, e.args)
     return refusal === null ? next(e) : { text: refusal }
@@ -2187,37 +2487,32 @@ export const register: Register = (on, options) => {
     next.called ? next(e) : { text: `${PREFIX} /ctx-guard:resume could not check its role= claim; nothing ran. Try again, or set the role with /ctx-guard role first.` },
   )
 
-  // Level-triggered: judged afresh from live usage on every main-loop call.
+  // The denies, then the main loop's result size for the in-flight estimate.
   // No .catch on purpose: a hook that fails is skipped, so a guard that
   // cannot read the figures blocks nothing (fail open).
   on('tool.call', async ($, e, next) => {
-    const eff = mod.eff
-    if (!active() || !eff || !eff.blocking || mod.role.role === null) return next(e)
-    // A subagent past its stop budget: every call refused until its turn ends, and nothing else of the main loop's applies.
-    if (e.agentId !== undefined) {
-      const t = mod.agents.get(e.agentId)
-      const stop = budgetsOn() && t ? stopDeny(t, budgetFor(eff.config, t.identity)) : null
-      if (stop === null || !t) return next(e)
-      if (await paused($, await $.clock.now())) return next(e)
-      return { deny: subagentDenyReason({ type: identityType(t.identity) ?? '*', tokens: t.tokens, warn: null, stop }) }
-    }
+    if (needsReady()) await quietly(() => ready($))
     const tool = String(e.tool)
-    const triggers = roleTriggers()
-    if (!triggers.some(t => t.do.some(a => typeof a === 'object' && a.deny.includes(tool)))) return next(e)
-    const now = await $.clock.now()
-    const isPausedNow = await paused($, now)
-    if (isPausedNow) return next(e)
-    const metrics = await metricsFor($, await currentReading($), now)
-    const hit = deniedBy(tool, liveDenies(triggers, metrics, { blocking: eff.blocking, paused: isPausedNow }))
-    const trigger = hit ? triggers.find(t => t.id === hit.triggerId) : undefined
-    return trigger ? { deny: denyReason(tool, trigger, metrics) } : next(e)
+    if (e.agentId !== undefined) {
+      const deny = await subagentDeny($, e.agentId, tool)
+      return deny === null ? next(e) : { deny }
+    }
+    // Taken before the call runs: its result goes into the request after the step that called it.
+    const gen = mod.mainGen
+    const deny = await mainDeny($, tool)
+    if (deny !== null) return { deny }
+    const r = await next(e)
+    // Only the model's own calls feed its context; a plugin's `$.tool.call` answers the plugin.
+    if (next.origin.plugin === 'engine') addResult(gen, r.text)
+    return r
   })
 
   on('command.run', { command: 'ctx-guard' }, async ($, e, next) => {
+    if (needsReady()) await quietly(() => ready($))
     // Inert, the command is someone else's: pass it on untouched.
     if (!mod.commandOwned) return next(e)
     return runCommand($, e)
   }).catch(($, e, next) => (next.called ? next(e) : { text: `${PREFIX} the command failed; nothing changed.` }))
 
-  registerBand(on, drawsBand)
+  registerBand(on, drawsBand, () => mem.band)
 }

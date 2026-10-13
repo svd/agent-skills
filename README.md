@@ -99,7 +99,7 @@ Requires Claude Code 2.1.293 or later. ctx-guard checks the version at session s
 toast on an older one. Unlike the other plugins here it is a mod, a TypeScript hooks module that
 Claude Code loads itself. Mods are a new plugin kind, and the mod API may still change.
 
-Skills: `/ctx-guard:ctx-guard`. Commands: `/ctx-guard` (report, plus `role`, `check`, `trust`,
+Skills: `/ctx-guard:guide`. Commands: `/ctx-guard` (report, plus `role`, `check`, `trust`,
 `reload`, `pause`, `init [solo|peers]`) and `/ctx-guard:resume`.
 
 Trigger phrases: "set up ctx-guard", "configure a context guard", "auto clear at 60 %",
@@ -116,7 +116,7 @@ was. Model notes start once a session has a role. Set the `defaultRole` switch t
 **Config.** Layers, later wins: built-in defaults, the `/config` switches, the team file
 `.claude/ctx-guard.json` (committed) and the personal `.claude/ctx-guard.local.json` (gitignored).
 Every key, default and recipe is in the
-[config reference](plugins/ctx-guard/skills/ctx-guard/references/config-reference.md).
+[config reference](plugins/ctx-guard/skills/guide/references/config-reference.md).
 
 **Trust.** Settings that run things unattended need your approval per repo: automatic restarts
 (`restart.mode: "auto"` with its command and prompt), `compact` actions and `readyChecks`, plus

@@ -10,11 +10,11 @@ const GITIGNORE = `${ROOT}/.gitignore`
 const WINDOW = 1_000_000
 const HOUR = 60 * 60 * 1000
 
-// Stand-ins for skills/ctx-guard/assets/presets/*.json, which tests cannot read.
+// Stand-ins for skills/guide/assets/presets/*.json, which tests cannot read.
 // They must equal the shipped files byte for byte: when you edit a preset, paste it here too.
 const PRESET_TEXT: Record<string, string> = {
-  solo: "{\n  \"version\": 1,\n  \"defaultRole\": \"main\",\n  \"roles\": {\n    \"main\": {\n      \"description\": \"the one long-running session in this project\",\n      \"triggers\": [\n        { \"id\": \"ctx-soft\", \"when\": { \"context\": \"40%\" }, \"do\": [\"note\"], \"level\": \"soft\" },\n        { \"id\": \"ctx-hard\", \"when\": { \"context\": \"60%\" }, \"do\": [\"note\"], \"level\": \"hard\" },\n        { \"id\": \"ctx-stop\", \"when\": { \"context\": \"75%\", \"every\": \"5%\" }, \"do\": [\"note\"], \"level\": \"stop\" },\n        { \"id\": \"limit-soft\", \"when\": { \"limit.any\": 80 }, \"do\": [\"note\"], \"level\": \"soft\" },\n        { \"id\": \"limit-hard\", \"when\": { \"limit.any\": 90 }, \"do\": [\"note\", \"toast\"], \"level\": \"hard\" },\n        { \"id\": \"limit-brake\", \"when\": { \"limit.any\": 95 }, \"do\": [\"note\", \"toast\", { \"deny\": [\"Agent\"] }], \"level\": \"stop\" }\n      ],\n      \"handoff\": {\n        \"instructions\": \"Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Next action.\"\n      },\n      \"restart\": {\n        \"mode\": \"auto\",\n        \"prompt\": \"Carry out Next action without waiting.\"\n      }\n    }\n  }\n}\n",
-  peers: "{\n  \"version\": 1,\n  \"defaults\": {\n    \"triggers\": [\n      { \"id\": \"ctx-soft\", \"when\": { \"context\": \"40%\" }, \"do\": [\"note\"], \"level\": \"soft\" },\n      { \"id\": \"ctx-hard\", \"when\": { \"context\": \"60%\" }, \"do\": [\"note\"], \"level\": \"hard\" },\n      { \"id\": \"ctx-stop\", \"when\": { \"context\": \"75%\", \"every\": \"5%\" }, \"do\": [\"note\", \"toast\"], \"level\": \"stop\" },\n      { \"id\": \"limit-hard\", \"when\": { \"limit.any\": 90 }, \"do\": [\"note\", \"toast\"], \"level\": \"hard\" },\n      { \"id\": \"limit-brake\", \"when\": { \"limit.any\": 95 }, \"do\": [\"note\", { \"deny\": [\"Agent\"] }], \"level\": \"stop\" }\n    ],\n    \"handoff\": {\n      \"instructions\": \"Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Open questions for the peer, Next action.\"\n    },\n    \"restart\": {\n      \"mode\": \"auto\",\n      \"prompt\": \"Carry out Next action without waiting.\",\n      \"peerGap\": \"10m\"\n    }\n  },\n  \"roles\": {\n    \"lead\": {\n      \"description\": \"coordinates the work and dispatches subagents\",\n      \"notes\": { \"suffix\": \"Before you stop, send the reviewer session a short message: what you finished and what you hand over.\" },\n      \"restart\": { \"peers\": [\"reviewer\"] }\n    },\n    \"reviewer\": {\n      \"description\": \"reviews what the lead session produces\",\n      \"notes\": { \"suffix\": \"Before you stop, send the lead session a short message: what you reviewed and what is still open.\" },\n      \"restart\": { \"peers\": [\"lead\"] }\n    }\n  },\n  \"subagents\": {\n    \"*\": { \"warn\": \"120k\", \"stop\": \"170k\" },\n    \"Explore\": { \"warn\": \"100k\", \"stop\": \"150k\", \"message\": \"Budget of {stop} reached: return your findings now.\" }\n  }\n}\n",
+  solo: "{\n  \"version\": 1,\n  \"defaultRole\": \"main\",\n  \"roles\": {\n    \"main\": {\n      \"description\": \"the one long-running session in this project\",\n      \"triggers\": [\n        { \"id\": \"ctx-soft\", \"when\": { \"context\": \"40%\" }, \"do\": [\"note\"], \"level\": \"soft\" },\n        { \"id\": \"ctx-hard\", \"when\": { \"context\": \"60%\" }, \"do\": [\"note\"], \"level\": \"hard\" },\n        { \"id\": \"ctx-stop\", \"when\": { \"context\": \"75%\", \"every\": \"5%\" }, \"do\": [\"note\"], \"level\": \"stop\" },\n        { \"id\": \"limit-soft\", \"when\": { \"limit.any\": 80 }, \"do\": [\"note\"], \"level\": \"soft\" },\n        { \"id\": \"limit-hard\", \"when\": { \"limit.any\": 90 }, \"do\": [\"note\", \"toast\"], \"level\": \"hard\" },\n        { \"id\": \"limit-brake\", \"when\": { \"limit.any\": 95 }, \"do\": [\"note\", \"toast\", { \"deny\": [\"Agent\"] }], \"level\": \"stop\" }\n      ],\n      \"handoff\": {\n        \"instructions\": \"Rewrite the whole file. Header: when it was written and the git HEAD, if this is a git repo. Sections: Goal, State, Next action.\"\n      },\n      \"restart\": {\n        \"mode\": \"auto\",\n        \"prompt\": \"Carry out Next action without waiting.\"\n      }\n    }\n  }\n}\n",
+  peers: "{\n  \"version\": 1,\n  \"defaults\": {\n    \"triggers\": [\n      { \"id\": \"ctx-soft\", \"when\": { \"context\": \"40%\" }, \"do\": [\"note\"], \"level\": \"soft\" },\n      { \"id\": \"ctx-hard\", \"when\": { \"context\": \"60%\" }, \"do\": [\"note\"], \"level\": \"hard\" },\n      { \"id\": \"ctx-stop\", \"when\": { \"context\": \"75%\", \"every\": \"5%\" }, \"do\": [\"note\", \"toast\"], \"level\": \"stop\" },\n      { \"id\": \"limit-hard\", \"when\": { \"limit.any\": 90 }, \"do\": [\"note\", \"toast\"], \"level\": \"hard\" },\n      { \"id\": \"limit-brake\", \"when\": { \"limit.any\": 95 }, \"do\": [\"note\", { \"deny\": [\"Agent\"] }], \"level\": \"stop\" }\n    ],\n    \"handoff\": {\n      \"instructions\": \"Rewrite the whole file. Header: when it was written and the git HEAD, if this is a git repo. Sections: Goal, State, Open questions for the peer, Next action.\"\n    },\n    \"restart\": {\n      \"mode\": \"auto\",\n      \"prompt\": \"Carry out Next action without waiting.\",\n      \"peerGap\": \"10m\"\n    }\n  },\n  \"roles\": {\n    \"lead\": {\n      \"description\": \"coordinates the work and dispatches subagents\",\n      \"notes\": { \"suffix\": \"Before you stop, send the reviewer session a short message: what you finished and what you hand over.\" },\n      \"restart\": { \"peers\": [\"reviewer\"] }\n    },\n    \"reviewer\": {\n      \"description\": \"reviews what the lead session produces\",\n      \"notes\": { \"suffix\": \"Before you stop, send the lead session a short message: what you reviewed and what is still open.\" },\n      \"restart\": { \"peers\": [\"lead\"] }\n    }\n  },\n  \"subagents\": {\n    \"*\": { \"warn\": \"120k\", \"stop\": \"170k\" },\n    \"Explore\": { \"warn\": \"100k\", \"stop\": \"150k\", \"message\": \"Budget of {stop} reached: return your findings now.\" }\n  }\n}\n",
 }
 
 type Limit = { kind: string; percentUsed: number; resetsAt?: string }
@@ -27,6 +27,8 @@ type World = {
   limits: Limit[]
   commands: { name: string; source: 'builtin' | 'plugin' | 'user' | 'mcp'; plugin?: string }[]
   registered: string[]
+  // Why command.register refuses, or null when it registers.
+  failRegister: string | null
   toasts: string[]
   statuses: (string | undefined)[]
   version: string
@@ -57,6 +59,8 @@ type World = {
   window: number
   // The preset files the plugin ships, by name; read by suffix, wherever the plugin root is.
   presets: Record<string, string>
+  // What a tool's result reads as for the model, by tool name.
+  toolText: Record<string, string>
   clock?: MockClock
 }
 
@@ -67,6 +71,7 @@ function newWorld(over: Partial<World> = {}): World {
     limits: [],
     commands: [],
     registered: [],
+    failRegister: null,
     toasts: [],
     statuses: [],
     version: '2.1.296',
@@ -87,6 +92,7 @@ function newWorld(over: Partial<World> = {}): World {
     rawMax: null,
     window: WINDOW,
     presets: { ...PRESET_TEXT },
+    toolText: {},
     ...over,
   }
 }
@@ -132,6 +138,7 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
   on('settings.read', () => ({ value: {} }))
   on('command.list', () => ({ value: w.commands.map(c => ({ description: '', ...c })) }))
   on('command.register', ($, e) => {
+    if (w.failRegister !== null) return { deny: w.failRegister }
     w.registered.push(e.name)
     return { value: { command: e.name } }
   })
@@ -194,7 +201,7 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
   on('classic.Stop', () => ({}))
   on('fs.read', ($, e) => {
     const f = w.files[e.path]
-    const preset = /\/skills\/ctx-guard\/assets\/presets\/([a-z]+)\.json$/.exec(e.path)?.[1]
+    const preset = /\/skills\/guide\/assets\/presets\/([a-z]+)\.json$/.exec(e.path)?.[1]
     if (!f && preset !== undefined && preset in w.presets) return { value: w.presets[preset] as never }
     if (!f) throw new Error(`ENOENT: ${e.path}`)
     return { value: f.text as never }
@@ -204,7 +211,10 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
     w.onWrite?.(e.path)
     return { value: undefined }
   })
-  on('tool.call', () => ({ result: 'ran' as never }))
+  on('tool.call', ($, e) => {
+    const text = w.toolText[String(e.tool)]
+    return { result: 'ran' as never, ...(text === undefined ? {} : { text }) }
+  })
   // The started agent's id is the spawn's description.
   on('agent.spawn', ($, e) => ({ model: 'm', agentId: e.description }))
   return { clock, session }
@@ -375,6 +385,141 @@ test('/clear re-arms every trigger', async ($, on) => {
   expect(await ctxGuard($, '')).toContain('last /clear: 0s ago')
 })
 
+const run = ($: Engine, command: string) => $.command.run({ command, args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+
+const STATE_KEYS = ['band', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity']
+
+// A test plugin's register sees nothing of this file's scope: what it needs is written inside it.
+// The engine empties ctx-guard's $.state right after a /clear's session.end; the kit
+// does not, so this plugin plays the wipe: after /wipe every key reads as never
+// written until ctx-guard writes it again. After /wipe-hold every key reads as never
+// written whatever ctx-guard writes, so anything it still knows comes from memory.
+// /wipe-sets counts ctx-guard's writes per key since the last /wipe.
+const WIPE: Plugin = {
+  name: 'wipe',
+  register: on => {
+    const keys = ['band', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity']
+    const wiped = new Set<string>()
+    let hold = false
+    let sets: Record<string, number> = {}
+    const wipe = (): void => {
+      for (const k of keys) wiped.add(k)
+      sets = {}
+    }
+    on('command.run', { command: 'wipe' }, () => {
+      wipe()
+      return { text: '' }
+    })
+    on('command.run', { command: 'wipe-hold' }, () => {
+      wipe()
+      hold = true
+      return { text: '' }
+    })
+    on('command.run', { command: 'wipe-sets' }, () => ({ text: JSON.stringify(sets) }))
+    on('state.get', { plugin: 'ctx-guard' }, async ($, e, next) => {
+      const r = await next(e)
+      return wiped.has(e.key) && 'value' in r && r.value ? { value: { value: undefined, version: r.value.version } } : r
+    })
+    on('state.set', { plugin: 'ctx-guard' }, async ($, e, next) => {
+      sets[e.key] = (sets[e.key] ?? 0) + 1
+      if (!hold) wiped.delete(e.key)
+      return next(e)
+    })
+  },
+}
+
+const wipeState = ($: Engine) => run($, 'wipe')
+
+test('a /clear that wipes $.state: the next hook writes back the role, pause, verdict and lease', { plugins: [WIPE, PEEK] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  const { session } = world(on, w)
+  await start($)
+  expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
+  expect(await ctxGuard($, 'pause 30m')).toContain('paused for 30m')
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(1)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  // The wipe as the next session sees it, before ctx-guard runs a hook.
+  expect((await peek($)).roleClaim).toBeNull()
+  await measure($, w, undefined)
+  expect((await peek($)).roleClaim?.role).toBe('lead')
+  const report = await ctxGuard($, '')
+  expect(report).toContain('paused for')
+  expect(report).toContain('role: lead (from /ctx-guard role)')
+  expect(report).toContain('last /clear: 0s ago')
+  expect(report).toContain('lease: held by this session')
+  // The marks were reset by the clear: a new crossing notes again.
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(2)
+})
+
+test('a timer after a wiping /clear writes memory back, before any hook', { plugins: [WIPE, PEEK] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  const { clock } = world(on, w)
+  await start($)
+  await ctxGuard($, 'role lead')
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  // The idle tick is the first of ctx-guard's code to run.
+  await clock.advance(60 * 1000)
+  await clock.settle()
+  expect((await peek($)).roleClaim?.role).toBe('lead')
+})
+
+test('a /clear that keeps $.state leaves it as it is', { plugins: [PEEK] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w)
+  await start($)
+  await ctxGuard($, 'role lead')
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  // A role set after the clear is not undone by the write-back of the memory from before it.
+  await ctxGuard($, 'role none')
+  await measure($, w, 100_000)
+  expect((await peek($)).roleClaim?.role).toBeNull()
+})
+
+// Holds every read of ctx-guard's band from /hold-band to /release-band, as a busy session start can.
+const HOLD_BAND: Plugin = {
+  name: 'hold-band',
+  register: on => {
+    let gate: Promise<void> | null = null
+    let release: () => void = () => undefined
+    on('command.run', { command: 'hold-band' }, () => {
+      gate = new Promise<void>(r => {
+        release = r
+      })
+      return { text: '' }
+    })
+    on('command.run', { command: 'release-band' }, () => {
+      gate = null
+      release()
+      return { text: '' }
+    })
+    on('state.get', { plugin: 'ctx-guard', key: 'band' }, async ($, e, next) => {
+      if (gate) await gate
+      return next(e)
+    })
+  },
+}
+
+test('the band draws without waiting on $: from what was last written', { plugins: [HOLD_BAND] }, async ($, on) => {
+  const w = newWorld({ tokens: 312_000 })
+  writeConfig(w, LEAD_SOFT)
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await run($, 'hold-band')
+  try {
+    const ui = await $.ui.mount({ plugin: 'ctx-guard', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false } as never })
+    expect((await ui.findAll({ type: 'Text', text: '312k (31%)' })).length).toBeGreaterThan(0)
+  } finally {
+    await run($, 'release-band')
+  }
+})
+
 test('Agent is denied past the threshold with blocking on', async ($, on) => {
   const w = newWorld({ limits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: new Date(NOW + 2 * HOUR).toISOString() }] })
   writeConfig(w, LEAD_BRAKE)
@@ -386,6 +531,104 @@ test('Agent is denied past the threshold with blocking on', async ($, on) => {
   const bash = await $.tool.call({ tool: 'Bash', command: 'true' } as never)
   expect(bash.deny).toBeUndefined()
   expect(bash.result).toBe('ran')
+})
+
+const CTX_BRAKE = {
+  version: 1,
+  roles: { lead: { triggers: [{ id: 'stop', when: { context: '80k' }, do: [{ deny: ['Agent'] }], level: 'stop' }] } },
+}
+
+test("a call made while the step streams is judged on that step's request, not the last one", async ($, on) => {
+  // The stop chunk, the only one with usage, comes after the tools a response calls have started.
+  let fill = 72_900
+  let release: () => void = () => undefined
+  let held: Promise<void> = Promise.resolve()
+  on('turn.step', async function* ($, e) {
+    yield { kind: 'text' as const, index: 0, text: 'Reading.' }
+    await held
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'tool_use' as never,
+      usage: { input_tokens: 10, cache_read_input_tokens: fill - 10, cache_creation_input_tokens: 0, output_tokens: 300, model: 'm' },
+    }
+  })
+  const w = newWorld({ tokens: 70_000, toolText: { Read: 'x'.repeat(62_000) } })
+  writeConfig(w, CTX_BRAKE)
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await step($, clock)
+  // 72.9k answered: the Agent passes, and the Read's 62,000 characters go into the next request.
+  expect(await agentDenied($)).toBeUndefined()
+  await $.tool.call({ tool: 'Read', file_path: '/repo/big.txt' } as never)
+  fill = 88_800
+  held = new Promise<void>(r => {
+    release = r
+  })
+  const s = $.turn.step({ turnId: 't1', index: 1, model: 'm', messageCount: 5 })
+  const it = s[Symbol.asyncIterator]()
+  await it.next()
+  // In flight: 72.9k + 300 out + 15.5k of results ≈ 88.7k, past 80k, though usage() still says 70k.
+  expect(await agentDenied($)).toContain('Agent is blocked by trigger "stop"')
+  release()
+  while (!(await it.next()).done) {
+    // drain
+  }
+  await s.result
+  await clock.settle()
+  // Done streaming: the step's own figure stands.
+  expect(await ctxGuard($, '')).toContain('context: 89k')
+  fill = 60_000
+  await step($, clock)
+  expect(await agentDenied($)).toBeUndefined()
+})
+
+// Runs a Read of its own on the main loop: its result goes to this plugin, not into the model's context.
+const READER: Plugin = {
+  name: 'reader',
+  register: on => {
+    on('command.run', { command: 'read-big' }, async $ => {
+      await $.tool.call({ tool: 'Read', file_path: '/repo/big.txt' } as never)
+      return { text: '' }
+    })
+  },
+}
+
+test("a plugin's own tool call adds nothing to the in-flight estimate", { plugins: [READER] }, async ($, on) => {
+  let release: () => void = () => undefined
+  let held: Promise<void> = Promise.resolve()
+  on('turn.step', async function* ($, e) {
+    yield { kind: 'text' as const, index: 0, text: 'Reading.' }
+    await held
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'tool_use' as never,
+      usage: { input_tokens: 10, cache_read_input_tokens: 72_890, cache_creation_input_tokens: 0, output_tokens: 300, model: 'm' },
+    }
+  })
+  const w = newWorld({ tokens: 70_000, toolText: { Read: 'x'.repeat(62_000) } })
+  writeConfig(w, CTX_BRAKE)
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await step($, clock)
+  await $.command.run({ command: 'read-big', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  held = new Promise<void>(r => {
+    release = r
+  })
+  const s = $.turn.step({ turnId: 't1', index: 1, model: 'm', messageCount: 5 })
+  const it = s[Symbol.asyncIterator]()
+  await it.next()
+  expect(await agentDenied($)).toBeUndefined()
+  release()
+  while (!(await it.next()).done) {
+    // drain
+  }
+  await s.result
 })
 
 test('Agent passes below the threshold', async ($, on) => {
@@ -600,6 +843,41 @@ test('another plugin owning /ctx-guard leaves ctx-guard inert', async ($, on) =>
   expect(await ctxGuard($, '')).toBe('the other plugin')
 })
 
+const SOFT_AND_BRAKE = {
+  version: 1,
+  roles: { lead: { triggers: [...LEAD_SOFT.roles.lead.triggers, ...LEAD_BRAKE.roles.lead.triggers] } },
+}
+
+test("a skill named after the plugin takes the bare command: one toast, and notes and denies still work", async ($, on) => {
+  const w = newWorld({
+    commands: [{ name: 'ctx-guard:ctx-guard', source: 'plugin', plugin: 'ctx-guard' }],
+    limits: [{ kind: 'five_hour', percentUsed: 95 }],
+  })
+  writeConfig(w, SOFT_AND_BRAKE)
+  const { session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await start($)
+  expect(w.toasts.filter(t => t.includes('the /ctx-guard command is unavailable (the engine maps /ctx-guard to /ctx-guard:ctx-guard)')).length).toBe(1)
+  expect(w.registered).toEqual([])
+  expect(await agentDenied($)).toContain('Agent is blocked by trigger "brake"')
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(1)
+})
+
+test('a refused command registration toasts its error once and the rest keeps working', async ($, on) => {
+  const w = newWorld({ failRegister: '"/ctx-guard" refused: it is taken', limits: [{ kind: 'five_hour', percentUsed: 95 }] })
+  writeConfig(w, SOFT_AND_BRAKE)
+  const { session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await start($)
+  expect(w.toasts.filter(t => t.includes('the /ctx-guard command is unavailable') && t.includes('"/ctx-guard" refused: it is taken')).length).toBe(1)
+  expect(await agentDenied($)).toContain('Agent is blocked by trigger "brake"')
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(1)
+  // The command is not ctx-guard's: it passes on to whoever answers it.
+  expect(await ctxGuard($, '')).toBe('the other plugin')
+})
+
 test('an old engine gets one toast', async ($, on) => {
   const w = newWorld({ version: '2.1.280' })
   world(on, w)
@@ -658,6 +936,20 @@ test('the band draws above the prompt on the terminal and desktop', async ($, on
     expect((await ui.findAll({ type: 'Text', text: '312k (31%)' })).length).toBeGreaterThan(0)
     expect((await ui.findAll({ type: 'Text', text: '5h 42%' })).length).toBeGreaterThan(0)
   }
+})
+
+test('the band repaints on every new fill', async ($, on) => {
+  const w = newWorld({ tokens: 312_000 })
+  writeConfig(w, LEAD_SOFT)
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'ctx-guard', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false } as never })
+  expect((await ui.findAll({ type: 'Text', text: '312k (31%)' })).length).toBeGreaterThan(0)
+  await measure($, w, 420_000)
+  expect((await ui.findAll({ type: 'Text', text: '420k (42%)' })).length).toBeGreaterThan(0)
+  await measure($, w, 530_000)
+  expect((await ui.findAll({ type: 'Text', text: '530k (53%)' })).length).toBeGreaterThan(0)
+  expect((await ui.findAll({ type: 'Text', text: '420k (42%)' })).length).toBe(0)
 })
 
 const IDLE_ROLE = {
@@ -884,8 +1176,9 @@ function autoConfig(restart: Record<string, unknown> = {}, handoff: Record<strin
   }
 }
 
+// Past the 300k trigger of autoConfig, so a restart has context to free (not-needed holds otherwise).
 function restartWorld(over: Partial<World> = {}): World {
-  return newWorld({ commands: RESTART_COMMANDS, ...over })
+  return newWorld({ commands: RESTART_COMMANDS, tokens: 310_000, ...over })
 }
 
 // A handoff written a minute after the session start.
@@ -1009,7 +1302,9 @@ test('untrusted: refused, never clears, never runs a ready check; the note asks 
   expect(refusals(session)[0]).toContain('CTX-READY ignored (untrusted)')
   expect(refusals(session)[0]).toContain('Nothing was cleared.')
   const report = await ctxGuard($, '')
-  expect(report).toContain('trust: not approved (needs approval: *.readyToken, *.stateDir, lead.compact, lead.compactTriggers, lead.handoff, lead.restart')
+  expect(report).toContain('trust: not approved (needs approval: *.readyToken, *.stateDir, lead.handoff, lead.restart,')
+  // No compact settings: nothing of them to approve.
+  expect(report).not.toContain('lead.compact')
   expect(report).toContain('last verdict: untrusted')
   expect(await ctxGuard($, 'check')).toContain('--   ready-check-failed: not run: the repo is not trusted')
   expect(w.processes).toEqual([])
@@ -1089,9 +1384,9 @@ test('role-shared: another live session holds the lease; one warning toast', asy
   const w = restartWorld()
   w.files[`${STATE}/lead.owner`] = { text: JSON.stringify({ sessionId: 'other', heartbeat: NOW }), mtimeMs: NOW }
   const { clock, session } = await armed($, on, w)
-  await measure($, w, 100_000)
+  await measure($, w, 310_000)
   await clock.advance(6 * MIN)
-  await measure($, w, 100_000)
+  await measure($, w, 310_000)
   expect(w.toasts.filter(t => t.includes('another live session (other) holds role "lead"')).length).toBe(1)
   expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('other')
   await writeHandoff(w, clock)
@@ -1293,6 +1588,8 @@ test('session-handoff style: the newest file under the role slug is the handoff'
   w.files[`${dir}/20261013-1100-aaaa.md`] = { text: '#', mtimeMs: clock.now() + 1 }
   w.files[`${dir}/20261013-1105-bbbb.md`] = { text: '#', mtimeMs: clock.now() + 2 }
   await clock.advance(1000)
+  // Re-armed, so the next crossing notes again.
+  await measure($, w, 100_000)
   await measure($, w, 310_000)
   expect(notes(session).at(-1)).toContain(
     'with the session-handoff skill: Sections: Goal, State, Next action. Use the project slug `ctx-guard-lead` and run its handoff tool from the project root.',
@@ -1523,11 +1820,12 @@ test('trust reads the files again and prints every approved field; a script unde
     'ready check: ["./ready.sh"], timeout 30s (content hashed: ./ready.sh)',
     'ready check: ["git","diff","--quiet"], timeout 30s (no file under the project root: trusted by name only)',
     'handoff: path ".ctx-guard/{role}-handoff.md", style file',
-    'compact.instructions: null',
     'Trusting a ready check trusts what its script does',
   ]) {
     expect(text).toContain(want)
   }
+  // No compact settings: no line for them.
+  expect(text).not.toContain('compact')
   expect(await ctxGuard($, '')).toContain('trust: approved')
   // Editing the script withdraws the approval at the next restart, the config files untouched.
   w.files[`${ROOT}/ready.sh`] = { text: '#!/bin/sh\nrm -rf /\n', mtimeMs: clock.now() }
@@ -1591,6 +1889,13 @@ function compactConfig(restart: Record<string, unknown> = {}) {
       reviewer: {},
     },
   }
+}
+
+// Restart via compact, with a note trigger the world's 310k is past, so the ready token has context to free.
+function viaCompact() {
+  const config = compactConfig({ mode: 'auto', via: 'compact' })
+  config.roles.lead.triggers = [...config.roles.lead.triggers, { id: 'soft', when: { context: '300k' }, do: ['note'] }]
+  return config
 }
 
 // A trusted lead whose last Stop reported nothing in flight.
@@ -1980,7 +2285,7 @@ test('compact action: a ready-token restart at the same turn end goes first', as
 
 test('via compact: runs /compact with the instructions, no clear or resume; handoff, peer and lease are not checked', async ($, on) => {
   const w = restartWorld()
-  const { clock, session } = await armed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  const { clock, session } = await armed($, on, w, viaCompact())
   delete w.files[HANDOFF]
   w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'other', at: clock.now() }), mtimeMs: clock.now() }
   w.files[`${STATE}/lead.owner`] = { text: JSON.stringify({ sessionId: 'other', heartbeat: clock.now() }), mtimeMs: clock.now() }
@@ -1995,7 +2300,7 @@ test('via compact: runs /compact with the instructions, no clear or resume; hand
 
 test('via compact: already-busy while the compact runs; the refusal says nothing was compacted', async ($, on) => {
   const w = restartWorld({ hang: { compact: 30_000 } })
-  const { clock, session } = await armed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  const { clock, session } = await armed($, on, w, viaCompact())
   await ready($, clock)
   await ready($, clock)
   expect(refusals(session).length).toBe(1)
@@ -2017,7 +2322,7 @@ test('via compact: a compact action in flight makes the ready token already-busy
 
 test('via compact: refused while an agent runs or untrusted, and a refused /compact is an error', async ($, on) => {
   const w = restartWorld({ agents: [{ id: 'a1', status: 'running', description: 'scan', type: 'Explore' }] })
-  const { clock, session } = await armed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  const { clock, session } = await armed($, on, w, viaCompact())
   await ready($, clock)
   expect(refusals(session)[0]).toContain('(agents-running)')
   w.agents = []
@@ -2049,7 +2354,7 @@ test('via compact: a compact the trigger queued is served by the ready token\'s'
 
 test('/ctx-guard check via compact skips the handoff, lease and peer checks', async ($, on) => {
   const w = restartWorld()
-  const { clock } = await armed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  const { clock } = await armed($, on, w, viaCompact())
   delete w.files[HANDOFF]
   await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
   const out = await ctxGuard($, 'check')
@@ -2167,7 +2472,7 @@ test('a subagent fill is input + cache read + cache creation; the warn goes once
   await step($, clock, 'sub-1')
   const sent = agentNotes(session, 'sub-1')
   expect(sent.length).toBe(1)
-  expect(sent[0]).toContain("Your context is at 125k, past this subagent's 120k budget. At 170k your tool calls are refused.")
+  expect(sent[0]).toContain("Your context is at 125k, past this subagent's 120k budget. At 170k your tool calls are refused, except the one that returns your report.")
   expect(agentNotes(session)).toEqual([])
   // Warned, not stopped: its calls still run.
   expect(await bashBy($, 'sub-1')).toBeUndefined()
@@ -2187,11 +2492,15 @@ test('the stop goes once, then that agent alone is refused', async ($, on) => {
   fills['sub-1'] = 180_000
   await step($, clock, 'sub-1')
   // Past both at once: only the stop, in the built-in words.
-  expect(agentNotes(session, 'sub-1')).toEqual([JSON.stringify([{ type: 'text', text: '[ctx-guard] context budget 170k reached; return your final report now.' }])])
-  expect(await bashBy($, 'sub-1')).toBe('[ctx-guard] context budget 170k reached; return your final report now.')
+  expect(agentNotes(session, 'sub-1')).toEqual([JSON.stringify([{ type: 'text', text: '[ctx-guard] context budget 170k reached; return your final report now. Tool calls are refused, except the one that returns your report.' }])])
+  expect(await bashBy($, 'sub-1')).toBe('[ctx-guard] context budget 170k reached; return your final report now. Tool calls are refused, except the one that returns your report.')
   expect(await bashBy($, 'sub-2')).toBeUndefined()
   expect(await bashBy($)).toBeUndefined()
   expect(agentNotes(session, 'sub-2')).toEqual([])
+  // The report still goes back.
+  const handback = await $.tool.call({ tool: 'SubagentHandback', message: 'the report', agentId: 'sub-1' } as never)
+  expect(handback.deny).toBeUndefined()
+  expect(handback.result).toBe('ran')
 })
 
 test('blocking off or a pause: the stop note goes, no call is refused', { options: { blocking: false } }, async ($, on) => {
@@ -2232,13 +2541,13 @@ test('a type entry merges over "*": its own stop and message, the "*" warn; "off
   fills.ex = 151_000
   await step($, clock, 'ex')
   expect(agentNotes(session, 'ex')[1]).toContain('[ctx-guard] Budget 150k reached: return your findings now.')
-  expect(await bashBy($, 'ex')).toBe('[ctx-guard] context budget 150k reached; return your final report now.')
+  expect(await bashBy($, 'ex')).toBe('[ctx-guard] context budget 150k reached; return your final report now. Tool calls are refused, except the one that returns your report.')
   // Plan has no warn: nothing at 160k, the "*" stop at 170k.
   await step($, clock, 'plan')
   expect(agentNotes(session, 'plan')).toEqual([])
   fills.plan = 171_000
   await step($, clock, 'plan')
-  expect(agentNotes(session, 'plan')).toEqual([JSON.stringify([{ type: 'text', text: '[ctx-guard] context budget 170k reached; return your final report now.' }])])
+  expect(agentNotes(session, 'plan')).toEqual([JSON.stringify([{ type: 'text', text: '[ctx-guard] context budget 170k reached; return your final report now. Tool calls are refused, except the one that returns your report.' }])])
 })
 
 test('engine forks, Agent forks and teammates get no budget unless an entry names them', async ($, on) => {
@@ -2274,8 +2583,8 @@ test('a "teammate" or "fork" entry budgets them', async ($, on) => {
   await spawn($, 'mate', 'reviewer', { isTeammate: true })
   await step($, clock, 'fk')
   await step($, clock, 'mate')
-  expect(agentNotes(session, 'fk')).toEqual([JSON.stringify([{ type: 'text', text: '[ctx-guard] context budget 300k reached; return your final report now.' }])])
-  expect(await bashBy($, 'mate')).toBe('[ctx-guard] context budget 400k reached; return your final report now.')
+  expect(agentNotes(session, 'fk')).toEqual([JSON.stringify([{ type: 'text', text: '[ctx-guard] context budget 300k reached; return your final report now. Tool calls are refused, except the one that returns your report.' }])])
+  expect(await bashBy($, 'mate')).toBe('[ctx-guard] context budget 400k reached; return your final report now. Tool calls are refused, except the one that returns your report.')
 })
 
 test('a list that throws: no budget yet, asked again once the fill reaches the lowest step of any type', async ($, on) => {
@@ -2296,7 +2605,7 @@ test('a list that throws: no budget yet, asked again once the fill reaches the l
   fills['sub-1'] = 21_000
   await step($, clock, 'sub-1')
   expect(w.agentListCalls).toBe(2)
-  expect(agentNotes(session, 'sub-1')).toEqual([JSON.stringify([{ type: 'text', text: '[ctx-guard] context budget 20k reached; return your final report now.' }])])
+  expect(agentNotes(session, 'sub-1')).toEqual([JSON.stringify([{ type: 'text', text: '[ctx-guard] context budget 20k reached; return your final report now. Tool calls are refused, except the one that returns your report.' }])])
   expect(await ctxGuard($, '')).toMatch(/sub-1 +Explore +21k +10k +20k +stopped \(tool calls refused\)/)
 })
 
@@ -2414,4 +2723,449 @@ test('main-loop steps and denies are untouched by subagent budgets', async ($, o
   expect(await bashBy($)).toBeUndefined()
   expect(await agentDenied($)).toBeUndefined()
   expect(w.agentListCalls).toBe(0)
+})
+
+// ---- state: memory first, written through to $.state ------------------------
+
+// Every ctx-guard key as $.state holds it, undefined left out.
+const PEEK_ALL: Plugin = {
+  name: 'peek-all',
+  register: on => {
+    on('command.run', { command: 'peek-all' }, async $ => {
+      const all: Record<string, unknown> = {
+        band: (await $.state.get({ plugin: 'ctx-guard', key: 'band' })).value,
+        marks: (await $.state.get({ plugin: 'ctx-guard', key: 'marks' })).value,
+        roleClaim: (await $.state.get({ plugin: 'ctx-guard', key: 'roleClaim' })).value,
+        config: (await $.state.get({ plugin: 'ctx-guard', key: 'config' })).value,
+        pause: (await $.state.get({ plugin: 'ctx-guard', key: 'pause' })).value,
+        lastClearAt: (await $.state.get({ plugin: 'ctx-guard', key: 'lastClearAt' })).value,
+        lastVerdict: (await $.state.get({ plugin: 'ctx-guard', key: 'lastVerdict' })).value,
+        lease: (await $.state.get({ plugin: 'ctx-guard', key: 'lease' })).value,
+        activity: (await $.state.get({ plugin: 'ctx-guard', key: 'activity' })).value,
+      }
+      return { text: JSON.stringify(all) }
+    })
+  },
+}
+
+type Peeked = {
+  band?: { role: string | null } | null
+  marks?: { byId: Record<string, unknown> } | null
+  roleClaim?: { role: string | null } | null
+  config?: { source: string } | null
+  pause?: { until: number } | null
+  lastClearAt?: number | null
+  lastVerdict?: { code: string } | null
+  lease?: { id: string } | null
+  activity?: unknown
+}
+
+async function peekAll($: Engine): Promise<Peeked> {
+  return JSON.parse((await run($, 'peek-all')).text ?? '{}')
+}
+
+// Stands for another copy's $.state: after /override-pause, the pause reads as two hours past NOW.
+const OVERRIDE: Plugin = {
+  name: 'override',
+  register: on => {
+    let pause: { until: number } | null = null
+    on('command.run', { command: 'override-pause' }, () => {
+      pause = { until: Date.parse('2026-10-13T14:00:00Z') }
+      return { text: '' }
+    })
+    on('state.get', { plugin: 'ctx-guard', key: 'pause' }, async ($, e, next) => {
+      const r = await next(e)
+      return pause && 'value' in r && r.value ? { value: { value: pause, version: r.value.version } } : r
+    })
+  },
+}
+
+test('after a /clear, a $.state that stays empty: the report still has the pause, role, verdict and config', { plugins: [WIPE, PEEK_ALL] }, async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig())
+  const { clock, session } = world(on, w)
+  await start($)
+  expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('CTX-READY ignored (untrusted)')
+  expect(await ctxGuard($, 'pause 30m')).toContain('paused for 30m')
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await run($, 'wipe-hold')
+  // $.state has nothing ctx-guard could read back.
+  const peeked = await peekAll($)
+  expect(peeked.roleClaim).toBeUndefined()
+  expect(peeked.pause).toBeUndefined()
+  expect(peeked.config).toBeUndefined()
+  const report = await ctxGuard($, '')
+  expect(report).toContain('ctx-guard: paused for')
+  expect(report).toContain('role: lead (from /ctx-guard role)')
+  expect(report).toContain('last verdict: untrusted')
+  expect(report).toContain('config: files')
+  expect(report).toContain('last /clear: 0s ago')
+  expect(await ctxGuard($, 'role')).toContain('role')
+  expect(await ctxGuard($, 'pause off')).toContain('pause lifted')
+  expect(await ctxGuard($, '')).toContain('ctx-guard: on')
+})
+
+test('after a /clear wiped $.state, the first hook writes every key back', { plugins: [WIPE, PEEK_ALL] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w)
+  await start($)
+  await ctxGuard($, 'role lead')
+  await ctxGuard($, 'pause 30m')
+  await measure($, w, 310_000)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  expect(await peekAll($)).toEqual({})
+  // A hook that writes nothing of its own but the activity.
+  await $.turn.start({ text: 'go', turnId: 't2' })
+  const after = await peekAll($)
+  expect(after.roleClaim?.role).toBe('lead')
+  expect(typeof after.pause?.until).toBe('number')
+  expect(after.config?.source).toBe('files')
+  expect(after.lastClearAt).toBe(NOW)
+  expect(after.marks?.byId).toEqual({})
+  expect(after.band?.role).toBe('lead')
+  expect(after.lease?.id).toBe('s1')
+  expect(after.lastVerdict).toBeNull()
+  // Every key went back once; later hooks write only what they change.
+  const sets = JSON.parse((await run($, 'wipe-sets')).text ?? '{}') as Record<string, number>
+  for (const k of STATE_KEYS) expect(sets[k] ?? 0).toBeGreaterThan(0)
+  await $.turn.start({ text: 'go', turnId: 't3' })
+  const again = JSON.parse((await run($, 'wipe-sets')).text ?? '{}') as Record<string, number>
+  expect(again.roleClaim).toBe(sets.roleClaim)
+})
+
+test('a session start fills memory from $.state; until then memory stands', { plugins: [OVERRIDE] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w)
+  await start($)
+  expect(await ctxGuard($, '')).toContain('ctx-guard: on')
+  await run($, 'override-pause')
+  // Reads come from memory, not $.state.
+  expect(await ctxGuard($, '')).toContain('ctx-guard: on')
+  // A reload fires session.start: memory is what $.state holds.
+  await start($)
+  expect(await ctxGuard($, '')).toContain('ctx-guard: paused for 2h')
+})
+
+// Refuses every read of ctx-guard's $.state from /deny-reads to /allow-reads, as a failing host would.
+const DENY_READS: Plugin = {
+  name: 'deny-reads',
+  register: on => {
+    let deny = false
+    on('command.run', { command: 'deny-reads' }, () => {
+      deny = true
+      return { text: '' }
+    })
+    on('command.run', { command: 'allow-reads' }, () => {
+      deny = false
+      return { text: '' }
+    })
+    on('state.get', { plugin: 'ctx-guard' }, async ($, e, next) => (deny ? { deny: 'state unreadable' } : next(e)))
+  },
+}
+
+test('a session end other than /clear forgets the session: no role claim or pause reaches the next one', { plugins: [WIPE, DENY_READS] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w)
+  await start($)
+  await ctxGuard($, 'role lead')
+  await ctxGuard($, 'pause 30m')
+  // A /clear left memory to be written back; the session then ends before any hook did.
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  // The next conversation's $.state holds nothing of this one.
+  await wipeState($)
+  await start($)
+  const after = await ctxGuard($, '')
+  expect(after).toContain('role: none')
+  expect(after).toContain('ctx-guard: on')
+})
+
+test('a session end other than /clear empties memory itself: an unreadable $.state leaves nothing of the old session', { plugins: [DENY_READS] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w)
+  await start($)
+  await ctxGuard($, 'role lead')
+  await ctxGuard($, 'pause 30m')
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  // $.state still holds the old session, but cannot be read: memory is all the next start has.
+  await run($, 'deny-reads')
+  await start($)
+  const after = await ctxGuard($, '')
+  expect(after).toContain('role: none')
+  expect(after).toContain('ctx-guard: on')
+})
+
+test('a session end other than /clear stops the timers: the released role is not claimed again', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w)
+  const owner = () => JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}')
+  expect(owner().sessionId).toBe('s1')
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: {} as never })
+  expect(owner().heartbeat).toBe(0)
+  await clock.advance(20 * MIN)
+  await clock.settle()
+  expect(owner().heartbeat).toBe(0)
+})
+
+test('a failed read at a session start is tried again by the next hook', { plugins: [OVERRIDE, DENY_READS] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w)
+  await start($)
+  await run($, 'override-pause')
+  await run($, 'deny-reads')
+  await start($)
+  expect(await ctxGuard($, '')).toContain('ctx-guard: on')
+  await run($, 'allow-reads')
+  expect(await ctxGuard($, '')).toContain('ctx-guard: paused for 2h')
+})
+
+// Holds ctx-guard's clock reads (/hold-clock) or the answer of its roleClaim reads (/hold-claim:
+// read at once, answered on release), or the command list (/hold-list), until /release.
+const HOLD: Plugin = {
+  name: 'hold',
+  register: on => {
+    const gates: Record<string, { p: Promise<void>; open: () => void }> = {}
+    const hold = (k: string): void => {
+      let open: () => void = () => undefined
+      const p = new Promise<void>(r => {
+        open = r
+      })
+      gates[k] = { p, open }
+    }
+    for (const k of ['clock', 'claim', 'list']) {
+      on('command.run', { command: `hold-${k}` }, () => {
+        hold(k)
+        return { text: '' }
+      })
+      on('command.run', { command: `release-${k}` }, () => {
+        gates[k]?.open()
+        delete gates[k]
+        return { text: '' }
+      })
+    }
+    on('clock.now', async ($, e, next) => {
+      if (gates.clock) await gates.clock.p
+      return next(e)
+    })
+    let claimed = 0
+    on('command.run', { command: 'claim-waits' }, () => ({ text: String(claimed) }))
+    on('state.get', { plugin: 'ctx-guard', key: 'roleClaim' }, async ($, e, next) => {
+      const r = await next(e)
+      if (gates.claim) {
+        claimed += 1
+        await gates.claim.p
+      }
+      return r
+    })
+    let listed = 0
+    on('command.run', { command: 'list-waits' }, () => ({ text: String(listed) }))
+    on('command.list', async ($, e, next) => {
+      if (gates.list) {
+        listed += 1
+        await gates.list.p
+      }
+      return next(e)
+    })
+  },
+}
+
+test('a write that lands while a session start reads $.state is kept in memory', { plugins: [HOLD, PEEK] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w)
+  await start($)
+  await ctxGuard($, 'role lead')
+  // The command is under way, waiting on the clock, when the reload's start reads the old claim.
+  await run($, 'hold-clock')
+  const cmd = ctxGuard($, 'role none')
+  await run($, 'hold-claim')
+  const started = start($)
+  await run($, 'release-clock')
+  expect(await cmd).toContain('role is now none')
+  await run($, 'release-claim')
+  await started
+  expect((await peek($)).roleClaim?.role).toBeNull()
+  expect(await ctxGuard($, '')).toContain('role: none')
+})
+
+test('a /clear while a session start is still under way is written back too, and applied once the start is done', { plugins: [HOLD, WIPE, PEEK] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  const { session } = world(on, w)
+  await start($)
+  await ctxGuard($, 'role lead')
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(1)
+  await run($, 'hold-list')
+  const started = start($)
+  // The start is past its read of $.state, waiting on the command list.
+  for (let i = 0; i < 50 && (await run($, 'list-waits')).text === '0'; i++) await Promise.resolve()
+  expect((await run($, 'list-waits')).text).toBe('1')
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  await run($, 'release-list')
+  await started
+  await $.turn.start({ text: 'go', turnId: 't2' })
+  expect((await peek($)).roleClaim?.role).toBe('lead')
+  // The clear re-armed the context trigger and is on the report.
+  expect(await ctxGuard($, '')).toContain('last /clear: 0s ago')
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(2)
+})
+
+test('a session end while a start reads $.state drops that read', { plugins: [HOLD, WIPE] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w)
+  await start($)
+  await ctxGuard($, 'role lead')
+  await run($, 'hold-claim')
+  const started = start($)
+  for (let i = 0; i < 50 && (await run($, 'claim-waits')).text === '0'; i++) await Promise.resolve()
+  expect((await run($, 'claim-waits')).text).toBe('1')
+  // The old session's read answers after it ended, and the next conversation holds nothing of it.
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  await run($, 'release-claim')
+  await started
+  const report = await ctxGuard($, '')
+  expect(report).toContain('role: none')
+  expect(report).not.toContain('role: lead')
+})
+
+test('a failed read at a session start: the retry restores the claimed role and finishes the pending resume', { plugins: [DENY_READS, PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ hang: { clear: 60_000 } })
+  writeConfig(w, autoConfig())
+  const { clock } = world(on, w)
+  await start($)
+  expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
+  expect(await ctxGuard($, 'trust')).toContain('approved for /repo')
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect((await peekRestart($)).pendingResume?.step).toBe('clear')
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  // A reload whose new copy starts with no memory, and cannot read $.state at first.
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  expect(w.ran).toEqual(['clear'])
+  await run($, 'allow-reads')
+  await $.turn.start({ text: 'go', turnId: 't2' })
+  await clock.settle()
+  expect(w.ran).toEqual(['clear', RESUME])
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard role)')
+})
+
+test('an idle tick right after a /clear that wiped $.state still sees the pause', { plugins: [WIPE] }, async ($, on) => {
+  const w = restartWorld()
+  const config = { version: 1, roles: { lead: { triggers: [{ id: 'nap', when: { idle: '5m' }, do: ['compact'] }], compact: { instructions: KEEP } } } }
+  const { clock } = await compactArmed($, on, w, config)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await mainTurnEnd($, clock)
+  expect(await ctxGuard($, 'pause 30m')).toContain('paused for 30m')
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await run($, 'wipe-hold')
+  // The idle tick is the first of ctx-guard's code to run.
+  await clock.advance(6 * MIN)
+  await clock.settle()
+  expect(w.toasts).toContain('ctx-guard: /compact for trigger "nap" skipped: ctx-guard is paused.')
+  expect(w.ran).toEqual([])
+})
+
+// Counts the band's reads: every draw of the band reads it once. The kit draws again when the drawing is next read.
+const COUNT_BAND: Plugin = {
+  name: 'count-band',
+  register: on => {
+    let reads = 0
+    on('command.run', { command: 'band-reads' }, () => ({ text: String(reads) }))
+    on('state.get', { plugin: 'ctx-guard', key: 'band' }, async ($, e, next) => {
+      reads += 1
+      return next(e)
+    })
+  },
+}
+
+const bandReads = async ($: Engine): Promise<number> => Number((await run($, 'band-reads')).text)
+
+test('the band draws from memory after a wiping /clear and repaints when the write-back lands', { plugins: [WIPE, COUNT_BAND] }, async ($, on) => {
+  const w = newWorld({ tokens: 312_000 })
+  writeConfig(w, LEAD_SOFT)
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'ctx-guard', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false } as never })
+  expect((await ui.findAll({ type: 'Text', text: '312k (31%)' })).length).toBeGreaterThan(0)
+  // A hook that writes no band draws nothing again.
+  const quiet = await bandReads($)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await ui.drawn()
+  expect(await bandReads($)).toBe(quiet)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  await ui.drawn()
+  const cleared = await bandReads($)
+  // The first hook writes the band back into $.state, which draws it again, from memory: the role, no fill.
+  await $.turn.start({ text: 'go', turnId: 't2' })
+  await ui.drawn()
+  expect(await bandReads($)).toBe(cleared + 1)
+  expect((await ui.findAll({ type: 'Text', text: 'lead' })).length).toBeGreaterThan(0)
+  expect((await ui.findAll({ type: 'Text', text: '312k (31%)' })).length).toBe(0)
+})
+
+// A week past 80% used to loop: the limit note asked for a restart, the /clear re-armed its mark,
+// and the note came straight back after the resume.
+test('a usage note never loops a restart: no tail, not-needed, its mark survives /clear, too-soon', { plugins: [WIPE] }, async ($, on) => {
+  const w = restartWorld({ tokens: 100_000, limits: [], hang: { clear: 1000 } })
+  writeConfig(w, PRESET_TEXT.solo)
+  const { clock, session } = world(on, w)
+  await start($)
+  expect(await ctxGuard($, 'trust')).toContain('approved for /repo')
+  await writeHandoff(w, clock, `${STATE}/main-handoff.md`)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  w.limits = [{ kind: 'seven_day', percentUsed: 89 }]
+  await measure($, w, 100_000)
+  const weekly = (): string[] => notes(session).filter(n => n.includes('Weekly usage is at 89%'))
+  expect(weekly().length).toBe(1)
+  expect(weekly()[0]).not.toContain('CTX-READY')
+  expect(weekly()[0]).toContain('Prefer cheaper steps')
+  // A token anyway: there is no context to free.
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain('CTX-READY ignored (not-needed): context is at 100k, under the lowest context threshold 40% (400k)')
+  expect(w.ran).toEqual([])
+  // Past the context threshold the restart goes through.
+  await measure($, w, 450_000)
+  expect(notes(session).at(-1)).toContain('CTX-READY')
+  await ready($, clock)
+  // As a session runs it: /clear ends the session and empties $.state before the resume.
+  expect(w.ran).toEqual(['clear'])
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  await clock.advance(1000)
+  await clock.settle()
+  expect(w.ran).toEqual(['clear', 'ctx-guard:resume role=main handoff=.ctx-guard/main-handoff.md Carry out Next action without waiting.'])
+  await measure($, w, undefined)
+  await measure($, w, 60_000)
+  // The week is still at 89%: no second note, so nothing asks for a restart.
+  expect(weekly().length).toBe(1)
+  // A reload: what it reads back is what the write-back after the wipe left in $.state.
+  await start($)
+  await measure($, w, 60_000)
+  expect(weekly().length).toBe(1)
+  // A context crossing soon after does note, but a token within selfGap is refused.
+  await measure($, w, 450_000)
+  await writeHandoff(w, clock, `${STATE}/main-handoff.md`)
+  expect(await ctxGuard($, 'check')).toContain('warning: ')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain('CTX-READY ignored (too-soon): this session restarted')
+  expect(refusals(session).at(-1)).toContain('under selfGap 5m')
+  expect(w.ran.length).toBe(2)
+  expect(await ctxGuard($, 'check')).toContain('FAIL too-soon')
 })

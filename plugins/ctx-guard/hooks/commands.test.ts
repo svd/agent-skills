@@ -69,8 +69,8 @@ describe('pause', () => {
 
 describe('presets', () => {
   test('each preset is a file under the skill assets, named after it', () => {
-    expect(PRESET_DIR).toBe('skills/ctx-guard/assets/presets')
-    for (const p of PRESETS) expect(presetPath('/plugins/ctx-guard/', p)).toBe(`/plugins/ctx-guard/skills/ctx-guard/assets/presets/${p}.json`)
+    expect(PRESET_DIR).toBe('skills/guide/assets/presets')
+    for (const p of PRESETS) expect(presetPath('/plugins/ctx-guard/', p)).toBe(`/plugins/ctx-guard/skills/guide/assets/presets/${p}.json`)
   })
 
   test('presetProblem passes a valid config and names what is wrong otherwise', () => {
@@ -122,6 +122,15 @@ describe('start-up checks', () => {
     expect(collidingCommand([{ name: 'ctx-guard:resume', source: 'plugin', plugin: 'x' }], 'ctx-guard', self)).toBeNull()
     expect(collidingCommand([{ name: 'ctx-guard', source: 'plugin', plugin: 'x' }], 'ctx-guard', self)?.plugin).toBe('x')
     expect(collidingCommand([{ name: 'ctx-guard', source: 'user' }], 'ctx-guard', self)?.source).toBe('user')
+  })
+
+  test('collidingCommand reports a skill named after the plugin, which the bare command maps to', () => {
+    const self = 'ctx-guard'
+    const skill = { name: 'ctx-guard:ctx-guard', source: 'plugin', plugin: 'ctx-guard' }
+    expect(collidingCommand([skill], 'ctx-guard', self)?.name).toBe('ctx-guard:ctx-guard')
+    expect(collidingCommand([{ name: 'ctx-guard:guide', source: 'plugin', plugin: 'ctx-guard' }], 'ctx-guard', self)).toBeNull()
+    // Another owner of the bare name wins: that one leaves ctx-guard inert.
+    expect(collidingCommand([skill, { name: 'ctx-guard', source: 'user' }], 'ctx-guard', self)?.name).toBe('ctx-guard')
   })
 })
 

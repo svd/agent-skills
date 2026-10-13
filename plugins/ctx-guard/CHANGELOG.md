@@ -16,28 +16,46 @@ All notable changes to the `ctx-guard` plugin are documented here.
   interactive sessions only), `/ctx-guard role` and `/ctx-guard:resume` argument parsing, and the
   role lease decision.
 - Trigger evaluation: rising edges per trigger id with JSON marks, `every` steps, AND metrics,
-  re-arm on drop and on `/clear`, unknown metrics skipped, and the level-triggered deny set.
+  re-arm on drop and, for triggers with a `context` condition, on `/clear` (a trigger on usage,
+  cost or idle alone keeps its mark across `/clear`), unknown metrics skipped, and the
+  level-triggered deny set.
 - Note, toast, deny-reason, refusal and subagent-budget texts, worded by level and restart mode.
+  Only a note with a fired context trigger carries the restart tail: a restart frees context, so
+  a note on usage, cost or idle alone asks for none.
 - Hook wiring: config loaded at session start, on `/ctx-guard reload` and when a config file's
   mtime changes (an invalid file toasts once and keeps the last good config); triggers evaluated
   on `session.measure`, after a main-loop model request whose fill crosses a threshold
   (mid-turn, off the request's path) and on a one-minute idle timer, with notes, toasts and OS
   notifications on the rising edge; marks, the running-turn flag and the newest fill kept across
-  hot reloads, marks reset on `/clear`; main-loop tool calls denied while a deny trigger holds
-  (fails open, lifted by `blocking: false` or a pause). With no role, toasts only.
+  hot reloads, context marks reset on `/clear`; main-loop tool calls denied while a deny trigger holds
+  (fails open, lifted by `blocking: false` or a pause). A call made while its response still
+  streams is judged on that request's fill, estimated as the last request's input and output plus
+  the tool results since (4 characters a token), since its usage arrives only at the stream's
+  end. With no role, toasts only.
   `contextWindow: "auto"` uses the engine's own compaction window when it reports one.
 - The band above the prompt (`lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · deny Agent`),
-  or the same text on the status line on other surfaces or with `display: status`.
+  or the same text on the status line on other surfaces or with `display: status`. It draws the
+  band last written, never waiting on a busy session start.
 - `/ctx-guard` command: report (role and its source, config files and errors, effective config
   and where its window came from, metrics, marks, live blocks), `reload`, and, typed by the
   person only, `role <name|none>` (survives a reload), `pause [30m|off]`, and
   `init [solo|peers]`, which writes a starter config
   only when there is none and adds the local config and state folder to `.gitignore`.
 - Start-up checks: a toast and no hooks when another plugin owns `/ctx-guard`, and a toast on
-  Claude Code older than 2.1.293.
+  Claude Code older than 2.1.293. When the command cannot be had (a skill or command listed as
+  `ctx-guard:ctx-guard` takes the bare name, or the engine refuses the registration) one toast
+  names why, and notes, blocks and the band still work.
+- State across `/clear` and reloads: everything ctx-guard keeps is held in memory and written
+  through to `$.state`. A session start fills memory from `$.state` (a reload keeps `$.state`
+  but not memory); a `/clear` keeps memory but empties `$.state`, so its marks are reset and the
+  first hook or timer after it writes every key back. A session that ends any other way forgets
+  what it held. A reload landing after a `/clear` and before that first hook starts from the
+  emptied `$.state`.
 - Guarded restart on the ready token: when the main loop's answer ends on a line holding only
   `readyToken` and the role's `restart.mode` is `auto`, a fail-closed verdict runs, refusing in
-  order with `untrusted`, `already-busy`, `no-restart-command`, `agents-running` (listed agents,
+  order with `untrusted`, `already-busy`, `not-needed` (the context is below the role's lowest
+  context threshold), `too-soon` (this session restarted less than `restart.selfGap`, default
+  `5m`, ago; `"0"` turns it off), `no-restart-command`, `agents-running` (listed agents,
   or an agent seen stepping with no end, which covers workflow agents), `background-tasks` (the
   last Stop's list; none reported counts as unknown and refuses), `role-shared`, `no-handoff`, `handoff-stale`, `stamp-unreadable`,
   `peer-restarting`, `ready-check-failed`, `race-lost` or `error`. A refusal toasts and notes
@@ -70,7 +88,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
   resolves outside the project root (a symlink, or a missing file under a linked folder) refuses
   the restart with `error`.
 - `/ctx-guard check` (typed by the person): a dry run of every restart check (ready checks run when trusted), with no
-  stamp written, no race and no clear. The report adds trust (and which fields need approval),
+  stamp written, no race and no clear; it warns when, minutes after a restart, the context is
+  already past the role's lowest context threshold. The report adds trust (and which fields need approval;
+  with nothing approved yet, only those that hold something),
   the last verdict, the handoff's age, the lease owner and a pending resume.
 - Compact: a trigger's `compact` action queues `/compact {compact.instructions}` (kept across
   reloads) and runs it at once when no main turn runs, else at the next main-loop turn end, once
@@ -87,7 +107,7 @@ All notable changes to the `ctx-guard` plugin are documented here.
   peer ones, then `/compact {compact.instructions}`, with no resume after it. A ready token while
   a compact runs is refused with `already-busy`, and a via-compact refusal says nothing was
   compacted. The report shows a queued compact and the last one; `/ctx-guard check` covers via
-  compact.
+  compact. Notes of such a role plan for a compaction, not a handoff.
 - Subagent budgets: each subagent's fill (input + cache read + cache creation of its latest
   request) is measured on its `turn.step`, with arithmetic only on the request's path. Its type
   and kind come from its `agent.spawn` (workflow agents included), kept across reloads, with
@@ -96,13 +116,17 @@ All notable changes to the `ctx-guard` plugin are documented here.
   `fork` or `teammate`. A type's `subagents` entry merges field by field
   over `"*"` (unset or `null` inherits, `"off"` drops that step). Past `warn` the agent gets one
   note; past `stop` it gets one stop note (the entry's `message`, or "context budget {stop}
-  reached; return your final report now.") and every later tool call of that agent is refused
-  with that reason, unless blocking is off or ctx-guard is paused (the notes still go). Budgets
+  reached; return your final report now. Tool calls are refused, except the one that returns your
+  report.") and every later tool call of that agent is refused with that reason, unless blocking
+  is off or ctx-guard is paused (the notes still go). The tools that hand a result back
+  (`SubagentHandback`, `StructuredOutput`, `ReportFindings`) are never refused, so the report
+  arrives. Budgets
   apply only once the session has a role. Agents past a step are kept across reloads, so a reload
   does not lift a deny; an agent is dropped at its `turn.complete`, or after 2 hours unseen. The
   band shows `sub N!` while N agents are past their warn, and the report lists the merged budgets
   and a table of followed agents (id, type, fill, warn, stop, state).
-- `ctx-guard` skill: the protocol for answering `[ctx-guard]` notes (safe point, handoff, ready
+- `guide` skill (`/ctx-guard:guide`; a skill named `ctx-guard` would take the bare `/ctx-guard`
+  command): the protocol for answering `[ctx-guard]` notes (safe point, handoff, ready
   token, refusals, blocked tools, subagent budget notes) and for configuring the plugin; a config
   reference with every key, default, refusal code, trust rule and recipes (solo, coordinator and
   workers, peers, compact instead of clear, a usage brake, a personal override); a JSON Schema of

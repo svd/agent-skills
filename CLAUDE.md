@@ -103,7 +103,7 @@ Per-plugin specifics:
   resolves a role (`/ctx-guard role` > `CTX_GUARD_ROLE` > `defaultRole`), fires triggers (notes,
   toasts, notify, tool denies, compact), and on the ready token runs a fail-closed verdict before
   `/clear` + `/ctx-guard:resume` or `/compact`. Auto actions and ready checks need per-repo
-  `/ctx-guard trust`. Every key is in `skills/ctx-guard/references/config-reference.md`.
+  `/ctx-guard trust`. Every key is in `skills/guide/references/config-reference.md`.
 
 ## Releasing
 
@@ -149,7 +149,7 @@ tsc -p plugins/ctx-guard
 ```
 
 The test kit can't read plugin files, so `register.test.ts` serves inline copies of
-`skills/ctx-guard/assets/presets/*.json` to `/ctx-guard init`. When you edit a preset, update its
+`skills/guide/assets/presets/*.json` to `/ctx-guard init`. When you edit a preset, update its
 copy (`PRESET_TEXT`) to match byte for byte.
 
 ## Pricing table (shared across manage-claude-projects and session-analyzer)

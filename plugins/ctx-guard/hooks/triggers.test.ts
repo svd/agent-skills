@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { roleSpec, validate } from './config'
-import { conditions, crossesGates, deniedBy, evaluate, idleMs, limitsFrom, liveDenies, markHeld, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
+import { CHARS_PER_TOKEN, conditions, crossesGates, deniedBy, evaluate, idleMs, inFlightTokens, limitsFrom, liveDenies, markHeld, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
 import type { Metrics } from './triggers'
 import type { Config, Marks, Trigger } from '../types'
 
@@ -90,6 +90,24 @@ describe('re-arm', () => {
     const first = run(t, [m({ tokens: 310_000 })])
     expect(run(t, [m({ tokens: 320_000 })], first.marks).fired).toEqual([[]])
     expect(run(t, [m({ tokens: 320_000 })], resetMarks('lead')).fired).toEqual([['soft@0']])
+  })
+
+  test('on clear: triggers with no context condition keep their marks; mixed ones re-arm', () => {
+    const t = trigs(
+      soft,
+      { id: 'week', when: { 'limit.seven_day': 80 }, do: ['note'] },
+      { id: 'spend', when: { cost: '$5' }, do: ['note'] },
+      { id: 'both', when: { context: '300k', 'limit.any': 80 }, do: ['note'] },
+    )
+    const first = run(t, [m({ tokens: 310_000, week: 89, cost: 6 })])
+    expect(first.fired).toEqual([['soft@0', 'week@0', 'spend@0', 'both@0']])
+    const cleared = resetMarks('lead', first.marks, t)
+    expect(Object.keys(cleared.byId).sort()).toEqual(['spend', 'week'])
+    expect(run(t, [m({ tokens: 320_000, week: 89, cost: 6 })], cleared).fired).toEqual([['soft@0', 'both@0']])
+    // They still re-arm when their own figure drops.
+    expect(run(t, [m({ tokens: 320_000, week: 50, cost: 6 }), m({ tokens: 320_000, week: 89, cost: 6 })], cleared).fired).toEqual([['soft@0'], ['week@0', 'both@0']])
+    // Marks of another role are not kept.
+    expect(resetMarks('other', first.marks, t).byId).toEqual({})
   })
 
   test('a percent threshold re-arms when the window grows', () => {
@@ -368,6 +386,15 @@ describe('planActions', () => {
     expect(plan.notifies.map(f => f.trigger.id)).toEqual(['c'])
     expect(plan.compact?.trigger.id).toBe('a')
     expect(planActions([])).toEqual({ notes: [], toasts: [], notifies: [], compact: null })
+  })
+})
+
+describe('inFlightTokens', () => {
+  test('the last input, its output and the results since, at 4 characters a token', () => {
+    expect(CHARS_PER_TOKEN).toBe(4)
+    expect(inFlightTokens(72_900, 300, 62_000)).toBe(72_900 + 300 + 15_500)
+    expect(inFlightTokens(1000, null, 0)).toBe(1000)
+    expect(inFlightTokens(1000, 10, 5)).toBe(1012)
   })
 })
 

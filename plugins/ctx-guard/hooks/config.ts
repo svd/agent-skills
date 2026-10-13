@@ -39,6 +39,7 @@ export const DEFAULT_STATE_DIR = '.ctx-guard'
 export const DEFAULT_READY_TOKEN = 'CTX-READY'
 export const DEFAULT_RESTART_COMMAND = 'ctx-guard:resume'
 export const DEFAULT_PEER_GAP = 10 * MINUTE
+export const DEFAULT_SELF_GAP = 5 * MINUTE
 export const DEFAULT_CHECK_TIMEOUT = 30 * SECOND
 export const DISPLAYS: readonly Display[] = ['band', 'status', 'off']
 
@@ -315,6 +316,12 @@ function durationAt(ctx: Ctx, path: string, v: unknown, fallback: number, max?: 
   return q.value
 }
 
+// A duration where "0" (or 0) turns the gap off.
+function gapAt(ctx: Ctx, path: string, v: unknown, fallback: number): number {
+  if (v === 0 || (typeof v === 'string' && /^\s*0\s*$/.test(v))) return 0
+  return durationAt(ctx, path, v, fallback)
+}
+
 function pathAt(ctx: Ctx, path: string, v: unknown, fallback: string, template = false): string {
   if (v === undefined) return fallback
   const e = pathError(v, template)
@@ -501,7 +508,7 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
   checkKeys(ctx, hp, handoff, ['path', 'style', 'instructions'])
   const restart = objAt(ctx, join(path, 'restart'), o.restart)
   const rp = join(path, 'restart')
-  checkKeys(ctx, rp, restart, ['mode', 'via', 'command', 'prompt', 'peers', 'peerGap', 'readyChecks'])
+  checkKeys(ctx, rp, restart, ['mode', 'via', 'command', 'prompt', 'peers', 'peerGap', 'selfGap', 'readyChecks'])
   const compact = objAt(ctx, join(path, 'compact'), o.compact)
   checkKeys(ctx, join(path, 'compact'), compact, ['instructions'])
 
@@ -544,6 +551,7 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
       prompt: textAt(ctx, join(rp, 'prompt'), restart.prompt, null),
       peers,
       peerGap: durationAt(ctx, join(rp, 'peerGap'), restart.peerGap, DEFAULT_PEER_GAP),
+      selfGap: gapAt(ctx, join(rp, 'selfGap'), restart.selfGap, DEFAULT_SELF_GAP),
       readyChecks,
     },
     compact: { instructions: textAt(ctx, join(path, 'compact.instructions'), compact.instructions, null) },
@@ -917,9 +925,9 @@ export function trustMaterial(config: Config): unknown {
   for (const name of Object.keys(config.roles).sort()) {
     const spec = roleSpec(config, name)
     if (!spec) continue
-    const { mode, via, command, prompt, readyChecks, peers, peerGap } = spec.restart
+    const { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap } = spec.restart
     out[name] = {
-      restart: { mode, via, command, prompt, readyChecks, peers, peerGap },
+      restart: { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap },
       // The handoff path and style land in the resume command line.
       handoff: { path: spec.handoff.path, style: spec.handoff.style },
       compact: spec.compact.instructions,
@@ -990,8 +998,17 @@ export function trustState(config: Config, record: TrustRecord | null, scripts: 
   if (record && record.hash === trustHash(config, scripts)) return { trusted: true, changed: [], record }
   const now = trustFields(config, scripts)
   const keys = [...new Set([...Object.keys(now), ...Object.keys(record?.fields ?? {})])].sort()
-  const changed = record ? keys.filter(k => now[k] !== record.fields[k]) : keys
+  const changed = record ? keys.filter(k => now[k] !== record.fields[k]) : keys.filter(k => hasContent(config, k))
   return { trusted: false, changed, record }
+}
+
+// With nothing approved yet, a field that holds nothing (no compact instructions, no compact trigger) needs no approval.
+function hasContent(config: Config, key: string): boolean {
+  const dot = key.indexOf('.')
+  if (key.startsWith('script:') || dot < 0) return true
+  const material = trustMaterial(config) as Record<string, Record<string, unknown>>
+  const v = material[key.slice(0, dot)]?.[key.slice(dot + 1)]
+  return !(v === null || v === undefined || (Array.isArray(v) && v.length === 0))
 }
 
 const K = [

@@ -967,6 +967,23 @@
                     }
                   ]
                 },
+                "selfGap": {
+                  "description": "Minimum gap between this session's own restarts on the ready token; \"0\" turns it off. Default 5m.",
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/duration"
+                    },
+                    {
+                      "const": "0"
+                    },
+                    {
+                      "const": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "readyChecks": {
                   "anyOf": [
                     {
@@ -1040,7 +1057,7 @@
           ]
         },
         "stop": {
-          "description": "Past this, the subagent gets the stop note and its tool calls are refused.",
+          "description": "Past this, the subagent gets the stop note and its tool calls are refused, except the tools that hand its result back.",
           "anyOf": [
             {
               "$ref": "#/$defs/budgetStep"

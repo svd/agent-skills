@@ -27,6 +27,7 @@ import {
   resumeArgs,
   stampJson,
   stampPath,
+  renoteRisk,
   verdict,
   outputTail,
 } from './restart'
@@ -44,6 +45,9 @@ function facts(over: Partial<Facts> = {}): Facts {
     trusted: true,
     untrustedWhy: 'never approved',
     busy: null,
+    context: { tokens: 320_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } },
+    lastRestartAt: null,
+    selfGap: 5 * MIN,
     command: 'ctx-guard:resume',
     commands: ['clear', 'compact', 'ctx-guard', 'ctx-guard:resume'],
     agents: [{ id: 'a1', status: 'completed', description: 'old work' }],
@@ -84,6 +88,39 @@ describe('verdict: one refusal per code', () => {
 
   test('already-busy', () => {
     expect(refusal(facts({ busy: 'a restart of this session is already under way' }))).toBe('already-busy')
+  })
+
+  test('not-needed: the context is under the lowest context threshold', () => {
+    const floor = { tokens: 400_000, threshold: { kind: 'percent', value: 40 } } as const
+    expect(verdict(facts({ context: { tokens: 120_000, floor } }))).toEqual({
+      ok: false,
+      code: 'not-needed',
+      text: 'context is at 120k, under the lowest context threshold 40% (400k): a restart frees nothing yet',
+    })
+    expect(verdict(facts({ context: { tokens: 400_000, floor } }))).toEqual({ ok: true })
+    // No context trigger, or no figure (right after a /clear): not judged.
+    expect(verdict(facts({ context: { tokens: 120_000, floor: null } }))).toEqual({ ok: true })
+    expect(checkLines(facts({ context: { tokens: null, floor } })).find(l => l.code === 'not-needed')).toEqual({ code: 'not-needed', status: 'skip', text: 'context unknown' })
+  })
+
+  test('too-soon: this session restarted within selfGap; 0 turns it off', () => {
+    expect(verdict(facts({ lastRestartAt: NOW - 2 * MIN }))).toEqual({
+      ok: false,
+      code: 'too-soon',
+      text: 'this session restarted 2m ago, under selfGap 5m',
+    })
+    expect(verdict(facts({ lastRestartAt: NOW - 5 * MIN }))).toEqual({ ok: true })
+    expect(verdict(facts({ lastRestartAt: NOW - MIN, selfGap: 0 }))).toEqual({ ok: true })
+    expect(checkLines(facts({ selfGap: 0 })).find(l => l.code === 'too-soon')?.status).toBe('skip')
+  })
+
+  test('renoteRisk: a context past the lowest threshold just after a restart warns, never refuses', () => {
+    expect(renoteRisk(facts({ lastRestartAt: NOW - MIN }))).toBe(
+      'warning: 1m after the last restart the context (320k) is already past the lowest context threshold 300k; the next note may ask for another restart at once. Raise that threshold, or load less on resume.',
+    )
+    expect(renoteRisk(facts({ lastRestartAt: NOW - 6 * MIN }))).toBeNull()
+    expect(renoteRisk(facts({ lastRestartAt: null }))).toBeNull()
+    expect(renoteRisk(facts({ lastRestartAt: NOW - MIN, context: { tokens: 100_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } } }))).toBeNull()
   })
 
   test('no-restart-command', () => {
@@ -204,6 +241,8 @@ describe('verdict: one refusal per code', () => {
     expect([...REFUSAL_CODES]).toEqual([
       'untrusted',
       'already-busy',
+      'not-needed',
+      'too-soon',
       'no-restart-command',
       'agents-running',
       'background-tasks',
@@ -224,6 +263,8 @@ describe('verdict order and the check list', () => {
     const all = facts({
       trusted: false,
       busy: 'busy',
+      context: { tokens: 100_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } },
+      lastRestartAt: NOW - MIN,
       commands: [],
       agents: [{ id: 'x', status: 'running' }],
       background: [{ type: 'shell', description: 'x' }],
@@ -238,6 +279,8 @@ describe('verdict order and the check list', () => {
     const fixes: Partial<Facts>[] = [
       { trusted: true },
       { busy: null },
+      { context: { tokens: 320_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } } },
+      { lastRestartAt: NOW - 10 * MIN },
       { commands: ['ctx-guard:resume'] },
       { agents: [] },
       { background: [] },
@@ -255,6 +298,8 @@ describe('verdict order and the check list', () => {
     expect(order).toEqual([
       'untrusted',
       'already-busy',
+      'not-needed',
+      'too-soon',
       'no-restart-command',
       'agents-running',
       'background-tasks',
@@ -290,7 +335,7 @@ describe('verdict order and the check list', () => {
 
   test('a gather error lists the in-memory gates, then the error', () => {
     const lines = checkLines(facts({ error: 'boom' }))
-    expect(lines.map(l => `${l.code}:${l.status}`)).toEqual(['untrusted:pass', 'already-busy:pass', 'no-restart-command:skip', 'error:fail'])
+    expect(lines.map(l => `${l.code}:${l.status}`)).toEqual(['untrusted:pass', 'already-busy:pass', 'not-needed:pass', 'too-soon:pass', 'no-restart-command:skip', 'error:fail'])
   })
 
   test('one line per code otherwise, race last and skipped', () => {

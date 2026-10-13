@@ -111,6 +111,7 @@ The same keys go in `defaults` and in each entry of `roles`.
 | `restart.prompt` | text | none | Appended to the resume command line. |
 | `restart.peers` | list of role names | `[]` | Roles that must not restart within `peerGap` of this one. |
 | `restart.peerGap` | duration | `"10m"` | Minimum gap between a peer's restart and this role's. |
+| `restart.selfGap` | duration, or `"0"` for none | `"5m"` | Minimum gap between this session's own restarts on the ready token (`too-soon`). |
 | `restart.readyChecks` | list of [ready checks](#ready-checks) | `[]` | Commands that must pass before a restart. |
 | `compact.instructions` | text | none | Passed to `/compact`. |
 
@@ -147,7 +148,10 @@ after a main-loop request whose fill crosses a threshold, and on a one-minute ti
 
 **Rising edge.** Edge actions (`note`, `toast`, `notify`, `compact`) fire once, when the whole AND
 starts to hold. The trigger's mark then stays until a metric drops below its threshold (after
-`/compact`, or when a usage window resets); the trigger re-arms then. `/clear` resets every mark.
+`/compact`, or when a usage window resets); the trigger re-arms then. `/clear` resets the mark of
+every trigger with a `context` condition; a trigger on `limit.*`, `cost` or `idle` alone keeps
+its mark, since a `/clear` leaves those figures as they were, and re-arms only when its figure
+drops.
 Marks survive a hot reload. A role change drops the old role's marks.
 
 **Unknown metrics.** Context is unknown before the first response and right after `/clear`;
@@ -179,7 +183,10 @@ the highest. The step falls with the metric, so a drop re-arms the lower steps.
 deny lifts as soon as its metrics drop. They match tool names exactly, apply only once the
 session has a role, and fail open: an unknown metric or a failed check denies nothing. The
 reason names the trigger, its figures and what lifts it. `/ctx-guard pause` and the `blocking`
-switch lift every deny. A deny cannot share a trigger with `idle`.
+switch lift every deny. A deny cannot share a trigger with `idle`. A response's tool calls start
+before its usage arrives, so a call made while the response streams is judged on an estimate of
+that request's context: the previous request's input and output plus the tool results since, at
+4 characters a token (the person's prompt and any note are not counted).
 
 ### Levels
 
@@ -191,6 +198,8 @@ The note wording follows the level, never the number of triggers.
 | `soft` | Plan for a handoff: finish the item in hand and keep new work small. | Prefer cheaper steps: fewer subagents and no speculative work. |
 | `hard` | Wrap up: start no new item and bring the current one to a safe point. | Wrap up: start no new item, dispatch only what the current one needs, and bring it to a safe point. |
 | `stop` | Stop: dispatch nothing new and start no new work. | (same as context) |
+
+With `restart.via: compact` the soft context wording reads "Plan for a compaction: …" instead.
 
 ### Built-in ladder
 
@@ -213,7 +222,8 @@ A note starts with `[ctx-guard]`, then holds:
    1M), past 300k.");
 2. the wording of the highest level among those triggers;
 3. each fired trigger's own `message`, rendered;
-4. the restart tail for the role's mode;
+4. the restart tail for the role's mode, only when a fired trigger has a `context` condition: a
+   restart frees context, so a note on usage, cost or idle alone asks for none;
 5. `notes.suffix`, rendered.
 
 **Restart tail.** With `mode: auto` and `via: clear`:
@@ -225,8 +235,8 @@ A note starts with `[ctx-guard]`, then holds:
 - `mode: manual` ends with "Then tell the operator 'ready for /clear'."
 - `style: session-handoff` asks for "a handoff with the session-handoff skill", with the project
   slug `ctx-guard-<role>`, its handoff tool run from the project root.
-- `via: compact` asks for no handoff: it ends on the token, or in manual mode on "tell the
-  operator 'ready for /compact'".
+- `via: compact` asks for no handoff: it ends on the token ("…; ctx-guard then compacts the
+  session."), or in manual mode on "tell the operator 'ready for /compact'".
 - `mode: off` adds no tail.
 - A note promises `auto` only when ctx-guard would act on the token. With `autoActions` off, an
   untrusted repo or a pause, it reads as `manual`.
@@ -273,6 +283,8 @@ With `via: compact` it ends "Nothing was compacted."
 |---|---|---|
 | `untrusted` | The repo's restart settings are not approved, or changed since. | The operator reads `/ctx-guard` and runs `/ctx-guard trust`. |
 | `already-busy` | A restart or compact is under way, a resume is pending (under 5 min old), or a turn started after the token. | Wait for it to finish. Do not repeat the token. |
+| `not-needed` | The context is known and below the lowest `context` threshold of the role's triggers (a percent read against the window): a restart would free nothing. Not judged when the role has no context trigger or the context is unknown. | Go on working; a context note asks for the restart when it is due. |
+| `too-soon` | This session's own last restart on the ready token (a `/clear` or a `/compact`) was less than `restart.selfGap` ago. | Go on working; do not repeat the token. Set `selfGap: "0"` to turn the gap off. |
 | `no-restart-command` | `/<restart.command>` (`/compact` for `via: compact`) is not among the session's commands. | Fix `restart.command`, or install the plugin or project command it names. |
 | `agents-running` | A listed agent is pending, running or waiting, or an agent was seen stepping in the last 15 min with no end (this covers workflow agents). | Let the agents finish or stop them, then send the token again. |
 | `background-tasks` | The last Stop reported background tasks, or no Stop has reported yet. | Finish or stop the background shells, then send the token again. |
@@ -289,7 +301,9 @@ With `via: compact` it ends "Nothing was compacted."
 `handoff-stale`, `stamp-unreadable`, `peer-restarting`, `race-lost`).
 
 `/ctx-guard check` runs the same checks as a dry run: it writes no stamp, races nobody and
-clears nothing. It runs the ready checks only when the repo is trusted.
+clears nothing. It runs the ready checks only when the repo is trusted. Within 5 minutes (or
+`selfGap`, if longer) of a restart it warns when the context is already past the role's lowest
+context threshold: the next note may ask for another restart at once.
 
 ### A successful restart
 
@@ -337,7 +351,7 @@ make a check print why it failed.
 
 `assets/ready-checks/clean-worktree.sh` is an example. It fails while `git status --porcelain`
 lists changes, and prints them; with `--tracked-only` it ignores untracked files. To get it,
-ask Claude to copy `clean-worktree.sh` from the ctx-guard skill's `assets/ready-checks/` folder
+ask Claude to copy `clean-worktree.sh` from the `guide` skill's `assets/ready-checks/` folder
 into `.claude/ctx-guard/`, or copy it from the plugin's repository by hand. Then run
 `/ctx-guard trust`, since trust hashes the script.
 
@@ -401,8 +415,8 @@ inherits, and `"off"` drops that step.
 | Key | Type | Meaning |
 |---|---|---|
 | `warn` | tokens or `"off"` | Past this, the subagent gets one note: wrap up and return a report soon. |
-| `stop` | tokens or `"off"` | Past this, the subagent gets one stop note, and every later tool call of that subagent is refused while its fill stays past `stop`. |
-| `message` | text | The stop note. Variables: `{type}`, `{tokens}`, `{warn}`, `{stop}`. Default: "context budget *stop* reached; return your final report now." |
+| `stop` | tokens or `"off"` | Past this, the subagent gets one stop note, and every later tool call of that subagent is refused while its fill stays past `stop`, except the tools that hand its result back (`SubagentHandback`, `StructuredOutput`, `ReportFindings`), so the report still arrives. |
+| `message` | text | The stop note. Variables: `{type}`, `{tokens}`, `{warn}`, `{stop}`. Default: "context budget *stop* reached; return your final report now. Tool calls are refused, except the one that returns your report." |
 
 Each entry needs `warn`, `stop` or `message`. After the merge over `"*"`, `warn` must be below
 `stop`. Budgets take tokens only, since a subagent's model and window may differ from the main
@@ -427,7 +441,7 @@ before ctx-guard acts on them.
 **What needs approval:**
 
 - `readyToken` and `stateDir`;
-- per role: `restart.mode`, `via`, `command`, `prompt`, `peers`, `peerGap` and `readyChecks`;
+- per role: `restart.mode`, `via`, `command`, `prompt`, `peers`, `peerGap`, `selfGap` and `readyChecks`;
   `handoff.path` and `handoff.style`; `compact.instructions`; every trigger with a `compact`
   action;
 - the content of every ready-check argument that is a file under the project root (SHA-256).
@@ -540,7 +554,7 @@ coordinator stops dispatching near the usage limit.
         { "id": "usage-brake", "when": { "limit.any": 95 }, "do": ["note", "notify", { "deny": ["Agent"] }], "level": "stop" }
       ],
       "handoff": {
-        "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, Dispatched work and results, Next action."
+        "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD, if this is a git repo. Sections: Goal, Dispatched work and results, Next action."
       },
       "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting." }
     }

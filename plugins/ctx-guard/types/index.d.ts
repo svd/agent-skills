@@ -60,6 +60,8 @@ export type RoleSpec = {
     prompt: string | null
     peers: string[]
     peerGap: number
+    // How soon after its own last restart this session may restart again; 0 is no gap.
+    selfGap: number
     readyChecks: ReadyCheck[]
   }
   compact: { instructions: string | null }
@@ -246,6 +248,8 @@ declare module 'claude-code' {
       pause: Pause | null
       // When this session last cleared: a handoff must be newer to count.
       lastClearAt: number | null
+      // When this session's last restart on the ready token went through: none follows within selfGap.
+      lastRestartAt: number | null
       lastVerdict: LastVerdict | null
       lease: LeaseState | null
       work: Work | null

@@ -190,6 +190,21 @@ describe('level wording', () => {
     expect(text).toContain(levelText('soft', 'limit.any'))
   })
 
+  test('a note on usage, cost or idle alone asks for no restart; one with a context trigger keeps the tail once', () => {
+    const triggers = [
+      { id: 'week', when: { 'limit.seven_day': 30 }, do: ['note'], level: 'soft' },
+      { id: 'spend', when: { cost: 1 }, do: ['note'] },
+    ]
+    const s = spec({ restart: { mode: 'auto' }, notes: { suffix: 'Tell the peer.' }, triggers })
+    const text = collapseNotes(fires(s), { role: 'lead', spec: s, readyToken: 'CTX-READY' }) as string
+    expect(text).toBe(`[ctx-guard] Weekly usage is at 40%, past 30%. Session cost is $1.50, past $1.00. ${levelText('soft', 'limit.any')} Tell the peer.`)
+    expect(text).not.toContain('CTX-READY')
+    const mixed = spec({ restart: { mode: 'auto' }, triggers: [...triggers, { id: 'ctx', when: { context: '300k' }, do: ['note'] }] })
+    const both = collapseNotes(fires(mixed), { role: 'lead', spec: mixed, readyToken: 'CTX-READY' }) as string
+    expect(both.split('CTX-READY').length).toBe(2)
+    expect(both).toContain('Weekly usage is at 40%')
+  })
+
   test('a custom message replaces the built-in text; prefix added once', () => {
     const s = spec({
       restart: { mode: 'off' },
@@ -245,11 +260,16 @@ describe('restart tail', () => {
     )
   })
 
-  test('via compact needs no handoff', () => {
-    expect(restartTail(base({ mode: 'auto', via: 'compact' }), 'h.md', 'GO')).toBe(
-      'At the next safe point — no subagents running, current work recorded — end your reply with a line holding only `GO`.',
+  test('via compact needs no handoff, and the note plans for the compaction', () => {
+    const s = base({ mode: 'auto', via: 'compact' })
+    expect(restartTail(s, 'h.md', 'GO')).toBe(
+      'At the next safe point — no subagents running, current work recorded — end your reply with a line holding only `GO`; ctx-guard then compacts the session.',
     )
     expect(restartTail(base({ mode: 'manual', via: 'compact' }), 'h.md', 'GO')).toEndWith("tell the operator 'ready for /compact'.")
+    const text = note(s, fires(s)[0] as Fire)
+    expect(text).toContain('Plan for a compaction: finish the item in hand')
+    expect(text).not.toContain('handoff')
+    expect(note(base({ mode: 'auto' }), fires(base({ mode: 'auto' }))[0] as Fire)).toContain('Plan for a handoff')
   })
 
   test('the custom handoff path and token land in the note', () => {
@@ -335,7 +355,7 @@ describe('refusal and subagent texts', () => {
 
   test('subagent budget texts', () => {
     const b = { type: 'Explore', tokens: 152_000, warn: 120_000, stop: 150_000 }
-    expect(subagentDenyReason(b)).toBe('[ctx-guard] context budget 150k reached; return your final report now.')
+    expect(subagentDenyReason(b)).toBe('[ctx-guard] context budget 150k reached; return your final report now. Tool calls are refused, except the one that returns your report.')
     expect(subagentStopText(b, null)).toBe(subagentDenyReason(b))
     expect(subagentStopText(b, 'Budget {stop} reached: return your findings now.')).toBe('[ctx-guard] Budget 150k reached: return your findings now.')
     expect(subagentWarnText({ ...b, tokens: 125_000 })).toContain('125k, past this subagent\'s 120k budget')

@@ -89,7 +89,7 @@ export function isPaused(pause: Pause | null | undefined, now: number): boolean 
 
 // `init` copies the preset files the skill ships, byte for byte, so the
 // starter and the documented preset are one file and cannot drift apart.
-export const PRESET_DIR = 'skills/ctx-guard/assets/presets'
+export const PRESET_DIR = 'skills/guide/assets/presets'
 
 /** Where a preset sits under the plugin's own root. */
 export function presetPath(pluginRoot: string, preset: Preset): string {
@@ -163,11 +163,14 @@ export type CommandEntry = { name: string; source: string; plugin?: string }
 
 /**
  * A command named `name` that some other plugin, a user file or an MCP
- * prompt owns, or null. A plugin command whose owner the engine does not
+ * prompt owns, or a skill or command listed as `name:name`, to which the
+ * engine maps a bare `/name` (a plugin's own skill named after the plugin);
+ * null when there is none. A plugin command whose owner the engine does not
  * name is taken as this plugin's own (a previous load's registration).
  */
 export function collidingCommand(commands: readonly CommandEntry[], name: string, self: string): CommandEntry | null {
-  return commands.find(c => c.name === name && !(c.source === 'plugin' && (c.plugin === undefined || c.plugin === self))) ?? null
+  const other = commands.find(c => c.name === name && !(c.source === 'plugin' && (c.plugin === undefined || c.plugin === self)))
+  return other ?? commands.find(c => c.name === `${name}:${name}`) ?? null
 }
 
 // ---- report ------------------------------------------------------------------

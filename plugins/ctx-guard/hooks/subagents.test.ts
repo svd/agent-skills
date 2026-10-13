@@ -46,12 +46,18 @@ describe('decide', () => {
 describe('stopDeny', () => {
   test('only a stopped agent still past the stop is refused', () => {
     const t = { ...track(), tokens: 175_000, warned: true, stopped: true }
-    expect(stopDeny(t, B)).toBe(170_000)
-    expect(stopDeny({ ...t, stopped: false }, B)).toBeNull()
-    expect(stopDeny(undefined, B)).toBeNull()
-    expect(stopDeny(t, { ...B, stop: null })).toBeNull()
+    expect(stopDeny(t, B, 'Bash')).toBe(170_000)
+    expect(stopDeny({ ...t, stopped: false }, B, 'Bash')).toBeNull()
+    expect(stopDeny(undefined, B, 'Bash')).toBeNull()
+    expect(stopDeny(t, { ...B, stop: null }, 'Bash')).toBeNull()
     // The budget was raised since: the deny lifts.
-    expect(stopDeny(t, { ...B, stop: 200_000 })).toBeNull()
+    expect(stopDeny(t, { ...B, stop: 200_000 }, 'Bash')).toBeNull()
+  })
+
+  test('the tools that hand the result back are never refused', () => {
+    const t = { ...track(), tokens: 175_000, warned: true, stopped: true }
+    for (const tool of ['SubagentHandback', 'StructuredOutput', 'ReportFindings']) expect(stopDeny(t, B, tool)).toBeNull()
+    expect(stopDeny(t, B, 'Agent')).toBe(170_000)
   })
 })
 

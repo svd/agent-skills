@@ -371,6 +371,11 @@ describe('validation', () => {
     expect(errorsOf(r({ via: 'reboot' }))[0]).toContain('restart.via: expected one of clear, compact')
     expect(errorsOf(r({ peers: ['Master'] }))[0]).toContain('restart.peers[0]: "Master" must match')
     expect(errorsOf(r({ peerGap: 10 }))[0]).toContain('restart.peerGap: expected a duration')
+    expect(ok(r({ selfGap: '2m' })).roles.lead?.restart.selfGap).toBe(120_000)
+    expect(ok(r({ selfGap: '0' })).roles.lead?.restart.selfGap).toBe(0)
+    expect(ok(r({ selfGap: 0 })).roles.lead?.restart.selfGap).toBe(0)
+    expect(errorsOf(r({ selfGap: 5 }))[0]).toContain('restart.selfGap: expected a duration')
+    expect(errorsOf(r({ selfGap: '-1m' }))[0]).toContain('restart.selfGap: expected a duration')
     for (const bad of ['two words', 'a;rm -rf', 'x.y', 'cmd\n']) {
       expect(errorsOf(r({ command: bad }))[0]).toContain('is not a command name')
     }
@@ -535,6 +540,7 @@ describe('defaults inheritance', () => {
       prompt: null,
       peers: [],
       peerGap: 600_000,
+      selfGap: 300_000,
       readyChecks: [],
     })
   })
@@ -821,6 +827,7 @@ describe('trust hash', () => {
       { roles: { lead: { triggers: [{ id: 'n', when: { context: '50%' }, do: ['note', 'compact'] }] } } },
       { roles: { other: { restart: { mode: 'auto' } } } },
       { defaults: { restart: { via: 'compact' } } },
+      { roles: { lead: { restart: { selfGap: '0' } } } },
     ]) {
       expect(hashOf(over)).not.toBe(h0)
     }
@@ -841,8 +848,17 @@ describe('trust hash', () => {
     expect(trustState(c0, withScript, { './ready.sh': 'aa' }).trusted).toBe(true)
     expect(trustState(c0, withScript, { './ready.sh': 'bb' }).changed).toEqual(['script:./ready.sh'])
     expect(checkScripts(ok(mergeLayers(base, { roles: { lead: { restart: { readyChecks: [{ run: ['./a.sh'] }, { run: ['bash', 'scripts/b.sh', '--fast'] }] } } } })))).toEqual(['./a.sh', 'bash', 'scripts/b.sh'])
-    expect(trustState(c0, null)).toEqual({ trusted: false, changed: Object.keys(trustFields(c0)).sort(), record: null })
     expect(Object.keys(trustFields(c0))).toContain('lead.handoff')
+  })
+
+  test('none approved lists only the fields that hold something', () => {
+    // `base` holds compact instructions and a compact trigger: both need approval.
+    expect(trustState(ok(mergeLayers(base, {})), null).changed).toEqual(expect.arrayContaining(['lead.compact', 'lead.compactTriggers']))
+    const plain = ok({ version: 1, roles: { lead: { restart: { mode: 'auto' } } } })
+    const all = Object.keys(trustFields(plain)).sort()
+    expect(all).toContain('lead.compact')
+    expect(trustState(plain, null)).toEqual({ trusted: false, changed: all.filter(k => !k.endsWith('.compact') && !k.endsWith('.compactTriggers')), record: null })
+    expect(trustState(plain, null, { './ready.sh': 'aa' }).changed).toContain('script:./ready.sh')
   })
 
   test('trust records are checked and keyed by root', () => {

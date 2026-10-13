@@ -1,5 +1,5 @@
 ---
-name: ctx-guard
+name: guide
 description: Protocol for the ctx-guard context and usage guard, and how to configure it. Use whenever a message starting with "[ctx-guard]" arrives (a context or usage note, a refused ready token, a blocked tool, a subagent budget note), when asked to write a ctx-guard handoff or end a reply with the ready token (CTX-READY), and when the user asks to set up, explain or change ctx-guard, a context guard or usage guard, its roles, thresholds, triggers, handoff, auto clear or compact, subagent budgets, trust or the /ctx-guard command.
 ---
 
@@ -27,8 +27,8 @@ The note states the figure, what to do now (by level), and how to end. Follow it
      append. Follow the role's instructions quoted in the note.
    - The session-handoff skill: use it with the project slug the note names (`ctx-guard-<role>`)
      and run its handoff tool from the project root.
-   - Make every claim checkable: the resume checks the recorded git `HEAD` and the paths you name
-     against the repository. Record `HEAD` after your last commit.
+   - Make every claim checkable: the resume checks the recorded git `HEAD` (in a git repo) and
+     the paths you name against the repository. Record `HEAD` after your last commit.
 4. **End the reply.**
    - The note says to end with the token: make the last line of the reply hold only the token,
      exactly as written (default `CTX-READY`). Nothing after it.
@@ -57,6 +57,7 @@ the cause only if it is yours to fix, then send the token once more. Never loop 
 | `ready-check-failed` | The reason ends with the check's own output. Fix what it reports (for example, commit the work) if that belongs to the task; else tell the operator. |
 | `peer-restarting`, `race-lost` | A peer is restarting. Keep the handoff current and send the token again after the gap the reason names. |
 | `already-busy` | A restart is already under way. Do nothing. |
+| `not-needed`, `too-soon` | No restart is due: the context is below every context threshold, or this session restarted moments ago. Go on with the work; do not send the token again until a context note asks for it. |
 | `untrusted`, `role-shared`, `no-restart-command`, `stamp-unreadable`, `error` | Not yours to fix. Tell the operator the code and reason, then say 'ready for /clear' (or '/compact'). |
 
 The reference has each code's full meaning and fix.
@@ -73,7 +74,8 @@ tool now, tell the operator; only they can lift it.
   hold.
 - **Stop** ("context budget … reached; return your final report now", or the project's own
   stop text): return your final report at once, with what you found, what you did not get to,
-  and where things are. Further tool calls are refused.
+  and where things are. Further tool calls are refused, except the tool that hands your report
+  back (`SubagentHandback`, structured output, `ReportFindings`): use it if you report that way.
 
 ## After `/clear`
 

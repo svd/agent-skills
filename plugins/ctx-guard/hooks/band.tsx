@@ -1,6 +1,6 @@
 // ctx-guard's band: one line of figures above the prompt, or the same text on
 // the status line where no band is drawn. The text builders are pure; the one
-// render hook only reads `$.state.band`.
+// render hook draws the band ctx-guard holds in memory, never waiting on `$`.
 import type { On, RenderSurface } from 'claude-code'
 import type { Band, BandLimit } from '../types'
 import { humanDuration, humanPercent, humanTokens, resetsInMs } from './messages'
@@ -82,11 +82,17 @@ export function sameBand(a: Band | null, b: Band | null): boolean {
   return JSON.stringify({ ...a, now: 0 }) === JSON.stringify({ ...b, now: 0 })
 }
 
-/** Draws the band above the prompt wherever `shouldDraw` says the surface has one. */
-export function registerBand(on: On, shouldDraw: (surface: RenderSurface) => boolean): void {
+/**
+ * Draws the band above the prompt wherever `shouldDraw` says the surface has
+ * one, from `current` (ctx-guard's memory), never waiting on `$`: a session
+ * start's work can hold `$` calls for seconds, and a /clear empties `$.state`.
+ */
+export function registerBand(on: On, shouldDraw: (surface: RenderSurface) => boolean, current: () => Band | null): void {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || !shouldDraw(e.surface)) return next(e)
-    const band = (await $.state.get(BAND)).value ?? null
+    // Read on every draw, unawaited and unused: the read subscribes the drawing to the band's next write.
+    void $.state.get(BAND).catch(() => undefined)
+    const band = current()
     const segments = band ? bandSegments(band) : []
     if (!segments.length) return next(e)
     const { Text } = $.ui.resolve(e)

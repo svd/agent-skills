@@ -2,14 +2,16 @@
 // restart is judged on and the fail-closed verdict over them, the peer race,
 // the handoff a `session-handoff` style points at, and what to do with a
 // pending resume found after a reload. Pure: no `$`, never throws.
-import type { LastCompact, PendingCompact, PendingResume, RestartVia } from '../types'
+import type { LastCompact, PendingCompact, PendingResume, Quantity, RestartVia } from '../types'
 import type { Lease } from './roles'
-import { humanDuration, sessionHandoffSlug } from './messages'
+import { humanDuration, humanQuantity, humanTokens, sessionHandoffSlug } from './messages'
 
 // In the order they are checked; the first that holds refuses.
 export const REFUSAL_CODES = [
   'untrusted',
   'already-busy',
+  'not-needed',
+  'too-soon',
   'no-restart-command',
   'agents-running',
   'background-tasks',
@@ -128,6 +130,13 @@ export type Facts = {
   untrustedWhy: string
   // Why a restart is already in progress; null when none is.
   busy: string | null
+  // The context fill now (null: unknown, as right after a /clear) and the role's lowest context
+  // threshold in tokens (null: the role has no context trigger, or one cannot be placed).
+  context: { tokens: number | null; floor: { tokens: number; threshold: Quantity } | null }
+  // When this session's last restart went through (a /clear or a /compact on the token); null before any.
+  lastRestartAt: number | null
+  // 0 turns the self gap off.
+  selfGap: number
   command: string
   commands: readonly string[]
   agents: readonly AgentRow[]
@@ -186,6 +195,53 @@ function line(code: RefusalCode, fail: string | null, pass: string): CheckLine {
 
 const skip = (code: RefusalCode, text: string): CheckLine => ({ code, status: 'skip', text })
 
+// A restart frees context: below every context threshold there is nothing to free, and a note on
+// usage alone would only come back after the /clear.
+function neededLine(f: Facts): CheckLine {
+  const { tokens, floor } = f.context
+  if (floor === null) return skip('not-needed', 'no context trigger to judge by')
+  if (tokens === null) return skip('not-needed', 'context unknown')
+  const at = floorText(floor)
+  return line(
+    'not-needed',
+    tokens < floor.tokens ? `context is at ${humanTokens(tokens)}, under the lowest context threshold ${at}: a restart frees nothing yet` : null,
+    `context ${humanTokens(tokens)} is past ${at}`,
+  )
+}
+
+const floorText = (floor: { tokens: number; threshold: Quantity }): string =>
+  floor.threshold.kind === 'tokens' ? humanTokens(floor.tokens) : `${humanQuantity(floor.threshold)} (${humanTokens(floor.tokens)})`
+
+// How long after a restart a context already past the lowest threshold is worth a warning.
+export const RECENT_RESTART_MS = 5 * 60 * 1000
+
+/**
+ * For `/ctx-guard check`: a restart ran moments ago and the context is already
+ * at or past the role's lowest context threshold, so the next reading may note
+ * and ask for another restart at once. A warning line, never a refusal.
+ */
+export function renoteRisk(f: Facts): string | null {
+  const { tokens, floor } = f.context
+  const last = f.lastRestartAt
+  if (floor === null || tokens === null || last === null || tokens < floor.tokens) return null
+  if (f.now - last >= Math.max(f.selfGap, RECENT_RESTART_MS)) return null
+  return (
+    `warning: ${humanDuration(f.now - last)} after the last restart the context (${humanTokens(tokens)}) is already past the lowest ` +
+    `context threshold ${floorText(floor)}; the next note may ask for another restart at once. Raise that threshold, or load less on resume.`
+  )
+}
+
+function soonLine(f: Facts): CheckLine {
+  if (f.selfGap <= 0) return skip('too-soon', 'selfGap is 0: off')
+  const last = f.lastRestartAt
+  if (last === null) return { code: 'too-soon', status: 'pass', text: 'no restart yet in this session' }
+  return line(
+    'too-soon',
+    f.now - last < f.selfGap ? `this session restarted ${humanDuration(f.now - last)} ago, under selfGap ${humanDuration(f.selfGap)}` : null,
+    `last restart ${humanDuration(f.now - last)} ago`,
+  )
+}
+
 /**
  * Every check of a restart, in order, each passed, failed or skipped, the race
  * included as skipped (it needs the stamp written). `via: compact` keeps no
@@ -196,6 +252,8 @@ export function checkLines(f: Facts): CheckLine[] {
   const out: CheckLine[] = []
   out.push(line('untrusted', f.trusted ? null : `this repo's restart settings are not approved (${f.untrustedWhy}); the operator runs /ctx-guard trust`, 'repo trusted'))
   out.push(line('already-busy', f.busy, 'no restart in progress'))
+  out.push(neededLine(f))
+  out.push(soonLine(f))
   if (f.error !== null) {
     out.push(skip('no-restart-command', 'not judged'))
     out.push({ code: 'error', status: 'fail', text: f.error })

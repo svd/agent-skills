@@ -152,9 +152,13 @@ const LEVEL_TEXT: Record<Level | 'none', { context: string; limit: string }> = {
   },
 }
 
-export function levelText(level: Level | null, metric: string): string {
+// A role that compacts instead of clearing writes no handoff: its soft note plans for the compaction.
+const COMPACT_SOFT = 'Plan for a compaction: finish the item in hand and keep new work small.'
+
+export function levelText(level: Level | null, metric: string, via: RestartVia = 'clear'): string {
   const t = LEVEL_TEXT[level ?? 'none']
-  return isLimit(metric) ? t.limit : t.context
+  if (isLimit(metric)) return t.limit
+  return via === 'compact' && level === 'soft' ? COMPACT_SOFT : t.context
 }
 
 function sentence(s: string): string {
@@ -195,9 +199,8 @@ export function restartTail(
   } else write = ` rewrite \`${handoffPath}\`${instructions ? `: ${sentence(instructions)}` : '.'}`
   const after = via === 'compact' ? 'ready for /compact' : 'ready for /clear'
   if (mode === 'manual') return write ? `${SAFE_POINT}${write} Then tell the operator '${after}'.` : `${SAFE_POINT} tell the operator '${after}'.`
-  return write
-    ? `${SAFE_POINT}${write} Then end your reply with a line holding only \`${readyToken}\`.`
-    : `${SAFE_POINT} end your reply with a line holding only \`${readyToken}\`.`
+  if (!write) return `${SAFE_POINT} end your reply with a line holding only \`${readyToken}\`; ctx-guard then compacts the session.`
+  return `${SAFE_POINT}${write} Then end your reply with a line holding only \`${readyToken}\`.`
 }
 
 export type NoteOptions = {
@@ -225,8 +228,9 @@ const unprefixed = (t: string): string => (t.startsWith(PREFIX) ? t.slice(PREFIX
 /**
  * One model note for every note trigger an evaluation fired: one head per
  * figure (its highest threshold), the wording of the highest level, custom
- * messages rendered, then one restart tail and one `notes.suffix`. Null for
- * no fires. A cold start past several thresholds thus sends one note.
+ * messages rendered, then one restart tail (only when a fired trigger has a
+ * context condition) and one `notes.suffix`. Null for no fires. A cold start
+ * past several thresholds thus sends one note.
  */
 export function collapseNotes(fires: readonly Fire[], opts: NoteOptions): string | null {
   if (fires.length === 0) return null
@@ -243,9 +247,11 @@ export function collapseNotes(fires: readonly Fire[], opts: NoteOptions): string
   }
   const top = [...builtIn].sort((a, b) => rank(b) - rank(a))[0]
   const parts = [...byFigure.values()].map(f => head(f.vars))
-  if (top) parts.push(levelText(top.trigger.level, top.vars.metric))
+  if (top) parts.push(levelText(top.trigger.level, top.vars.metric, spec.restart.via))
   for (const f of fires) if (f.trigger.message !== null) parts.push(unprefixed(render(f.trigger.message, tvOf(f)).trim()))
-  parts.push(restartTail(spec, handoffPath, readyToken, opts.mode ?? spec.restart.mode, sessionHandoffSlug(role)))
+  // A restart frees context only: a note on usage, cost or idle alone asks for none, or a /clear would
+  // land back on the same figure and the same note.
+  if (fires.some(f => f.trigger.when.context !== null)) parts.push(restartTail(spec, handoffPath, readyToken, opts.mode ?? spec.restart.mode, sessionHandoffSlug(role)))
   const suffixVars = tvOf(top ?? (fires[0] as Fire))
   if (spec.notes.suffix) parts.push(render(spec.notes.suffix, suffixVars).trim())
   return `${PREFIX} ${parts.filter(Boolean).join(' ')}`
@@ -324,13 +330,13 @@ function budgetVars(b: BudgetVars): Record<string, string> {
 
 export function subagentWarnText(b: BudgetVars): string {
   const v = budgetVars(b)
-  const stop = b.stop === null ? '' : ` At ${v.stop} your tool calls are refused.`
+  const stop = b.stop === null ? '' : ` At ${v.stop} your tool calls are refused, except the one that returns your report.`
   return `${PREFIX} Your context is at ${v.tokens}, past this subagent's ${v.warn} budget.${stop} Wrap up and return your report soon.`
 }
 
 /** The deny reason for a subagent past its stop budget. */
 export function subagentDenyReason(b: BudgetVars): string {
-  return `${PREFIX} context budget ${budgetVars(b).stop} reached; return your final report now.`
+  return `${PREFIX} context budget ${budgetVars(b).stop} reached; return your final report now. Tool calls are refused, except the one that returns your report.`
 }
 
 /** The note sent once at stop: the budget's `message` (rendered) or the deny reason. */

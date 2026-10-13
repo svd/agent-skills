@@ -95,9 +95,12 @@ export function decide(b: Budget | null, tokens: number, warned: boolean, stoppe
   return { step, gate: next.length ? Math.min(...next) : Number.POSITIVE_INFINITY }
 }
 
+// The tools a subagent hands its result back with: refusing one past the stop budget would lose the report.
+export const RESULT_TOOLS: ReadonlySet<string> = new Set(['SubagentHandback', 'StructuredOutput', 'ReportFindings'])
+
 /** The stop budget a tool call of this agent is refused under, or null: a stop note went and the fill is still past it. */
-export function stopDeny(t: Tracked | undefined, b: Budget | null): number | null {
-  if (!t?.stopped || !b || b.stop === null) return null
+export function stopDeny(t: Tracked | undefined, b: Budget | null, tool: string): number | null {
+  if (!t?.stopped || !b || b.stop === null || RESULT_TOOLS.has(tool)) return null
   return t.tokens >= b.stop ? b.stop : null
 }
 

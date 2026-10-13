@@ -92,6 +92,20 @@ export function stepTokens(
   return parts.some(p => p === null) ? null : (parts as number[]).reduce((a, b) => a + b, 0)
 }
 
+// Characters per token in tool results, the usual rough rate for English text and code.
+export const CHARS_PER_TOKEN = 4
+
+/**
+ * The fill of a main-loop request still streaming. Its usage arrives with its
+ * stop chunk, after the tools it calls have started, and no earlier chunk
+ * carries it; so it is estimated as the last finished request's input plus
+ * its output plus the tool results sent back since. The person's next prompt
+ * and any note are left out, so it errs low by those.
+ */
+export function inFlightTokens(lastInput: number, lastOutput: number | null, resultChars: number): number {
+  return lastInput + (lastOutput ?? 0) + Math.ceil(Math.max(0, resultChars) / CHARS_PER_TOKEN)
+}
+
 export type MetricsSource = {
   // Absent before the first response and after /clear: unknown.
   tokens?: number | null
@@ -184,8 +198,21 @@ function varsOf(trigger: Trigger, cs: readonly Condition[], step: number, m: Met
 
 const edgeActions = (t: Trigger): EdgeAction[] => t.do.filter((a): a is EdgeAction => typeof a === 'string')
 
-export function resetMarks(role: string | null): Marks {
-  return { role, byId: {} }
+/**
+ * The marks after a /clear: the context starts over, so every trigger with a
+ * context condition re-arms. The others (usage windows, cost, idle) watch
+ * figures a /clear leaves as they were, so they keep their marks and re-arm
+ * only when their figure drops: a clear never fires them again by itself.
+ */
+export function resetMarks(role: string | null, marks: Marks | null = null, triggers: readonly Trigger[] = []): Marks {
+  const prev = priorMarks(marks, role)
+  const byId: Record<string, Mark> = {}
+  for (const t of triggers) {
+    if (t.when.context !== null) continue
+    const raw = Object.hasOwn(prev, t.id) ? prev[t.id] : undefined
+    if (isMark(raw)) byId[t.id] = raw
+  }
+  return { role, byId }
 }
 
 // Marks come back from $.state, which another version may have written.
@@ -250,6 +277,19 @@ export function triggerHolds(trigger: Trigger, m: Metrics): boolean | null {
 export function markHeld(marks: Marks | null, role: string | null, id: string): boolean {
   const prev = priorMarks(marks, role)
   return Object.hasOwn(prev, id) && isMark(prev[id])
+}
+
+/** The lowest context threshold among `triggers`, in tokens on `window`; null when none has one, or one cannot be placed. */
+export function contextFloor(triggers: readonly Trigger[], window: number): { tokens: number; threshold: Quantity } | null {
+  let floor: { tokens: number; threshold: Quantity } | null = null
+  for (const t of triggers) {
+    const q = t.when.context
+    if (!q) continue
+    const tokens = asTokens(q, window)
+    if (tokens === null) return null
+    if (!floor || tokens < floor.tokens) floor = { tokens, threshold: q }
+  }
+  return floor
 }
 
 // ---- step gates --------------------------------------------------------------

@@ -13,7 +13,7 @@
         { "id": "limit-brake", "when": { "limit.any": 95 }, "do": ["note", "toast", { "deny": ["Agent"] }], "level": "stop" }
       ],
       "handoff": {
-        "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Next action."
+        "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD, if this is a git repo. Sections: Goal, State, Next action."
       },
       "restart": {
         "mode": "auto",
