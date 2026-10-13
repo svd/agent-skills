@@ -3,15 +3,18 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   DEFAULT_PAUSE_MS,
   PRESETS,
+  PRESET_DIR,
   collidingCommand,
   gitignoreWith,
   isPaused,
   parseCommand,
   parsePause,
+  presetPath,
+  presetProblem,
   reportText,
-  starterConfig,
   triggerLine,
   versionBelow,
+  wantsTrust,
 } from './commands'
 import type { ReportInput } from './commands'
 import { builtInConfig, roleSpec, validate } from './config'
@@ -64,21 +67,24 @@ describe('pause', () => {
   })
 })
 
-describe('starters', () => {
-  test('each preset is a valid config', () => {
-    for (const p of PRESETS) {
-      const r = validate(JSON.parse(starterConfig(p)), p)
-      expect(r.errors).toEqual([])
-    }
+describe('presets', () => {
+  test('each preset is a file under the skill assets, named after it', () => {
+    expect(PRESET_DIR).toBe('skills/ctx-guard/assets/presets')
+    for (const p of PRESETS) expect(presetPath('/plugins/ctx-guard/', p)).toBe(`/plugins/ctx-guard/skills/ctx-guard/assets/presets/${p}.json`)
   })
 
-  test('solo defaults to main; peers name each other', () => {
-    const solo = validate(JSON.parse(starterConfig('solo'))).config
-    expect(solo?.defaultRole).toBe('main')
-    const peers = validate(JSON.parse(starterConfig('peers'))).config
-    expect(peers ? roleSpec(peers, 'lead')?.restart.peers : null).toEqual(['reviewer'])
-    expect(peers ? roleSpec(peers, 'reviewer')?.restart.peers : null).toEqual(['lead'])
-    expect(peers?.defaultRole).toBeNull()
+  test('presetProblem passes a valid config and names what is wrong otherwise', () => {
+    expect(presetProblem('{"version": 1, "defaultRole": "main"}', 'solo')).toBeNull()
+    expect(presetProblem('{nope', 'solo')).toContain('the solo preset is not valid JSON')
+    expect(presetProblem('{"version": 2}', 'peers')).toContain('peers preset: version')
+  })
+
+  test('wantsTrust: an auto restart or a compact trigger needs approval', () => {
+    const cfg = (role: unknown) => validate({ version: 1, roles: { main: role } }).config ?? builtInConfig()
+    expect(wantsTrust(builtInConfig())).toBe(false)
+    expect(wantsTrust(cfg({ restart: { mode: 'auto' } }))).toBe(true)
+    expect(wantsTrust(cfg({ triggers: [{ id: 'sq', when: { context: '85%' }, do: ['compact'] }] }))).toBe(true)
+    expect(wantsTrust(cfg({ restart: { mode: 'manual' } }))).toBe(false)
   })
 })
 

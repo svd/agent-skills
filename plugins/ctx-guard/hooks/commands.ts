@@ -1,8 +1,8 @@
 // ctx-guard's `/ctx-guard` command and start-up checks: argument parsing, the
-// pause, `init` starters and .gitignore lines, the report text, the engine
+// pause, `init` presets and .gitignore lines, the report text, the engine
 // version gate and the command-collision check. Pure: no `$`, never throws.
 import type { Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger } from '../types'
-import { parseQuantity } from './config'
+import { parseQuantity, roleSpec, validate } from './config'
 import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
 import type { RoleResolution } from './roles'
 import { METRIC_ORDER, contextPercent } from './triggers'
@@ -87,42 +87,37 @@ export function isPaused(pause: Pause | null | undefined, now: number): boolean 
 
 // ---- init --------------------------------------------------------------------
 
-const HANDOFF = 'Rewrite the whole file. Sections: Goal, State, Next action.'
+// `init` copies the preset files the skill ships, byte for byte, so the
+// starter and the documented preset are one file and cannot drift apart.
+export const PRESET_DIR = 'skills/ctx-guard/assets/presets'
 
-const STARTERS: Record<Preset, unknown> = {
-  solo: {
-    version: 1,
-    defaultRole: 'main',
-    roles: {
-      main: {
-        description: 'the one long-running session in this project',
-        handoff: { instructions: HANDOFF },
-        restart: { mode: 'manual' },
-      },
-    },
-  },
-  peers: {
-    version: 1,
-    roles: {
-      lead: {
-        description: 'coordinates the work and dispatches subagents',
-        notes: { suffix: 'Tell the reviewer session before you stop.' },
-        handoff: { instructions: HANDOFF },
-        restart: { mode: 'manual', peers: ['reviewer'], peerGap: '10m' },
-      },
-      reviewer: {
-        description: 'reviews what the lead session produces',
-        notes: { suffix: 'Tell the lead session before you stop.' },
-        handoff: { instructions: HANDOFF },
-        restart: { mode: 'manual', peers: ['lead'], peerGap: '10m' },
-      },
-    },
-  },
+/** Where a preset sits under the plugin's own root. */
+export function presetPath(pluginRoot: string, preset: Preset): string {
+  return `${pluginRoot.replace(/[/\\]+$/, '')}/${PRESET_DIR}/${preset}.json`
 }
 
-/** The starter config `init` writes, as file text. */
-export function starterConfig(preset: Preset): string {
-  return `${JSON.stringify(STARTERS[preset], null, 2)}\n`
+/** Why a shipped preset's text is not a valid config, or null when it is. */
+export function presetProblem(text: string, preset: Preset): string | null {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch (e) {
+    return `the ${preset} preset is not valid JSON (${e instanceof Error ? e.message : String(e)})`
+  }
+  const errors = validate(raw, `${preset} preset`).errors
+  return errors.length ? errors.join('; ') : null
+}
+
+/** What `init` adds when the written config asks for automatic actions the repo has not approved. */
+export const INIT_TRUST_HINT =
+  'Its automatic clear, compact and ready checks stay off, and notes ask for the operator, until you review it and run /ctx-guard trust.'
+
+/** True when a role restarts on its own or a trigger compacts: the actions trust gates. */
+export function wantsTrust(config: Config): boolean {
+  return Object.keys(config.roles).some(name => {
+    const spec = roleSpec(config, name)
+    return spec !== null && (spec.restart.mode === 'auto' || spec.triggers.some(t => t.do.includes('compact')))
+  })
 }
 
 // `x`, `/x`, `x/` and `/x/` ignore the same path here.

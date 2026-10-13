@@ -102,3 +102,12 @@ All notable changes to the `ctx-guard` plugin are documented here.
   does not lift a deny; an agent is dropped at its `turn.complete`, or after 2 hours unseen. The
   band shows `sub N!` while N agents are past their warn, and the report lists the merged budgets
   and a table of followed agents (id, type, fill, warn, stop, state).
+- `ctx-guard` skill: the protocol for answering `[ctx-guard]` notes (safe point, handoff, ready
+  token, refusals, blocked tools, subagent budget notes) and for configuring the plugin; a config
+  reference with every key, default, refusal code, trust rule and recipes (solo, coordinator and
+  workers, peers, compact instead of clear, a usage brake, a personal override); a JSON Schema of
+  config v1; the `solo` and `peers` presets; and a `clean-worktree.sh` ready-check example.
+  `/ctx-guard init` now copies the shipped preset file byte for byte, and its reply asks for
+  `/ctx-guard trust` when the preset restarts or compacts on its own.
+- A failed ready check's refusal now ends with the last 300 characters of its stderr (stdout
+  when stderr is empty), on one line with control characters dropped.

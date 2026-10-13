@@ -1,0 +1,1105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ctx-guard config v1",
+  "description": "Project config for the ctx-guard plugin (.claude/ctx-guard.json and .claude/ctx-guard.local.json). Layers merge built-ins, then the team file, then the local file: objects merge key by key, arrays replace, and null deletes a key so the built-in default applies.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "anyOf": [
+        {
+          "const": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "enabled": {
+      "description": "Default true.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stateDir": {
+      "description": "Stamps, leases and default handoffs. Default .ctx-guard.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/path"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "readyToken": {
+      "description": "Default CTX-READY.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "defaultRole": {
+      "description": "Role for an interactive session that no command or CTX_GUARD_ROLE sets.",
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/roleName"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "contextWindow": {
+      "description": "What context percents count against. Default auto.",
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "const": "auto"
+            },
+            {
+              "$ref": "#/$defs/tokens"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "defaults": {
+      "description": "Role settings every role inherits (deep merge; arrays replace).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/role"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "roles": {
+      "anyOf": [
+        {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "not": {
+              "enum": [
+                "constructor",
+                "__defineGetter__",
+                "__defineSetter__",
+                "hasOwnProperty",
+                "__lookupGetter__",
+                "__lookupSetter__",
+                "isPrototypeOf",
+                "propertyIsEnumerable",
+                "toString",
+                "valueOf",
+                "__proto__",
+                "toLocaleString",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/role"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "subagents": {
+      "anyOf": [
+        {
+          "description": "Context budgets by subagent type. A type's entry merges field by field over \"*\"; forks and teammates need an entry naming their type, \"fork\" or \"teammate\".",
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^\\S+$",
+            "not": {
+              "enum": [
+                "constructor",
+                "__defineGetter__",
+                "__defineSetter__",
+                "hasOwnProperty",
+                "__lookupGetter__",
+                "__lookupSetter__",
+                "isPrototypeOf",
+                "propertyIsEnumerable",
+                "toString",
+                "valueOf",
+                "__proto__",
+                "toLocaleString",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/budget"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "pattern": "\\S",
+      "description": "Non-empty text."
+    },
+    "tokens": {
+      "description": "Tokens: a number, or \"300k\", \"1.2M\" (k = 1e3, M = 1e6). Must be above zero.",
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^\\s*\\d+(?:\\.\\d+)?\\s*[kKmM]?\\s*$"
+        }
+      ]
+    },
+    "tokensOrPercent": {
+      "description": "Tokens (\"300k\", \"1.2M\", 150000) or a percent of contextWindow (\"40%\").",
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^\\s*\\d+(?:\\.\\d+)?\\s*[kKmM%]?\\s*$"
+        }
+      ]
+    },
+    "percent": {
+      "description": "A percent: 80 or \"80%\", above 0 and at most 100.",
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100
+        },
+        {
+          "type": "string",
+          "pattern": "^\\s*\\d+(?:\\.\\d+)?\\s*%?\\s*$"
+        }
+      ]
+    },
+    "usd": {
+      "description": "US dollars: 2.5 or \"$2.50\", above zero.",
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^\\s*(?:\\$\\s*)?\\d+(?:\\.\\d+)?\\s*$"
+        }
+      ]
+    },
+    "duration": {
+      "description": "A duration with a unit: \"500ms\", \"10s\", \"10m\", \"2h\", \"1d\". A bare number is refused.",
+      "type": "string",
+      "pattern": "^\\s*\\d+(?:\\.\\d+)?\\s*(?:ms|s|m|h|d)\\s*$"
+    },
+    "path": {
+      "description": "A path relative to the project root: letters, digits and . _ - / only; no absolute path, no escape with \"..\".",
+      "type": "string",
+      "pattern": "^(?!/)(?!\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "roleName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "when": {
+      "description": "An AND of metrics, plus an optional `every` step. Needs at least one metric.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "description": "Main-loop context fill: tokens, or a percent of contextWindow.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tokensOrPercent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit.five_hour": {
+          "description": "Percent used of the 5-hour usage window.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/percent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit.seven_day": {
+          "description": "Percent used of the weekly usage window.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/percent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit.any": {
+          "description": "The higher of the two usage windows.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/percent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cost": {
+          "description": "Session cost in US dollars.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/usd"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "idle": {
+          "description": "Time since the last main-loop turn ended (checked every minute).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "every": {
+          "description": "Repeat step. Needs exactly one of context, limit.*, cost in the same `when`.",
+          "anyOf": [
+            {
+              "description": "Fire again each step past the first threshold. Takes the stepped metric's unit."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "context"
+          ],
+          "properties": {
+            "context": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "limit.five_hour"
+          ],
+          "properties": {
+            "limit.five_hour": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "limit.seven_day"
+          ],
+          "properties": {
+            "limit.seven_day": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "limit.any"
+          ],
+          "properties": {
+            "limit.any": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "cost"
+          ],
+          "properties": {
+            "cost": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "idle"
+          ],
+          "properties": {
+            "idle": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "every"
+            ],
+            "properties": {
+              "every": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "then": {
+            "oneOf": [
+              {
+                "required": [
+                  "context"
+                ],
+                "properties": {
+                  "context": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                }
+              },
+              {
+                "required": [
+                  "limit.five_hour"
+                ],
+                "properties": {
+                  "limit.five_hour": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                }
+              },
+              {
+                "required": [
+                  "limit.seven_day"
+                ],
+                "properties": {
+                  "limit.seven_day": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                }
+              },
+              {
+                "required": [
+                  "limit.any"
+                ],
+                "properties": {
+                  "limit.any": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                }
+              },
+              {
+                "required": [
+                  "cost"
+                ],
+                "properties": {
+                  "cost": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "every",
+              "context"
+            ],
+            "properties": {
+              "context": {
+                "type": "string",
+                "pattern": "%\\s*$"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "every": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/percent"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "every",
+              "context"
+            ],
+            "properties": {
+              "context": {
+                "not": {
+                  "type": "string",
+                  "pattern": "%\\s*$"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "every": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/tokens"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "every",
+              "limit.five_hour"
+            ]
+          },
+          "then": {
+            "properties": {
+              "every": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/percent"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "every",
+              "limit.seven_day"
+            ]
+          },
+          "then": {
+            "properties": {
+              "every": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/percent"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "every",
+              "limit.any"
+            ]
+          },
+          "then": {
+            "properties": {
+              "every": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/percent"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "every",
+              "cost"
+            ]
+          },
+          "then": {
+            "properties": {
+              "every": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/usd"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "action": {
+      "anyOf": [
+        {
+          "enum": [
+            "note",
+            "toast",
+            "notify",
+            "compact"
+          ],
+          "description": "Fires once on the rising edge."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "deny": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^\\S+$"
+              }
+            }
+          },
+          "required": [
+            "deny"
+          ],
+          "description": "Deny these main-loop tools while the trigger holds (checked at every call)."
+        }
+      ]
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "description": "Unique within the role's triggers."
+        },
+        "when": {
+          "$ref": "#/$defs/when"
+        },
+        "do": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        },
+        "level": {
+          "description": "Picks the built-in note wording.",
+          "anyOf": [
+            {
+              "enum": [
+                "soft",
+                "hard",
+                "stop"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "description": "Note text template; replaces the built-in wording for this trigger.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "when",
+        "do"
+      ],
+      "if": {
+        "required": [
+          "when"
+        ],
+        "properties": {
+          "when": {
+            "required": [
+              "idle"
+            ],
+            "properties": {
+              "idle": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "do": {
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "readyCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "description": "Command and arguments, run without a shell from the project root. Exit 0 passes.",
+          "type": "array",
+          "minItems": 1,
+          "prefixItems": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Default 30s, at most 10m.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "run"
+      ]
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "description": "What the role is for (shown in the report).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "triggers": {
+          "description": "Replaces the built-in ladder (and the `defaults` list) as a whole.",
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/trigger"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "suffix": {
+                  "description": "Appended to every note; template variables apply.",
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/text"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "handoff": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "description": "Handoff file under the project root; {role} is filled in. Default {stateDir}/{role}-handoff.md.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(?!/)(?!\\.\\.(?:/|$))(?:[A-Za-z0-9._/-]|\\{role\\})+$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "style": {
+                  "description": "Default file.",
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file",
+                        "session-handoff"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "instructions": {
+                  "description": "What the handoff must hold; quoted in the note.",
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/text"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "restart": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "description": "Default manual.",
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "auto",
+                        "manual",
+                        "off"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "via": {
+                  "description": "Default clear.",
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "clear",
+                        "compact"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "command": {
+                  "description": "Command run after /clear, with role=\u2026 handoff=\u2026 prompt. Default ctx-guard:resume.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^/?[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "prompt": {
+                  "description": "Appended to the resume command line.",
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/text"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "peers": {
+                  "description": "Roles that must not restart within peerGap of this one.",
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/roleName"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "peerGap": {
+                  "description": "Default 10m.",
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/duration"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "readyChecks": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/readyCheck"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "compact": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "instructions": {
+                  "description": "Passed to /compact.",
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/text"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "budgetStep": {
+      "description": "Tokens (\"120k\"), or \"off\" for no such step. Unset or null inherits the \"*\" value.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/tokens"
+        },
+        {
+          "const": "off"
+        }
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "warn": {
+          "description": "Past this, the subagent gets one wrap-up note. Must be below stop, after the merge over \"*\".",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/budgetStep"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stop": {
+          "description": "Past this, the subagent gets the stop note and its tool calls are refused.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/budgetStep"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "description": "Stop note template: {type} {tokens} {warn} {stop}.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "warn"
+          ],
+          "properties": {
+            "warn": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "stop"
+          ],
+          "properties": {
+            "stop": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "message"
+          ],
+          "properties": {
+            "message": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

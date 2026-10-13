@@ -308,6 +308,34 @@ export function quietVerdict(q: Quiet): Verdict {
   return { ok: true }
 }
 
+// ---- ready-check output --------------------------------------------------------
+
+// Enough of a failing check's output for the model to act on, short enough for one note.
+export const CHECK_TAIL_CHARS = 300
+
+/**
+ * The end of a failed check's stderr (stdout when stderr is empty) on one
+ * line: control characters dropped, whitespace runs collapsed, at most
+ * CHECK_TAIL_CHARS, led by "…" when cut. Empty when there was no output.
+ */
+export function outputTail(stderr: unknown, stdout: unknown, max = CHECK_TAIL_CHARS): string {
+  const clean = (v: unknown): string =>
+    (typeof v === 'string' ? v : '')
+      .replace(/[\t\n\r\f\v]+/g, ' ')
+      .replace(/\p{Cc}/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const text = clean(stderr) || clean(stdout)
+  if (text.length <= max) return text
+  return `…${text.slice(text.length - (max - 1)).trimStart()}`
+}
+
+/** A check's refusal detail: its exit code, then the output tail when there is one. */
+export function checkDetail(exitCode: number, stderr: unknown, stdout: unknown): string {
+  const tail = outputTail(stderr, stdout)
+  return tail ? `exited ${exitCode}: ${tail}` : `exited ${exitCode}`
+}
+
 // ---- resume ------------------------------------------------------------------
 
 /** `role=<r> handoff=<path> <prompt>`, what the restart command is run with. */

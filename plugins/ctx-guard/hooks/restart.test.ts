@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
+  CHECK_TAIL_CHARS,
   COMPACT_QUIET_MS,
   PENDING_RESUME_MS,
   REFUSAL_CODES,
   asLastCompact,
   asPendingCompact,
   asPendingResume,
+  checkDetail,
   checkLines,
   compactArgs,
   compactBusy,
@@ -26,6 +28,7 @@ import {
   stampJson,
   stampPath,
   verdict,
+  outputTail,
 } from './restart'
 import type { Facts } from './restart'
 import type { LastCompact, PendingCompact, PendingResume } from '../types'
@@ -481,5 +484,30 @@ describe('compact', () => {
     expect(nextLastCompact(null, 'ran', 'squeeze', 't', NOW)).toEqual({ outcome: 'ran', source: 'squeeze', text: 't', at: NOW, ranAt: NOW })
     expect(nextLastCompact(ran, 'skipped', 'squeeze', 'off', NOW + 1)).toEqual({ outcome: 'skipped', source: 'squeeze', text: 'off', at: NOW + 1, ranAt: NOW })
     expect(nextLastCompact(null, 'dropped', 'squeeze', 'x', NOW).ranAt).toBeNull()
+  })
+})
+
+describe('ready-check output', () => {
+  test('stderr wins; stdout when stderr is empty; nothing when both are', () => {
+    expect(outputTail('boom\n', 'ignored')).toBe('boom')
+    expect(outputTail('  \n', 'from stdout')).toBe('from stdout')
+    expect(outputTail('', '')).toBe('')
+    expect(outputTail(undefined, null)).toBe('')
+  })
+
+  test('one line: control characters dropped, whitespace collapsed', () => {
+    expect(outputTail('a\r\n\tb\u001b[31m red\u0007\n\n', '')).toBe('a b[31m red')
+  })
+
+  test('long output keeps its end, led by an ellipsis', () => {
+    const tail = outputTail(`${'x'.repeat(1000)} the end`, '')
+    expect(tail.length).toBe(CHECK_TAIL_CHARS)
+    expect(tail.startsWith('…')).toBe(true)
+    expect(tail.endsWith('the end')).toBe(true)
+  })
+
+  test('checkDetail adds the tail to the exit code', () => {
+    expect(checkDetail(1, 'uncommitted changes: M a.ts', '')).toBe('exited 1: uncommitted changes: M a.ts')
+    expect(checkDetail(3, '', '')).toBe('exited 3')
   })
 })

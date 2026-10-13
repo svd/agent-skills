@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "defaultRole": "main",
+  "roles": {
+    "main": {
+      "description": "the one long-running session in this project",
+      "triggers": [
+        { "id": "ctx-soft", "when": { "context": "40%" }, "do": ["note"], "level": "soft" },
+        { "id": "ctx-hard", "when": { "context": "60%" }, "do": ["note"], "level": "hard" },
+        { "id": "ctx-stop", "when": { "context": "75%", "every": "5%" }, "do": ["note"], "level": "stop" },
+        { "id": "limit-soft", "when": { "limit.any": 80 }, "do": ["note"], "level": "soft" },
+        { "id": "limit-hard", "when": { "limit.any": 90 }, "do": ["note", "toast"], "level": "hard" },
+        { "id": "limit-brake", "when": { "limit.any": 95 }, "do": ["note", "toast", { "deny": ["Agent"] }], "level": "stop" }
+      ],
+      "handoff": {
+        "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Next action."
+      },
+      "restart": {
+        "mode": "auto",
+        "prompt": "Carry out Next action without waiting."
+      }
+    }
+  }
+}

@@ -10,6 +10,13 @@ const GITIGNORE = `${ROOT}/.gitignore`
 const WINDOW = 1_000_000
 const HOUR = 60 * 60 * 1000
 
+// Stand-ins for skills/ctx-guard/assets/presets/*.json, which tests cannot read.
+// They must equal the shipped files byte for byte: when you edit a preset, paste it here too.
+const PRESET_TEXT: Record<string, string> = {
+  solo: "{\n  \"version\": 1,\n  \"defaultRole\": \"main\",\n  \"roles\": {\n    \"main\": {\n      \"description\": \"the one long-running session in this project\",\n      \"triggers\": [\n        { \"id\": \"ctx-soft\", \"when\": { \"context\": \"40%\" }, \"do\": [\"note\"], \"level\": \"soft\" },\n        { \"id\": \"ctx-hard\", \"when\": { \"context\": \"60%\" }, \"do\": [\"note\"], \"level\": \"hard\" },\n        { \"id\": \"ctx-stop\", \"when\": { \"context\": \"75%\", \"every\": \"5%\" }, \"do\": [\"note\"], \"level\": \"stop\" },\n        { \"id\": \"limit-soft\", \"when\": { \"limit.any\": 80 }, \"do\": [\"note\"], \"level\": \"soft\" },\n        { \"id\": \"limit-hard\", \"when\": { \"limit.any\": 90 }, \"do\": [\"note\", \"toast\"], \"level\": \"hard\" },\n        { \"id\": \"limit-brake\", \"when\": { \"limit.any\": 95 }, \"do\": [\"note\", \"toast\", { \"deny\": [\"Agent\"] }], \"level\": \"stop\" }\n      ],\n      \"handoff\": {\n        \"instructions\": \"Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Next action.\"\n      },\n      \"restart\": {\n        \"mode\": \"auto\",\n        \"prompt\": \"Carry out Next action without waiting.\"\n      }\n    }\n  }\n}\n",
+  peers: "{\n  \"version\": 1,\n  \"defaults\": {\n    \"triggers\": [\n      { \"id\": \"ctx-soft\", \"when\": { \"context\": \"40%\" }, \"do\": [\"note\"], \"level\": \"soft\" },\n      { \"id\": \"ctx-hard\", \"when\": { \"context\": \"60%\" }, \"do\": [\"note\"], \"level\": \"hard\" },\n      { \"id\": \"ctx-stop\", \"when\": { \"context\": \"75%\", \"every\": \"5%\" }, \"do\": [\"note\", \"toast\"], \"level\": \"stop\" },\n      { \"id\": \"limit-hard\", \"when\": { \"limit.any\": 90 }, \"do\": [\"note\", \"toast\"], \"level\": \"hard\" },\n      { \"id\": \"limit-brake\", \"when\": { \"limit.any\": 95 }, \"do\": [\"note\", { \"deny\": [\"Agent\"] }], \"level\": \"stop\" }\n    ],\n    \"handoff\": {\n      \"instructions\": \"Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Open questions for the peer, Next action.\"\n    },\n    \"restart\": {\n      \"mode\": \"auto\",\n      \"prompt\": \"Carry out Next action without waiting.\",\n      \"peerGap\": \"10m\"\n    }\n  },\n  \"roles\": {\n    \"lead\": {\n      \"description\": \"coordinates the work and dispatches subagents\",\n      \"notes\": { \"suffix\": \"Before you stop, send the reviewer session a short message: what you finished and what you hand over.\" },\n      \"restart\": { \"peers\": [\"reviewer\"] }\n    },\n    \"reviewer\": {\n      \"description\": \"reviews what the lead session produces\",\n      \"notes\": { \"suffix\": \"Before you stop, send the lead session a short message: what you reviewed and what is still open.\" },\n      \"restart\": { \"peers\": [\"lead\"] }\n    }\n  },\n  \"subagents\": {\n    \"*\": { \"warn\": \"120k\", \"stop\": \"170k\" },\n    \"Explore\": { \"warn\": \"100k\", \"stop\": \"150k\", \"message\": \"Budget of {stop} reached: return your findings now.\" }\n  }\n}\n",
+}
+
 type Limit = { kind: string; percentUsed: number; resetsAt?: string }
 
 // The world beneath the plugin: files in memory, the session's figures, the
@@ -38,6 +45,8 @@ type World = {
   hang: Record<string, number>
   processes: string[][]
   exitCode: number | 'timeout'
+  // What a ready check prints to stderr.
+  stderr: string
   // path → where it really lands (a symlink); absent means the path itself.
   links: Record<string, string>
   onWrite?: (path: string) => void
@@ -46,6 +55,8 @@ type World = {
   // The engine's compaction window, answered with a breakdown; null answers none.
   rawMax: number | null
   window: number
+  // The preset files the plugin ships, by name; read by suffix, wherever the plugin root is.
+  presets: Record<string, string>
   clock?: MockClock
 }
 
@@ -71,9 +82,11 @@ function newWorld(over: Partial<World> = {}): World {
     hang: {},
     processes: [],
     exitCode: 0,
+    stderr: '',
     links: {},
     rawMax: null,
     window: WINDOW,
+    presets: { ...PRESET_TEXT },
     ...over,
   }
 }
@@ -175,12 +188,14 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
     w.processes.push([...e.argv])
     w.onProcess?.()
     if (w.exitCode === 'timeout') throw new Error('timed out')
-    return { value: { exitCode: w.exitCode, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: w.exitCode, stdout: '', stderr: w.stderr, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.exists', ($, e) => ({ value: e.path in w.files || dirsOf(w).has(e.path) || e.path in w.links }))
   on('classic.Stop', () => ({}))
   on('fs.read', ($, e) => {
     const f = w.files[e.path]
+    const preset = /\/skills\/ctx-guard\/assets\/presets\/([a-z]+)\.json$/.exec(e.path)?.[1]
+    if (!f && preset !== undefined && preset in w.presets) return { value: w.presets[preset] as never }
     if (!f) throw new Error(`ENOENT: ${e.path}`)
     return { value: f.text as never }
   })
@@ -515,9 +530,12 @@ test('init writes the starter once, never overwrites, and adds .gitignore lines'
   w.files[GITIGNORE] = { text: 'node_modules/', mtimeMs: NOW }
   world(on, w)
   await start($)
-  expect(await ctxGuard($, 'init')).toContain('wrote .claude/ctx-guard.json (solo starter)')
+  const reply = await ctxGuard($, 'init')
+  expect(reply).toContain('wrote .claude/ctx-guard.json (solo preset)')
+  // The solo preset restarts on its own, which waits for the operator's approval.
+  expect(reply).toContain('run /ctx-guard trust')
   const written = w.files[TEAM]?.text ?? ''
-  expect(JSON.parse(written).defaultRole).toBe('main')
+  expect(written).toBe(PRESET_TEXT.solo)
   expect(w.files[GITIGNORE]?.text).toBe('node_modules/\n.claude/ctx-guard.local.json\n.ctx-guard/\n')
   expect(await ctxGuard($, '')).toContain('role: main (from project defaultRole)')
 
@@ -533,9 +551,31 @@ test('init peers writes two peer roles and a fresh .gitignore', async ($, on) =>
   world(on, w)
   await start($)
   await ctxGuard($, 'init peers')
+  expect(w.files[TEAM]?.text).toBe(PRESET_TEXT.peers)
   expect(Object.keys(JSON.parse(w.files[TEAM]?.text ?? '{}').roles)).toEqual(['lead', 'reviewer'])
   expect(w.files[GITIGNORE]?.text).toBe('.claude/ctx-guard.local.json\n.ctx-guard/\n')
   expect(await ctxGuard($, '')).not.toContain('error:')
+})
+
+test('init writes nothing when the shipped preset is missing or invalid', async ($, on) => {
+  const w = newWorld({ presets: { peers: '{"version": 1, "roles": {"Bad": {}}}' } })
+  world(on, w)
+  await start($)
+  expect(await ctxGuard($, 'init')).toContain('the solo preset could not be read')
+  expect(await ctxGuard($, 'init peers')).toContain('nothing written')
+  expect(w.files[TEAM]).toBeUndefined()
+  expect(w.files[GITIGNORE]).toBeUndefined()
+})
+
+test('init says nothing of trust when the preset needs none', async ($, on) => {
+  const manual = JSON.stringify({ version: 1, defaultRole: 'main', roles: { main: { restart: { mode: 'manual' } } } })
+  const w = newWorld({ presets: { solo: manual } })
+  world(on, w)
+  await start($)
+  const reply = await ctxGuard($, 'init')
+  expect(reply).toContain('wrote .claude/ctx-guard.json (solo preset)')
+  expect(reply).not.toContain('/ctx-guard trust')
+  expect(w.files[TEAM]?.text).toBe(manual)
 })
 
 test('unknown subcommands answer with the usage', async ($, on) => {
@@ -1127,10 +1167,10 @@ test('peer-restarting: a peer stamp younger than peerGap', async ($, on) => {
 })
 
 test('ready-check-failed: a non-zero exit or a timeout; exit 0 passes', async ($, on) => {
-  const w = restartWorld({ exitCode: 3 })
+  const w = restartWorld({ exitCode: 3, stderr: 'clean-worktree: uncommitted changes:\n M src/a.ts\n' })
   const { clock, session } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['./ready.sh', '--strict'], timeout: '10s' }] }))
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(ready-check-failed): ./ready.sh --strict: exited 3')
+  expect(refusals(session)[0]).toContain('(ready-check-failed): ./ready.sh --strict: exited 3: clean-worktree: uncommitted changes: M src/a.ts')
   w.exitCode = 'timeout'
   await ready($, clock)
   expect(refusals(session)[1]).toContain('(ready-check-failed): ./ready.sh --strict: did not finish within 10s')

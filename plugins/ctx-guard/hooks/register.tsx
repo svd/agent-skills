@@ -31,6 +31,7 @@ import type {
 import { bandOf, bandText, registerBand, sameBand } from './band'
 import {
   ARGUMENT_HINT,
+  INIT_TRUST_HINT,
   MIN_VERSION,
   USAGE,
   checkText,
@@ -40,7 +41,9 @@ import {
   parseCommand,
   parsePause,
   reportText,
-  starterConfig,
+  presetPath,
+  presetProblem,
+  wantsTrust,
   versionBelow,
 } from './commands'
 import type { Preset, RestartReport, SubagentReport } from './commands'
@@ -84,6 +87,7 @@ import {
   asLastCompact,
   asPendingCompact,
   asPendingResume,
+  checkDetail,
   checkLines,
   compactArgs,
   compactBusy,
@@ -1168,7 +1172,7 @@ async function runChecks($: EngineInterface, spec: RoleSpec): Promise<CheckRun[]
     let run: CheckRun
     try {
       const r = await $.process.run(c.run, { cwd: root, timeoutMs: c.timeout })
-      run = { run: c.run, ok: r.exitCode === 0, detail: `exited ${r.exitCode}` }
+      run = { run: c.run, ok: r.exitCode === 0, detail: r.exitCode === 0 ? 'exited 0' : checkDetail(r.exitCode, r.stderr, r.stdout) }
     } catch (e) {
       run = { run: c.run, ok: false, detail: `did not finish within ${humanDuration(c.timeout)} or could not start (${errorText(e)})` }
     }
@@ -1920,12 +1924,24 @@ async function initCommand($: EngineInterface, preset: Preset): Promise<string> 
   const target = confinePath(root, rel)
   if ('error' in target) return `${PREFIX} configPath ${rel} ${target.error}; nothing written.`
   const lines: string[] = []
+  let wrote = false
   if (await $.fs.exists(target.path)) lines.push(`${rel} exists; left as it is.`)
   else {
-    await $.fs.write(target.path, starterConfig(preset))
-    lines.push(`wrote ${rel} (${preset} starter).`)
+    const from = presetPath($.plugin.root, preset)
+    let text: string
+    try {
+      text = await $.fs.read(from)
+    } catch (e) {
+      return `${PREFIX} the ${preset} preset could not be read from ${from} (${errorText(e)}); nothing written.`
+    }
+    const problem = presetProblem(text, preset)
+    if (problem) return `${PREFIX} ${problem}; nothing written.`
+    await $.fs.write(target.path, text)
+    wrote = true
+    lines.push(`wrote ${rel} (${preset} preset).`)
   }
   await reloadConfig($, true)
+  if (wrote && mod.eff && !mod.eff.fallback && wantsTrust(mod.eff.config) && !trusted()) lines.push(INIT_TRUST_HINT)
   const stateDir = (mod.eff?.config ?? builtInConfig()).stateDir.replace(/\/+$/, '')
   const gitignore = `${root.replace(/[/\\]+$/, '')}/.gitignore`
   const existing = (await $.fs.exists(gitignore)) ? await $.fs.read(gitignore) : null
