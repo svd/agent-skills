@@ -328,6 +328,9 @@ describe('refusal and subagent texts', () => {
     expect(refusalNote('CTX-READY', 'agents-running', 'two subagents are still running.')).toBe(
       '[ctx-guard] CTX-READY ignored (agents-running): two subagents are still running. Nothing was cleared.',
     )
+    expect(refusalNote('CTX-READY', 'already-busy', 'a /compact is under way', 'compact')).toBe(
+      '[ctx-guard] CTX-READY ignored (already-busy): a /compact is under way. Nothing was compacted.',
+    )
   })
 
   test('subagent budget texts', () => {

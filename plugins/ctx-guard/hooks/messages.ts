@@ -1,7 +1,7 @@
 // ctx-guard text: templates, humanized figures, notes keyed to level, the
 // restart tail, deny reasons, refusals, subagent budget notes and toasts.
 // Pure: no `$`, never throws. Texts carry numbers, names and paths only.
-import type { Level, Quantity, RestartMode, RoleSpec, Trigger } from '../types'
+import type { Level, Quantity, RestartMode, RestartVia, RoleSpec, Trigger } from '../types'
 import type { Condition, Fire, FireVars, LimitInfo, Metrics } from './triggers'
 import { conditions } from './triggers'
 
@@ -307,8 +307,8 @@ export function denyReason(tool: string, trigger: Trigger, metrics: Metrics): st
 }
 
 /** The note after a refused ready token. */
-export function refusalNote(readyToken: string, code: string, text: string): string {
-  return `${PREFIX} ${readyToken} ignored (${code}): ${text.trim().replace(/\.$/, '')}. Nothing was cleared.`
+export function refusalNote(readyToken: string, code: string, text: string, via: RestartVia = 'clear'): string {
+  return `${PREFIX} ${readyToken} ignored (${code}): ${text.trim().replace(/\.$/, '')}. Nothing was ${via === 'compact' ? 'compacted' : 'cleared'}.`
 }
 
 export type BudgetVars = { type: string; tokens: number; warn: number | null; stop: number | null }

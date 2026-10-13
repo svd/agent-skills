@@ -1,13 +1,21 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
+  COMPACT_QUIET_MS,
   PENDING_RESUME_MS,
   REFUSAL_CODES,
+  asLastCompact,
+  asPendingCompact,
   asPendingResume,
   checkLines,
+  compactArgs,
+  compactBusy,
+  compactGate,
+  compactRequest,
   isReadyAnswer,
   isUnder,
   latestHandoff,
+  nextLastCompact,
   parseStamp,
   pendingAction,
   pendingFresh,
@@ -20,7 +28,7 @@ import {
   verdict,
 } from './restart'
 import type { Facts } from './restart'
-import type { PendingResume } from '../types'
+import type { LastCompact, PendingCompact, PendingResume } from '../types'
 
 const NOW = Date.parse('2026-10-13T12:00:00Z')
 const MIN = 60 * 1000
@@ -416,5 +424,62 @@ describe('the quiet re-check before the stamp and before /clear', () => {
     expect(isReadyAnswer('— CTX-READY ✅', 'CTX-READY')).toBe(true)
     expect(isReadyAnswer('éCTX-READY', 'CTX-READY')).toBe(false)
     expect(isReadyAnswer('CTX-READY_', 'CTX-READY')).toBe(true)
+  })
+})
+
+describe('compact', () => {
+  const gates = { autoActions: true, trusted: true, paused: false, untrustedWhy: 'never approved' }
+  const queued: PendingCompact = { role: 'lead', triggerId: 'squeeze', step: 'queued', at: NOW, notBefore: null, waiting: null }
+  const ran: LastCompact = { outcome: 'ran', source: 'squeeze', text: 'compacted', at: NOW, ranAt: NOW }
+
+  test('the gate: auto actions, then trust, then a pause', () => {
+    expect(compactGate(gates)).toBeNull()
+    expect(compactGate({ ...gates, autoActions: false, trusted: false })?.code).toBe('autoActions')
+    expect(compactGate({ ...gates, trusted: false, paused: true })).toEqual({
+      code: 'untrusted',
+      text: "this repo's compact settings are not approved (never approved); the operator runs /ctx-guard trust",
+    })
+    expect(compactGate({ ...gates, paused: true })?.code).toBe('paused')
+  })
+
+  test('a request: queued, one already waiting wins, held until the quiet period after one ran', () => {
+    expect(compactRequest(null, null, NOW)).toEqual({ kind: 'queue', notBefore: null })
+    expect(compactRequest(queued, null, NOW)).toEqual({ kind: 'queued-already' })
+    expect(compactRequest({ ...queued, step: 'blocked' }, null, NOW)).toEqual({ kind: 'queued-already' })
+    expect(compactRequest(null, ran, NOW + COMPACT_QUIET_MS - 1)).toEqual({ kind: 'queue', notBefore: NOW + COMPACT_QUIET_MS })
+    expect(compactRequest(null, ran, NOW + COMPACT_QUIET_MS)).toEqual({ kind: 'queue', notBefore: null })
+    expect(compactRequest(null, { ...ran, outcome: 'skipped', ranAt: null }, NOW)).toEqual({ kind: 'queue', notBefore: null })
+    // A clock that went back is no reason to hold off.
+    expect(compactRequest(null, ran, NOW - 1)).toEqual({ kind: 'queue', notBefore: null })
+  })
+
+  test('busy work: a turn, a restart, agents and background tasks, known or not', () => {
+    const q = { turnRunning: false, restart: null, agents: [], steps: [], background: [] }
+    expect(compactBusy(q)).toBeNull()
+    expect(compactBusy({ ...q, turnRunning: true })).toBe('a turn is running')
+    expect(compactBusy({ ...q, restart: 'a restart is under way' })).toBe('a restart is under way')
+    expect(compactBusy({ ...q, agents: [{ id: 'a', status: 'running', description: 'scan' }] })).toBe('agents still running: scan')
+    expect(compactBusy({ ...q, steps: ['wf'] })).toBe('agents still running: agent wf (stepped recently)')
+    expect(compactBusy({ ...q, background: null })).toContain('background tasks unknown')
+    expect(compactBusy({ ...q, background: [{ type: 'shell', description: 'tail' }] })).toBe('background tasks still running: tail')
+  })
+
+  test('arguments, and the stored shapes read back', () => {
+    expect(compactArgs('  Keep the plan.  ')).toBe('Keep the plan.')
+    expect(compactArgs(null)).toBe('')
+    expect(asPendingCompact(queued)).toEqual(queued)
+    expect(asPendingCompact({ ...queued, step: 'done' })).toBeNull()
+    expect(asPendingCompact({ ...queued, waiting: 7, notBefore: 'x' })).toEqual(queued)
+    expect(asPendingCompact({ ...queued, step: 'blocked', notBefore: NOW })).toEqual({ ...queued, step: 'blocked', notBefore: NOW })
+    expect(asPendingCompact('x')).toBeNull()
+    expect(asLastCompact(ran)).toEqual(ran)
+    expect(asLastCompact({ ...ran, outcome: 'maybe' })).toBeNull()
+    expect(asLastCompact({ ...ran, ranAt: 'x' })).toEqual({ ...ran, ranAt: null })
+  })
+
+  test('the last-compact record keeps when the last one ran', () => {
+    expect(nextLastCompact(null, 'ran', 'squeeze', 't', NOW)).toEqual({ outcome: 'ran', source: 'squeeze', text: 't', at: NOW, ranAt: NOW })
+    expect(nextLastCompact(ran, 'skipped', 'squeeze', 'off', NOW + 1)).toEqual({ outcome: 'skipped', source: 'squeeze', text: 'off', at: NOW + 1, ranAt: NOW })
+    expect(nextLastCompact(null, 'dropped', 'squeeze', 'x', NOW).ranAt).toBeNull()
   })
 })

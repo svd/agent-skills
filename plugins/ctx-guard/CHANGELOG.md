@@ -72,3 +72,19 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - `/ctx-guard check` (typed by the person): a dry run of every restart check (ready checks run when trusted), with no
   stamp written, no race and no clear. The report adds trust (and which fields need approval),
   the last verdict, the handoff's age, the lease owner and a pending resume.
+- Compact: a trigger's `compact` action queues `/compact {compact.instructions}` (kept across
+  reloads) and runs it at once when no main turn runs, else at the next main-loop turn end, once
+  no turn, restart, agent or background task is busy (one toast while it waits). A queued compact
+  is dropped when its trigger re-arms first, by a `/clear`, or by a reload while it was being sent
+  (never sent twice). While auto actions are off, the repo is untrusted or ctx-guard is paused it
+  is blocked, with one toast per reason and a report line, and runs once that lifts (`/ctx-guard
+  trust`, a pause lifted or run out, auto actions on) if its trigger is still marked. A compact
+  action within 5 minutes of one that ran is held until then and runs only if the engine's own
+  figures still cross the threshold (otherwise it is dropped and the trigger re-arms), so a
+  reading from before the compaction cannot start another; a ready-token restart at the same turn end goes first,
+  and a refused one lets the queued compact run.
+- `restart.via: "compact"`: the ready token runs the restart checks minus the handoff, lease and
+  peer ones, then `/compact {compact.instructions}`, with no resume after it. A ready token while
+  a compact runs is refused with `already-busy`, and a via-compact refusal says nothing was
+  compacted. The report shows a queued compact and the last one; `/ctx-guard check` covers via
+  compact.

@@ -240,6 +240,18 @@ export function evaluate(
   return { fire, marks: { role, byId } }
 }
 
+/** Whether the trigger's whole AND holds on `m`; null when one of its metrics is unknown. */
+export function triggerHolds(trigger: Trigger, m: Metrics): boolean | null {
+  const cs = conditions(trigger, m)
+  return known(cs) ? allHold(cs) : null
+}
+
+/** Whether `marks` (of `role`) still hold a mark for trigger `id`: it fired and has not re-armed. */
+export function markHeld(marks: Marks | null, role: string | null, id: string): boolean {
+  const prev = priorMarks(marks, role)
+  return Object.hasOwn(prev, id) && isMark(prev[id])
+}
+
 // ---- step gates --------------------------------------------------------------
 
 // Between `rise` and `fall` a new context reading cannot change any context

@@ -241,6 +241,9 @@ export type RestartReport = {
   // Who holds the role lease: `this session`, another id, `free`; null with no role.
   lease: string | null
   pending: string | null
+  // A compact a trigger queued, and the last compact ctx-guard ran or gave up on; absent leaves them out.
+  pendingCompact?: string | null
+  lastCompact?: string | null
 }
 
 function trustLine(t: RestartReport, now: number): string {
@@ -256,6 +259,8 @@ function restartLines(t: RestartReport, now: number): string[] {
   if (t.handoff) lines.push(`handoff: ${t.handoff.path}, ${t.handoff.mtime === null ? 'absent' : `written ${ago(now - t.handoff.mtime)}`}`)
   if (t.lease) lines.push(`lease: ${t.lease}`)
   if (t.pending) lines.push(`pending resume: ${t.pending}`)
+  if (t.pendingCompact) lines.push(`queued compact: ${t.pendingCompact}`)
+  if (t.lastCompact) lines.push(`last compact: ${t.lastCompact}`)
   return lines
 }
 

@@ -2,7 +2,7 @@
 // restart is judged on and the fail-closed verdict over them, the peer race,
 // the handoff a `session-handoff` style points at, and what to do with a
 // pending resume found after a reload. Pure: no `$`, never throws.
-import type { PendingResume, RestartVia } from '../types'
+import type { LastCompact, PendingCompact, PendingResume, RestartVia } from '../types'
 import type { Lease } from './roles'
 import { humanDuration, sessionHandoffSlug } from './messages'
 
@@ -355,4 +355,87 @@ export function asPendingResume(v: unknown): PendingResume | null {
 /** True while a pending resume is young enough to count as a restart in progress. */
 export function pendingFresh(p: PendingResume | null, now: number): boolean {
   return p !== null && now - p.at <= PENDING_RESUME_MS
+}
+
+// ---- compact -------------------------------------------------------------------
+
+// A compact action asked for this soon after one ran is dropped: the figures
+// it fired on may predate the compaction, and the marks re-arm once a fresh
+// reading lands below the threshold.
+export const COMPACT_QUIET_MS = 5 * 60 * 1000
+
+export type CompactGates = { autoActions: boolean; trusted: boolean; paused: boolean; untrustedWhy: string }
+export type CompactGate = { code: 'autoActions' | 'untrusted' | 'paused'; text: string }
+
+/** Why ctx-guard may not compact on its own now, or null when it may. */
+export function compactGate(g: CompactGates): CompactGate | null {
+  if (!g.autoActions) return { code: 'autoActions', text: 'autoActions is off in /config' }
+  if (!g.trusted) return { code: 'untrusted', text: `this repo's compact settings are not approved (${g.untrustedWhy}); the operator runs /ctx-guard trust` }
+  if (g.paused) return { code: 'paused', text: 'ctx-guard is paused' }
+  return null
+}
+
+export type CompactRequest = { kind: 'queue'; notBefore: number | null } | { kind: 'queued-already' }
+
+/**
+ * A compact trigger's rising edge: queue it, or keep the one already waiting
+ * (at most one compact waits). Within COMPACT_QUIET_MS of the last compact
+ * that ran it is queued with `notBefore`, held until the quiet period ends;
+ * a fresh reading below the threshold re-arms the trigger and drops it.
+ */
+export function compactRequest(pending: PendingCompact | null, last: LastCompact | null, now: number): CompactRequest {
+  if (pending) return { kind: 'queued-already' }
+  const ranAt = last?.ranAt ?? null
+  const held = ranAt !== null && now - ranAt >= 0 && now - ranAt < COMPACT_QUIET_MS
+  return { kind: 'queue', notBefore: held ? ranAt + COMPACT_QUIET_MS : null }
+}
+
+export type CompactBusy = {
+  turnRunning: boolean
+  // Why a restart is in progress; null when none is.
+  restart: string | null
+  agents: readonly AgentRow[]
+  steps: readonly string[]
+  background: Facts['background']
+}
+
+/** What holds a queued compact back, or null when it may run: the restart guard's busy facts. */
+export function compactBusy(q: CompactBusy): string | null {
+  if (q.turnRunning) return 'a turn is running'
+  if (q.restart) return q.restart
+  return agentsFail(q.agents, q.steps) ?? backgroundFail(q.background)
+}
+
+/** `/compact`'s arguments: the role's instructions, trimmed; none when empty. */
+export function compactArgs(instructions: string | null): string {
+  return (instructions ?? '').trim()
+}
+
+/** A pending compact as $.state may hold it; null when it is not one. */
+export function asPendingCompact(v: unknown): PendingCompact | null {
+  if (typeof v !== 'object' || v === null) return null
+  const o = v as Record<string, unknown>
+  if (typeof o.role !== 'string' || typeof o.triggerId !== 'string') return null
+  if (o.step !== 'queued' && o.step !== 'sent' && o.step !== 'blocked') return null
+  if (typeof o.at !== 'number' || !Number.isFinite(o.at)) return null
+  const notBefore = typeof o.notBefore === 'number' && Number.isFinite(o.notBefore) ? o.notBefore : null
+  return { role: o.role, triggerId: o.triggerId, step: o.step, at: o.at, notBefore, waiting: typeof o.waiting === 'string' ? o.waiting : null }
+}
+
+const OUTCOMES: readonly LastCompact['outcome'][] = ['ran', 'failed', 'skipped', 'held', 'dropped']
+
+/** The last compact as $.state may hold it; null when it is not one. */
+export function asLastCompact(v: unknown): LastCompact | null {
+  if (typeof v !== 'object' || v === null) return null
+  const o = v as Record<string, unknown>
+  if (!OUTCOMES.includes(o.outcome as LastCompact['outcome'])) return null
+  if (typeof o.source !== 'string' || typeof o.text !== 'string') return null
+  if (typeof o.at !== 'number' || !Number.isFinite(o.at)) return null
+  const ranAt = typeof o.ranAt === 'number' && Number.isFinite(o.ranAt) ? o.ranAt : null
+  return { outcome: o.outcome as LastCompact['outcome'], source: o.source, text: o.text, at: o.at, ranAt }
+}
+
+/** The next last-compact record: `ranAt` moves only when this one ran. */
+export function nextLastCompact(prev: LastCompact | null, outcome: LastCompact['outcome'], source: string, text: string, now: number): LastCompact {
+  return { outcome, source, text, at: now, ranAt: outcome === 'ran' ? now : (prev?.ranAt ?? null) }
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { roleSpec, validate } from './config'
-import { conditions, crossesGates, deniedBy, evaluate, idleMs, limitsFrom, liveDenies, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
+import { conditions, crossesGates, deniedBy, evaluate, idleMs, limitsFrom, liveDenies, markHeld, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
 import type { Metrics } from './triggers'
 import type { Config, Marks, Trigger } from '../types'
 
@@ -438,5 +438,16 @@ describe('tokenGates', () => {
     expect(tokenGates(ladder, null, 'lead', 0)).toEqual({ rise: 0, fall: null })
     expect(crossesGates(5, null)).toBe(true)
     expect(crossesGates(5, { rise: null, fall: null })).toBe(false)
+  })
+})
+
+describe('markHeld', () => {
+  test('a mark of the role is held; another role, a missing id or garbage is not', () => {
+    const marks: Marks = { role: 'lead', byId: { squeeze: { step: 0, at: 1 }, bad: { step: -1, at: 1 } } }
+    expect(markHeld(marks, 'lead', 'squeeze')).toBe(true)
+    expect(markHeld(marks, 'reviewer', 'squeeze')).toBe(false)
+    expect(markHeld(marks, 'lead', 'other')).toBe(false)
+    expect(markHeld(marks, 'lead', 'bad')).toBe(false)
+    expect(markHeld(null, 'lead', 'squeeze')).toBe(false)
   })
 })

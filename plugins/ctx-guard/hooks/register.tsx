@@ -6,7 +6,25 @@ import { update } from 'claude-code'
 import type { CommandRunInput, CommandRunResult, EngineInterface, FsStat, RenderSurface, Timer, TurnCompleteInput } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Activity, Band, Config, HeldStamp, ConfigFile, ConfigState, LeaseState, MainReading, Marks, Pause, PendingResume, RoleSpec, Switches, Trigger, Work } from '../types'
+import type {
+  Activity,
+  Band,
+  Config,
+  HeldStamp,
+  ConfigFile,
+  ConfigState,
+  LastCompact,
+  LeaseState,
+  MainReading,
+  Marks,
+  Pause,
+  PendingCompact,
+  PendingResume,
+  RoleSpec,
+  Switches,
+  Trigger,
+  Work,
+} from '../types'
 import { bandOf, bandText, registerBand, sameBand } from './band'
 import {
   ARGUMENT_HINT,
@@ -44,13 +62,21 @@ import {
 import type { Effective, EngineWindow, FileLayer, ScriptHashes, TrustRecord, TrustState, WindowInfo } from './config'
 import { PREFIX, collapseNotes, denyReason, effectiveMode, handoffPathFor, humanDuration, refusalNote, toastText } from './messages'
 import {
+  COMPACT_QUIET_MS,
   RACE_SETTLE_MS,
   STEP_SEEN_MS,
+  asLastCompact,
+  asPendingCompact,
   asPendingResume,
   checkLines,
+  compactArgs,
+  compactBusy,
+  compactGate,
+  compactRequest,
   isReadyAnswer,
   isUnder,
   latestHandoff,
+  nextLastCompact,
   parseStamp,
   pendingAction,
   pendingFresh,
@@ -72,14 +98,16 @@ import {
   evaluate,
   idleMs,
   liveDenies,
+  markHeld,
   metricsOf,
   planActions,
   resetMarks,
   stepTokens,
   tokenGates,
+  triggerHolds,
   triggersFor,
 } from './triggers'
-import type { ActionPlan, Metrics, TokenGates } from './triggers'
+import type { ActionPlan, Fire, Metrics, TokenGates } from './triggers'
 
 const BAND = { plugin: 'ctx-guard', key: 'band' } as const
 const MARKS = { plugin: 'ctx-guard', key: 'marks' } as const
@@ -93,6 +121,8 @@ const LAST_VERDICT = { plugin: 'ctx-guard', key: 'lastVerdict' } as const
 const LEASE = { plugin: 'ctx-guard', key: 'lease' } as const
 const WORK = { plugin: 'ctx-guard', key: 'work' } as const
 const STAMP = { plugin: 'ctx-guard', key: 'stamp' } as const
+const PENDING_COMPACT = { plugin: 'ctx-guard', key: 'pendingCompact' } as const
+const LAST_COMPACT = { plugin: 'ctx-guard', key: 'lastCompact' } as const
 // A /clear this soon after a not-cleared restart was dropped is that restart's, landing late.
 const LATE_CLEAR_MS = 60 * 1000
 
@@ -145,6 +175,12 @@ type Mod = {
   trust: TrustState | null
   // A restart flow is running in this environment.
   restarting: boolean
+  // A /compact this copy sent has not answered yet.
+  compacting: boolean
+  // A queued compact is being tried; one try at a time.
+  compactTrying: boolean
+  // Ends the hold of a compact queued within the quiet period of the last one.
+  compactTimer: Timer | null
   // Subagent ids seen stepping and when (NaN until the clock answers), dropped at their turn.complete;
   // `$.state.work` keeps them across a reload.
   steps: Map<string, number>
@@ -174,6 +210,9 @@ const fresh = (): Mod => ({
   measures: 0,
   trust: null,
   restarting: false,
+  compacting: false,
+  compactTrying: false,
+  compactTimer: null,
   steps: new Map(),
   stepWrites: new Map(),
   ended: new Set(),
@@ -395,8 +434,7 @@ async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean): Pro
   }
   for (const text of new Set(plan.toasts.map(f => toastText(f.vars, role)))) $.ui.toast(text)
   for (const text of new Set(plan.notifies.map(f => toastText(f.vars, role)))) await quietly(() => $.ui.notify(text))
-  // TODO(build step 5, compact): `plan.compact` asks for /compact {compact.instructions}
-  // at the next main-loop turn end, under the busy-work guard. Nothing runs it yet.
+  if (plan.compact && role !== null && spec) await quietly(() => requestCompact($, plan.compact as Fire, role, isPaused))
 }
 
 async function setBand($: EngineInterface, metrics: Metrics, isPaused: boolean, write: BandWrite): Promise<void> {
@@ -421,10 +459,15 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
   const prev = (await $.state.get(MARKS)).value ?? null
   const ev = evaluate(triggers, metrics, prev, role)
   // Written before acting, so a failed note never fires twice.
-  if (JSON.stringify(ev.marks) !== JSON.stringify(prev)) await $.state.set(MARKS, ev.marks)
+  if (JSON.stringify(ev.marks) !== JSON.stringify(prev)) {
+    await $.state.set(MARKS, ev.marks)
+    await quietly(() => dropRearmedCompact($, ev.marks))
+  }
   mod.gates = tokenGates(triggers, ev.marks, role, metrics.window)
   const isPaused = await paused($, now)
   await act($, planActions(ev.fire), isPaused)
+  // A pause that ran out frees a blocked compact here.
+  await quietly(() => unblockCompact($, isPaused))
   await setBand($, metrics, isPaused, write)
 }
 
@@ -804,8 +847,11 @@ async function setVerdict($: EngineInterface, code: RefusalCode | 'ok', text: st
 }
 
 async function refuse($: EngineInterface, code: RefusalCode, text: string): Promise<void> {
-  const token = mod.eff?.config.readyToken ?? 'CTX-READY'
-  const line = refusalNote(token, code, text)
+  const eff = mod.eff
+  const token = eff?.config.readyToken ?? 'CTX-READY'
+  const role = mod.role.role
+  const via = eff && role !== null ? (roleSpec(eff.config, role)?.restart.via ?? 'clear') : 'clear'
+  const line = refusalNote(token, code, text, via)
   await setVerdict($, code, text)
   $.ui.toast(line)
   await quietly(() => $.session.append({ message: { type: 'user', content: [{ type: 'text', text: line }] } }))
@@ -817,8 +863,23 @@ type Gathered = {
   stamps: { own: string; ownText: string | null; peers: { role: string; abs: string }[]; realRoot: string } | null
 }
 
-async function busyText($: EngineInterface, now: number): Promise<string | null> {
+// What the module flags alone say is under way; read with no await, for a same-tick claim.
+function syncBusy(): string | null {
+  if (mod.compacting) return 'a /compact of this session is under way'
   if (mod.restarting) return 'a restart of this session is already under way'
+  return null
+}
+
+async function busyText($: EngineInterface, now: number): Promise<string | null> {
+  return syncBusy() ?? pendingBusy($, now)
+}
+
+async function restartBusy($: EngineInterface, now: number): Promise<string | null> {
+  if (mod.restarting) return 'a restart of this session is already under way'
+  return pendingBusy($, now)
+}
+
+async function pendingBusy($: EngineInterface, now: number): Promise<string | null> {
   const p = await getPending($)
   return pendingFresh(p, now) ? `a resume of ${p?.role ?? 'this role'} is pending since ${humanDuration(now - (p?.at ?? now))} ago` : null
 }
@@ -918,7 +979,7 @@ async function quiet($: EngineInterface, tokenAt: number): Promise<Verdict> {
   const a = await activity($)
   return quietVerdict({
     tokenAt,
-    turnRunning: a.mainTurnAt !== null && now - a.mainTurnAt < STALE_TURN_MS,
+    turnRunning: turnRunningIn(a, now),
     lastMainEndAt: a.lastMainEndAt,
     agents: await $.agent.list(),
     steps: await recentSteps($, now),
@@ -965,16 +1026,21 @@ async function restartFlow($: EngineInterface, tokenAt: number): Promise<void> {
   const role = mod.role.role
   const spec = eff && role !== null ? roleSpec(eff.config, role) : null
   if (!active() || !eff || role === null || !spec) return
-  const busy = await busyText($, await $.clock.now())
-  if (busy === null) gen.restarting = true
+  // Claimed before the first await, so a compact tried in the same tick sees it (and this sees a compact's).
+  let busy = syncBusy()
+  const claimed = busy === null
+  if (claimed) gen.restarting = true
+  let cleared = false
+  let retryCompact = true
   try {
+    if (busy === null) busy = await pendingBusy($, await $.clock.now())
     const g = await gather($, role, spec, busy)
     const v = await judge($, g, spec)
     if (!v.ok) return await refuse($, v.code, v.text)
     if (gen !== mod) return
     if (spec.restart.via === 'compact') {
-      // TODO(build step 5, compact): run /compact {compact.instructions} here, under the same verdict and quiet re-check.
-      return await refuse($, 'error', 'via compact is not wired in this version')
+      if ((await compactRestart($, role, spec, tokenAt, gen)) === 'failed') retryCompact = false
+      return
     }
     const stamps = g.stamps
     if (!stamps || g.facts.handoff.kind !== 'present') return await refuse($, 'error', 'the restart stamps could not be placed')
@@ -1011,6 +1077,7 @@ async function restartFlow($: EngineInterface, tokenAt: number): Promise<void> {
     $.ui.toast(`ctx-guard: clearing ${role}; resuming from ${pending.handoff}`)
     try {
       await $.command.run({ command: 'clear' })
+      cleared = true
     } catch (e) {
       await setPending($, null)
       await quietly(restore)
@@ -1024,24 +1091,292 @@ async function restartFlow($: EngineInterface, tokenAt: number): Promise<void> {
   } catch (e) {
     await refuse($, 'error', errorText(e))
   } finally {
-    if (busy === null) gen.restarting = false
+    if (claimed) gen.restarting = false
+    // Nothing was cleared: a compact queued for this turn end gets the try it gave up.
+    if (claimed && !cleared && retryCompact && gen === mod) await quietly(() => compactAtTurnEnd($))
   }
 }
 
 // The main loop's answer ends on the ready token, and ctx-guard may act on it.
-async function onReadyToken($: EngineInterface, e: TurnCompleteInput): Promise<void> {
+// Answers whether a restart was scheduled.
+async function onReadyToken($: EngineInterface, e: TurnCompleteInput): Promise<boolean> {
   const eff = mod.eff
   const role = mod.role.role
-  if (!active() || !eff || role === null || e.reason !== 'answer') return
-  if (!isReadyAnswer(e.answer, eff.config.readyToken)) return
+  if (!active() || !eff || role === null || e.reason !== 'answer') return false
+  if (!isReadyAnswer(e.answer, eff.config.readyToken)) return false
   const spec = roleSpec(eff.config, role)
   // Manual mode, auto actions off or a pause: the notes already told the model to ask the operator.
-  if (!spec || spec.restart.mode !== 'auto' || !eff.autoActions) return
+  if (!spec || spec.restart.mode !== 'auto' || !eff.autoActions) return false
   const now = await $.clock.now()
-  if (await paused($, now)) return
+  if (await paused($, now)) return false
   // This turn's end, just recorded: any later turn means the session moved on.
   const tokenAt = (await activity($)).lastMainEndAt ?? now
   $.clock.after(0, () => void quietly(() => restartFlow($, tokenAt)))
+  return true
+}
+
+// ---- compact ------------------------------------------------------------------
+
+const turnRunningIn = (a: Activity, now: number): boolean => a.mainTurnAt !== null && now - a.mainTurnAt < STALE_TURN_MS
+
+async function turnRunning($: EngineInterface, now: number): Promise<boolean> {
+  return turnRunningIn(await activity($), now)
+}
+
+async function getPendingCompact($: EngineInterface): Promise<PendingCompact | null> {
+  return asPendingCompact((await $.state.get(PENDING_COMPACT)).value ?? null)
+}
+
+async function lastCompact($: EngineInterface): Promise<LastCompact | null> {
+  return asLastCompact((await $.state.get(LAST_COMPACT)).value ?? null)
+}
+
+async function noteCompact($: EngineInterface, outcome: LastCompact['outcome'], source: string, text: string): Promise<void> {
+  const now = await $.clock.now()
+  await update($, LAST_COMPACT, v => nextLastCompact(asLastCompact(v ?? null), outcome, source, text, now))
+}
+
+async function dropCompact($: EngineInterface, p: PendingCompact, text: string, toast: boolean): Promise<void> {
+  await $.state.set(PENDING_COMPACT, null)
+  await noteCompact($, 'dropped', p.triggerId, text)
+  if (toast) $.ui.toast(`ctx-guard: the queued /compact for trigger "${p.triggerId}" was dropped: ${text}.`)
+}
+
+const rearmedText = (id: string): string => `trigger "${id}" re-armed before /compact could run: its figures fell back below the threshold`
+
+// The same pending compact as `p`, still at `step`: nothing replaced or dropped it meanwhile.
+const samePending = (cur: PendingCompact | null, p: PendingCompact, step: PendingCompact['step']): cur is PendingCompact =>
+  cur !== null && cur.step === step && cur.at === p.at && cur.triggerId === p.triggerId
+
+// Rewrites the pending compact only while it is still `p` at `step`; answers whether it did.
+async function movePending($: EngineInterface, p: PendingCompact, step: PendingCompact['step'], fn: (cur: PendingCompact) => PendingCompact | null): Promise<boolean> {
+  let moved = false
+  await update($, PENDING_COMPACT, v => {
+    const cur = asPendingCompact(v ?? null)
+    moved = samePending(cur, p, step)
+    return moved && cur ? fn(cur) : cur
+  })
+  return moved
+}
+
+function compactGateNow(isPaused: boolean): ReturnType<typeof compactGate> {
+  const eff = mod.eff
+  return compactGate({ autoActions: eff?.autoActions === true, trusted: trusted(), paused: isPaused, untrustedWhy: untrustedWhy() })
+}
+
+function scheduleCompact($: EngineInterface, delay = 0): void {
+  if (delay > 0) {
+    // One hold timer at a time; a reload drops it and the session start sets it again.
+    mod.compactTimer?.cancel()
+    mod.compactTimer = $.clock.after(delay, () => {
+      mod.compactTimer = null
+      void quietly(() => tryCompact($))
+    })
+    return
+  }
+  $.clock.after(0, () => void quietly(() => tryCompact($)))
+}
+
+/**
+ * A compact trigger's rising edge: queued in $.state, so a reload keeps it,
+ * and tried at once when no main turn runs, else at the next main-loop turn
+ * end. Auto actions off, an untrusted repo or a pause leave it blocked, with
+ * one toast per reason, until that lifts. One already waiting wins; one right
+ * after a compact ran is held until the quiet period ends.
+ */
+async function requestCompact($: EngineInterface, fire: Fire, role: string, isPaused: boolean): Promise<void> {
+  const id = fire.trigger.id
+  const now = await $.clock.now()
+  const r = compactRequest(await getPendingCompact($), await lastCompact($), now)
+  if (r.kind !== 'queue') return
+  const gate = compactGateNow(isPaused)
+  const p: PendingCompact = { role, triggerId: id, step: gate ? 'blocked' : 'queued', at: now, notBefore: r.notBefore, waiting: gate?.text ?? null }
+  await $.state.set(PENDING_COMPACT, p)
+  if (gate) {
+    await noteCompact($, 'skipped', id, gate.text)
+    await noticeOnce($, `compact-skip:${gate.code}`, `ctx-guard: /compact for trigger "${id}" skipped: ${gate.text}.`)
+    return
+  }
+  if (r.notBefore !== null) await noteCompact($, 'held', id, `held until ${humanDuration(COMPACT_QUIET_MS)} after the last compact`)
+  if (!(await turnRunning($, now))) scheduleCompact($)
+}
+
+/** A blocked compact whose gate lifted (trust approved, a pause over, auto actions on) is queued again. */
+async function unblockCompact($: EngineInterface, isPaused: boolean): Promise<void> {
+  const p = await getPendingCompact($)
+  if (!p || p.step !== 'blocked' || compactGateNow(isPaused)) return
+  if (!markHeld((await $.state.get(MARKS)).value ?? null, mod.role.role, p.triggerId)) return await dropCompact($, p, rearmedText(p.triggerId), false)
+  if (!(await movePending($, p, 'blocked', cur => ({ ...cur, step: 'queued', waiting: null })))) return
+  if (!(await turnRunning($, await $.clock.now()))) scheduleCompact($)
+}
+
+// The marks just moved: a waiting compact whose trigger re-armed has nothing left to do.
+async function dropRearmedCompact($: EngineInterface, marks: Marks): Promise<void> {
+  const p = await getPendingCompact($)
+  if (p && p.step !== 'sent' && !markHeld(marks, p.role, p.triggerId)) await dropCompact($, p, rearmedText(p.triggerId), p.step === 'queued')
+}
+
+/** `/compact {instructions}`; the fill it leaves is unknown until the next reading. Throws when it did not run. */
+async function runCompact($: EngineInterface, instructions: string | null, gen: Mod): Promise<void> {
+  const args = compactArgs(instructions)
+  await $.command.run(args ? { command: 'compact', args } : { command: 'compact' })
+  if (gen !== mod) return
+  const reading: MainReading = { tokens: null, at: await $.clock.now() }
+  mod.lastMain = reading
+  mod.gates = null
+  await patchActivity($, a => ({ ...a, lastMain: reading }))
+}
+
+/**
+ * A queued compact, tried at a main-loop turn end (or at once when queued
+ * idle, or when its hold ends): run when ctx-guard is on for the same role,
+ * auto actions are allowed, its trigger is still marked and no turn, restart,
+ * agent or background task is busy. Busy, it stays queued for the next turn
+ * end, with one toast.
+ */
+async function tryCompact($: EngineInterface): Promise<void> {
+  if (mod.compactTrying || mod.compacting) return
+  const gen = mod
+  gen.compactTrying = true
+  try {
+    const p = await getPendingCompact($)
+    if (!p || p.step !== 'queued') return
+    const eff = mod.eff
+    const role = mod.role.role
+    const spec = eff && role !== null ? roleSpec(eff.config, role) : null
+    if (!active() || !eff || !spec) return await dropCompact($, p, 'ctx-guard is off', false)
+    if (role !== p.role) return await dropCompact($, p, `the role is now ${role ?? 'none'}`, true)
+    const now = await $.clock.now()
+    const gate = compactGateNow(await paused($, now))
+    if (gate) {
+      await movePending($, p, 'queued', cur => ({ ...cur, step: 'blocked', waiting: gate.text }))
+      await noteCompact($, 'skipped', p.triggerId, gate.text)
+      return await noticeOnce($, `compact-skip:${gate.code}`, `ctx-guard: /compact for trigger "${p.triggerId}" skipped: ${gate.text}.`)
+    }
+    if (!markHeld((await $.state.get(MARKS)).value ?? null, role, p.triggerId)) return await dropCompact($, p, rearmedText(p.triggerId), true)
+    if (p.notBefore !== null && now < p.notBefore) {
+      const held = `held until ${humanDuration(COMPACT_QUIET_MS)} after the last compact (${humanDuration(p.notBefore - now)} more)`
+      await movePending($, p, 'queued', cur => ({ ...cur, waiting: held }))
+      return scheduleCompact($, p.notBefore - now)
+    }
+    // Held after a compact, its edge may have come from a reading taken before it: the engine's own figures now decide.
+    if (p.notBefore !== null) {
+      const trigger = roleTriggers().find(t => t.id === p.triggerId)
+      const u = await $.session.usage()
+      const holds = trigger ? triggerHolds(trigger, await metricsFor($, u, now)) : false
+      if (holds !== true) {
+        // The engine's figure replaces the stale one, and the trigger re-arms, so only a real crossing fires it again.
+        await rememberMain($, num(u.context.tokens), now)
+        await clearMark($, role, p.triggerId)
+        return await dropCompact($, p, holds === null ? 'no reading since the last compact' : 'the context since the last compact is below the threshold', true)
+      }
+    }
+    const busy = compactBusy({
+      turnRunning: await turnRunning($, now),
+      restart: await restartBusy($, now),
+      agents: await $.agent.list(),
+      steps: await recentSteps($, now),
+      background: (await work($)).background,
+    })
+    if (busy) {
+      // One toast per wait: the first busy try, or the first after a hold ended.
+      if (p.waiting === null || p.waiting.startsWith('held')) {
+        $.ui.toast(`ctx-guard: /compact for trigger "${p.triggerId}" waits (${busy}); it runs at a main-loop turn end with nothing running.`)
+      }
+      await movePending($, p, 'queued', cur => ({ ...cur, waiting: busy }))
+      return
+    }
+    // Queued → sent in one write, so a drop that landed meanwhile is never undone.
+    if (!(await movePending($, p, 'queued', cur => ({ ...cur, step: 'sent' })))) return
+    // A restart claims its flag before its first await: checked with no await since, the two never both go.
+    if (mod.restarting || gen !== mod) {
+      await movePending($, p, 'sent', cur => ({ ...cur, step: 'queued', waiting: 'a restart of this session is already under way' }))
+      return
+    }
+    gen.compacting = true
+    $.ui.toast(`ctx-guard: compacting ${role} (trigger "${p.triggerId}")`)
+    try {
+      await runCompact($, spec.compact.instructions, gen)
+      // Shared state, written whichever copy is current: no compact action follows it too soon.
+      await noteCompact($, 'ran', p.triggerId, `compacted by trigger "${p.triggerId}"`)
+    } catch (e) {
+      if (gen === mod) {
+        await noteCompact($, 'failed', p.triggerId, `/compact did not run: ${errorText(e)}`)
+        $.ui.toast(`ctx-guard: /compact for trigger "${p.triggerId}" did not run: ${errorText(e)}`)
+      }
+    } finally {
+      gen.compacting = false
+      if (gen === mod) await $.state.set(PENDING_COMPACT, null)
+    }
+  } finally {
+    gen.compactTrying = false
+  }
+}
+
+// A main-loop turn ended with no restart on its ready token: a queued compact gets its try.
+async function compactAtTurnEnd($: EngineInterface): Promise<void> {
+  if (!active()) return
+  if ((await getPendingCompact($))?.step === 'queued') scheduleCompact($)
+}
+
+async function rearmCompactHold($: EngineInterface): Promise<void> {
+  const p = await getPendingCompact($)
+  const now = await $.clock.now()
+  if (p?.step === 'queued' && p.notBefore !== null && now < p.notBefore) scheduleCompact($, p.notBefore - now)
+}
+
+/** At a session start: a waiting compact is tried again (or its hold set again); one a reload caught mid-send is never sent twice. */
+async function compactAtStart($: EngineInterface): Promise<void> {
+  const p = await getPendingCompact($)
+  if (!p) return
+  if (p.step === 'sent') return await dropCompact($, p, 'a reload came while /compact was being sent; it may not have run', false)
+  const now = await $.clock.now()
+  if (p.step === 'blocked') return await unblockCompact($, await paused($, now))
+  if (p.notBefore !== null && now < p.notBefore) return scheduleCompact($, p.notBefore - now)
+  if (!(await turnRunning($, now))) scheduleCompact($)
+}
+
+/**
+ * `restart.via: compact` once the verdict (no handoff, peer or lease checks)
+ * and the re-check held: `/compact {compact.instructions}`, no resume after.
+ * A compact a trigger left waiting is marked sent first, so a reload while
+ * this runs never sends a second one; it is served by this one.
+ */
+// Answers 'failed' when /compact itself did not run, so the queued compact is not retried at once.
+async function compactRestart($: EngineInterface, role: string, spec: RoleSpec, tokenAt: number, gen: Mod): Promise<'failed' | 'done'> {
+  const before = await quiet($, tokenAt)
+  if (!before.ok) {
+    await refuse($, before.code, before.text)
+    return 'done'
+  }
+  gen.compacting = true
+  const waiting = await getPendingCompact($)
+  const served = waiting && waiting.step !== 'sent' && (await movePending($, waiting, waiting.step, cur => ({ ...cur, step: 'sent' }))) ? waiting : null
+  try {
+    await setVerdict($, 'ok', 'compacted on the ready token')
+    $.ui.toast(`ctx-guard: compacting ${role} on the ready token`)
+    await runCompact($, spec.compact.instructions, gen)
+  } catch (e) {
+    // Nothing ran: a compact the trigger queued waits again.
+    if (served && gen === mod) await movePending($, served, 'sent', cur => ({ ...cur, step: served.step }))
+    await refuse($, 'error', `/compact was refused: ${errorText(e)}`)
+    return 'failed'
+  } finally {
+    gen.compacting = false
+  }
+  await noteCompact($, 'ran', 'ready token', 'compacted on the ready token')
+  if (gen === mod && served) await movePending($, served, 'sent', () => null)
+  return 'done'
+}
+
+async function clearMark($: EngineInterface, role: string, id: string): Promise<void> {
+  await update($, MARKS, v => {
+    if (!v || v.role !== role || typeof v.byId !== 'object' || v.byId === null || !Object.hasOwn(v.byId, id)) return v ?? null
+    const byId = { ...v.byId }
+    delete byId[id]
+    return { ...v, byId }
+  })
+  mod.gates = null
 }
 
 /** A pending resume a reload left behind: finished once, flagged when sent or stale, dropped when never cleared. */
@@ -1090,6 +1425,8 @@ async function finishPending($: EngineInterface): Promise<void> {
 function disarm(): void {
   for (const t of mod.timers) t.cancel()
   mod.timers = []
+  mod.compactTimer?.cancel()
+  mod.compactTimer = null
 }
 
 /**
@@ -1110,6 +1447,8 @@ async function syncActive($: EngineInterface): Promise<void> {
   if (!mod.standIn) $.ui.status(undefined)
   // Timers die with a reload; session.start arms them again.
   if (!mod.timers.length) {
+    // A compact held for the quiet period lost its timer with the disarm.
+    void quietly(() => rearmCompactHold($))
     mod.timers.push($.clock.every(IDLE_TICK_MS, () => void serial(() => evaluateCurrent($, 'never'))))
     mod.timers.push(
       $.clock.every(BAND_TICK_MS, () =>
@@ -1161,6 +1500,7 @@ async function start($: EngineInterface, isInteractive: boolean, surface: Render
   await quietly(() => undoHeldStamp($))
   // A reload dropped a restart's timer: its pending resume is finished off the start's path.
   if (await getPending($)) $.clock.after(0, () => void quietly(() => finishPending($)))
+  await quietly(() => compactAtStart($))
 }
 
 function begin($: EngineInterface, isInteractive: boolean, surface: RenderSurface | null): Promise<void> {
@@ -1196,6 +1536,8 @@ async function onClear($: EngineInterface): Promise<void> {
   const reading: MainReading = { tokens: null, at: now }
   mod.lastMain = reading
   await patchActivity($, a => ({ ...a, mainTurnAt: null, lastMain: reading }))
+  const queued = await getPendingCompact($)
+  if (queued && queued.step !== 'sent') await dropCompact($, queued, 'a /clear came first', false)
   const late = carry.dropped
   carry.dropped = null
   if (late && now - late.at < LATE_CLEAR_MS) {
@@ -1294,7 +1636,16 @@ async function restartReport($: EngineInterface, role: string | null, spec: Role
     handoff: null,
     lease: null,
     pending: pending ? `${pending.step} for ${pending.role}, ${humanDuration(now - pending.at)} ago` : null,
+    pendingCompact: null,
+    lastCompact: null,
   }
+  const pc = await getPendingCompact($)
+  if (pc) {
+    const waiting = pc.waiting ? `; waiting: ${pc.waiting}` : ''
+    out.pendingCompact = `${pc.step === 'sent' ? 'running' : pc.step} for trigger "${pc.triggerId}" (${pc.role}), ${humanDuration(now - pc.at)} ago${waiting}`
+  }
+  const lc = await lastCompact($)
+  if (lc) out.lastCompact = `${lc.outcome} ${humanDuration(now - lc.at)} ago (${lc.source}): ${lc.text}`
   if (role === null || !spec) return out
   try {
     const root = await $.session.root()
@@ -1339,6 +1690,7 @@ async function pauseCommand($: EngineInterface, arg: string): Promise<string> {
   const pause: Pause | null = p.ms === null ? null : { until: now + p.ms }
   await $.state.set(PAUSE, pause)
   await serial(() => refreshBand($))
+  if (!pause) await quietly(() => unblockCompact($, false))
   return pause
     ? `${PREFIX} paused for ${humanDuration(p.ms ?? 0)}: tool blocks and automatic actions are off; notes go on. /ctx-guard pause off lifts it.`
     : `${PREFIX} pause lifted.`
@@ -1438,6 +1790,7 @@ async function trustCommand($: EngineInterface): Promise<string> {
       'a command found elsewhere is trusted by name. Any change to these settings withdraws the approval until you run /ctx-guard trust again.',
   )
   await serial(() => evaluateCurrent($, 'always'))
+  await quietly(async () => unblockCompact($, await paused($, await $.clock.now())))
   return lines.join('\n')
 }
 
@@ -1543,7 +1896,12 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
       await quietly(() => onMainTurnEnd($))
-      await quietly(() => onReadyToken($, e))
+      let restarting = false
+      await quietly(async () => {
+        restarting = await onReadyToken($, e)
+      })
+      // A restart on the ready token goes first; a queued compact waits for the next turn end.
+      if (!restarting) await quietly(() => compactAtTurnEnd($))
     } else {
       const id = e.agentId
       await quietly(() => endStep($, id))

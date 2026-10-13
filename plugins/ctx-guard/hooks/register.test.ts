@@ -1519,3 +1519,507 @@ test('a dropped restart whose queued /clear lands late flags the band', { plugin
   expect((await peekRestart($)).band?.restartFailed).toBe('restart failed — type /ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md')
   expect(w.toasts.some(t => t.includes("the interrupted restart's /clear ran after all"))).toBe(true)
 })
+
+// ---- compact: the compact action and restart via compact ---------------------
+
+const KEEP = 'Keep open tasks and file paths.'
+const COMPACTED = `compact ${KEEP}`
+
+function compactConfig(restart: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    roles: {
+      lead: {
+        triggers: [{ id: 'squeeze', when: { context: '85%' }, do: ['compact'] }],
+        restart: { peers: ['reviewer'], peerGap: '10m', ...restart },
+        compact: { instructions: KEEP },
+      },
+      reviewer: {},
+    },
+  }
+}
+
+// A trusted lead whose last Stop reported nothing in flight.
+async function compactArmed($: Engine, on: On, w: World, config: unknown = compactConfig()): Promise<{ clock: MockClock; session: MockSession }> {
+  const env = await armed($, on, w, config)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  return env
+}
+
+async function mainTurnEnd($: Engine, clock: MockClock, answer = 'Done.'): Promise<void> {
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+}
+
+test('compact action: fires once at the threshold with the role\'s instructions, never clears', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 800_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+  await measure($, w, 870_000)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+  expect(w.toasts).toContain('ctx-guard: compacting lead (trigger "squeeze")')
+  expect(await ctxGuard($, '')).toContain('last compact: ran 0s ago (squeeze): compacted by trigger "squeeze"')
+})
+
+test('compact action: no instructions runs a bare /compact', async ($, on) => {
+  const w = restartWorld()
+  const config = compactConfig()
+  delete (config.roles.lead as Record<string, unknown>).compact
+  const { clock } = await compactArmed($, on, w, config)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual(['compact'])
+})
+
+test('compact action: queued while a turn runs, run at its end', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  expect(await ctxGuard($, '')).toContain('queued compact: queued for trigger "squeeze" (lead), 0s ago')
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([COMPACTED])
+  expect(await ctxGuard($, '')).not.toContain('queued compact:')
+})
+
+test('compact action: busy work keeps it queued with one toast; the next quiet turn end runs it', async ($, on) => {
+  const w = restartWorld({ agents: [{ id: 'a1', status: 'running', description: 'scan', type: 'Explore' }] })
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  const waits = (): string[] => w.toasts.filter(t => t.includes('waits (agents still running: scan)'))
+  expect(waits().length).toBe(1)
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([])
+  expect(waits().length).toBe(1)
+  expect(await ctxGuard($, '')).toContain('waiting: agents still running: scan')
+  w.agents = []
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'npm run watch' }] })
+  await $.turn.complete({ answer: 'Done.', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: a queued compact whose figures fall back is dropped with a toast', async ($, on) => {
+  const w = restartWorld({ agents: [{ id: 'a1', status: 'running', description: 'scan', type: 'Explore' }] })
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  await measure($, w, 500_000)
+  expect(w.toasts.some(t => t.includes('the queued /compact for trigger "squeeze" was dropped: trigger "squeeze" re-armed'))).toBe(true)
+  w.agents = []
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([])
+  expect(await ctxGuard($, '')).toContain('last compact: dropped')
+})
+
+test('compact action: a /clear drops a queued compact', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([])
+  expect(await ctxGuard($, '')).toContain('last compact: dropped 0s ago (squeeze): a /clear came first')
+})
+
+test('compact action: untrusted, it is skipped with one toast and a report line', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, compactConfig())
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await measure($, w, 860_000)
+  await clock.settle()
+  await measure($, w, 500_000)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  expect(w.toasts.filter(t => t.includes('/compact for trigger "squeeze" skipped')).length).toBe(1)
+  expect(w.toasts.find(t => t.includes('skipped'))).toContain("this repo's compact settings are not approved (never approved)")
+  expect(await ctxGuard($, '')).toContain('last compact: skipped 0s ago (squeeze)')
+})
+
+test('compact action: autoActions off skips it', { options: { autoActions: false } }, async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  expect(w.toasts.some(t => t.includes('skipped: autoActions is off in /config'))).toBe(true)
+})
+
+test('compact action: a pause skips it', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await ctxGuard($, 'pause 10m')
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  expect(w.toasts.some(t => t.includes('skipped: ctx-guard is paused'))).toBe(true)
+})
+
+test('compact action: a pause that starts while it is queued skips it at the turn end', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await ctxGuard($, 'pause 10m')
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([])
+  expect(await ctxGuard($, '')).toContain('last compact: skipped')
+})
+
+test('compact action: a queued compact survives a reload and runs at the next turn end', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await start($)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  expect(await ctxGuard($, '')).toContain('queued compact: queued for trigger "squeeze"')
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: queued while idle across a reload, the session start runs it', async ($, on) => {
+  const w = restartWorld({ agents: [{ id: 'a1', status: 'running', description: 'scan', type: 'Explore' }] })
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  w.agents = []
+  await start($)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: a reload while /compact runs never sends it twice', async ($, on) => {
+  const w = restartWorld({ hang: { compact: 60_000 } })
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+  await start($)
+  await mainTurnEnd($, clock)
+  await clock.advance(60_000)
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([COMPACTED])
+  // The old copy's compact still counts as the last that ran.
+  expect(await ctxGuard($, '')).toContain('last compact: ran')
+})
+
+test('compact action: right after one ran, a new edge is held; a fresh reading below drops it', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+  // A fresh reading below the threshold re-arms; a stale one past it right after is held, not run.
+  await measure($, w, 200_000)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+  const report = await ctxGuard($, '')
+  expect(report).toContain('last compact: held 0s ago (squeeze)')
+  expect(report).toContain('queued compact: queued for trigger "squeeze" (lead), 0s ago; waiting: held until 5m after the last compact')
+  await measure($, w, 200_000)
+  await clock.advance(6 * MIN)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: a held compact runs once the quiet period ends, across a reload too', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  await measure($, w, 200_000)
+  await clock.advance(MIN)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+  await start($)
+  await clock.settle()
+  await clock.advance(3 * MIN)
+  expect(w.ran).toEqual([COMPACTED])
+  await clock.advance(MIN + 1000)
+  expect(w.ran).toEqual([COMPACTED, COMPACTED])
+})
+
+test('compact action: when the hold ends, the engine\'s own figures decide; a stale edge is dropped and re-armed', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  await measure($, w, 200_000)
+  await measure($, w, 860_000)
+  // No reading since: the engine knows nothing yet, so nothing runs.
+  w.tokens = undefined
+  await clock.advance(6 * MIN)
+  expect(w.ran).toEqual([COMPACTED])
+  expect(w.toasts.some(t => t.includes('dropped: no reading since the last compact'))).toBe(true)
+  // The mark re-armed: a real crossing fires again.
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED, COMPACTED])
+})
+
+test('compact action: a held edge whose context is below the threshold by the hold\'s end is dropped', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  await measure($, w, 200_000)
+  await measure($, w, 860_000)
+  w.tokens = 300_000
+  await clock.advance(6 * MIN)
+  expect(w.ran).toEqual([COMPACTED])
+  expect(w.toasts.some(t => t.includes('dropped: the context since the last compact is below the threshold'))).toBe(true)
+})
+
+test('compact action: a hold timer is set again when ctx-guard is turned off and on', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  await measure($, w, 200_000)
+  await measure($, w, 860_000)
+  await clock.advance(MIN)
+  writeConfig(w, { ...compactConfig(), enabled: false })
+  await measure($, w, 860_000)
+  await clock.advance(MIN)
+  writeConfig(w, compactConfig())
+  await measure($, w, 860_000)
+  await clock.settle()
+  await clock.advance(4 * MIN)
+  expect(w.ran).toEqual([COMPACTED, COMPACTED])
+})
+
+test('via compact: a failed /compact does not retry the queued compact at once', async ($, on) => {
+  const w = restartWorld({ failCommand: 'compact' })
+  const { clock, session } = await compactArmed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await ready($, clock)
+  await clock.settle()
+  expect(refusals(session)[0]).toContain('/compact was refused')
+  expect(w.ran).toEqual([COMPACTED])
+  expect(await ctxGuard($, '')).toContain('queued compact: queued for trigger "squeeze"')
+})
+
+test('compact action: a refused ready token at the same turn end lets the queued compact run', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await compactArmed($, on, w, compactConfig({ mode: 'auto', prompt: 'Carry on.' }))
+  delete w.files[HANDOFF]
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(no-handoff)')
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: skipped while untrusted, it runs once the operator approves the repo', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, compactConfig())
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  expect(await ctxGuard($, '')).toContain('queued compact: blocked for trigger "squeeze"')
+  await ctxGuard($, 'trust')
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: skipped while paused, it runs when the pause is lifted', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await ctxGuard($, 'pause 10m')
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  await ctxGuard($, 'pause off')
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: skipped while paused, it runs once the pause runs out', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w)
+  await ctxGuard($, 'pause 10m')
+  await measure($, w, 860_000)
+  await clock.settle()
+  await clock.advance(9 * MIN)
+  expect(w.ran).toEqual([])
+  await clock.advance(2 * MIN)
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: a blocked compact whose figures fall back is dropped, not run after approval', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, compactConfig())
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await measure($, w, 860_000)
+  await measure($, w, 500_000)
+  await ctxGuard($, 'trust')
+  await clock.settle()
+  expect(w.ran).toEqual([])
+})
+
+test('race: a compact and a ready-token restart in the same tick never both run (compact first)', async ($, on) => {
+  const w = restartWorld({ hang: { compact: 30_000 } })
+  const { clock, session } = await compactArmed($, on, w, compactConfig({ mode: 'auto', prompt: 'Carry on.' }))
+  await measure($, w, 860_000)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(already-busy): a /compact of this session is under way')
+  await clock.advance(30_000)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('race: a compact and a ready-token restart in the same tick never both run (restart first)', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w, compactConfig({ mode: 'auto', prompt: 'Carry on.' }))
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await $.turn.complete({ answer: 'Done.\n\nCTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await measure($, w, 860_000)
+  await clock.settle()
+  await clock.advance(RACE_SETTLE_MS)
+  await clock.settle()
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('compact action: a failed /compact toasts and is reported', async ($, on) => {
+  const w = restartWorld({ failCommand: 'compact' })
+  const { clock } = await compactArmed($, on, w)
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.toasts.some(t => t.includes('/compact for trigger "squeeze" did not run:'))).toBe(true)
+  expect(await ctxGuard($, '')).toContain('last compact: failed')
+})
+
+test('compact action: a ready-token restart at the same turn end goes first', async ($, on) => {
+  const w = restartWorld()
+  const config = compactConfig({ mode: 'auto', prompt: 'Carry on.' })
+  const { clock } = await compactArmed($, on, w, config)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('via compact: runs /compact with the instructions, no clear or resume; handoff, peer and lease are not checked', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  delete w.files[HANDOFF]
+  w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'other', at: clock.now() }), mtimeMs: clock.now() }
+  w.files[`${STATE}/lead.owner`] = { text: JSON.stringify({ sessionId: 'other', heartbeat: clock.now() }), mtimeMs: clock.now() }
+  await ready($, clock)
+  expect(refusals(session)).toEqual([])
+  expect(w.ran).toEqual([COMPACTED])
+  expect(w.files[`${STATE}/lead.restart`]).toBeUndefined()
+  const report = await ctxGuard($, '')
+  expect(report).toContain('last verdict: ok')
+  expect(report).toContain('(ready token): compacted on the ready token')
+})
+
+test('via compact: already-busy while the compact runs; the refusal says nothing was compacted', async ($, on) => {
+  const w = restartWorld({ hang: { compact: 30_000 } })
+  const { clock, session } = await armed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  await ready($, clock)
+  await ready($, clock)
+  expect(refusals(session).length).toBe(1)
+  expect(refusals(session)[0]).toContain('CTX-READY ignored (already-busy): a /compact of this session is under way. Nothing was compacted.')
+  await clock.advance(30_000)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('via compact: a compact action in flight makes the ready token already-busy', async ($, on) => {
+  const w = restartWorld({ hang: { compact: 30_000 } })
+  const { clock, session } = await compactArmed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  await measure($, w, 860_000)
+  await clock.settle()
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(already-busy)')
+  await clock.advance(30_000)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('via compact: refused while an agent runs or untrusted, and a refused /compact is an error', async ($, on) => {
+  const w = restartWorld({ agents: [{ id: 'a1', status: 'running', description: 'scan', type: 'Explore' }] })
+  const { clock, session } = await armed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(agents-running)')
+  w.agents = []
+  w.failCommand = 'compact'
+  await ready($, clock)
+  expect(refusals(session)[1]).toMatch(/\(error\): \/compact was refused: .*\. Nothing was compacted\./)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('via compact: untrusted refuses', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, compactConfig({ mode: 'auto', via: 'compact' }))
+  const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(untrusted)')
+  expect(w.ran).toEqual([])
+})
+
+test('via compact: a compact the trigger queued is served by the ready token\'s', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await ready($, clock)
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('/ctx-guard check via compact skips the handoff, lease and peer checks', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  delete w.files[HANDOFF]
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  const out = await ctxGuard($, 'check')
+  expect(out).toContain('ctx-guard check (dry run, role lead, via compact; nothing written or cleared):')
+  expect(out).toContain('ok   no-restart-command: /compact found')
+  expect(out).toContain('--   no-handoff: not used by via compact')
+  expect(out).toContain('--   role-shared: not used by via compact')
+  expect(out).toContain('--   peer-restarting: not used by via compact')
+  expect(out).toContain('verdict: would restart')
+  await clock.settle()
+  expect(w.ran).toEqual([])
+})
+
+test('via compact: a reload while it runs never sends a second /compact for the queued trigger', async ($, on) => {
+  const w = restartWorld({ hang: { compact: 60_000 } })
+  const { clock } = await compactArmed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await ready($, clock)
+  expect(w.ran).toEqual([COMPACTED])
+  await start($)
+  await mainTurnEnd($, clock)
+  await clock.advance(60_000)
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([COMPACTED])
+  expect(await ctxGuard($, '')).toContain('last compact: ran')
+})

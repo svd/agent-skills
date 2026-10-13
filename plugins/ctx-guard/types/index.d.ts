@@ -145,6 +145,32 @@ export type PendingResume = {
   at: number
 }
 
+// A compact a trigger asked for, waiting for a main-loop turn end with no busy
+// work: `queued` until it is sent, `sent` while /compact runs, `blocked` while
+// auto actions are off, the repo is untrusted or ctx-guard is paused (it is
+// queued again once that lifts, as long as its trigger is still marked).
+// `notBefore` holds it until the quiet period after the last compact ends;
+// `waiting` says what held it back at the last try (null before any).
+export type PendingCompact = {
+  role: string
+  triggerId: string
+  step: 'queued' | 'sent' | 'blocked'
+  at: number
+  notBefore: number | null
+  waiting: string | null
+}
+
+// The last compact ctx-guard ran, held back or gave up on, and why; `source` is the
+// trigger id or `ready token`. `ranAt` is the last one that ran, kept across
+// later outcomes: no compact action runs again soon after it.
+export type LastCompact = {
+  outcome: 'ran' | 'failed' | 'skipped' | 'held' | 'dropped'
+  source: string
+  text: string
+  at: number
+  ranAt: number | null
+}
+
 export type Pause = { until: number }
 
 // The last ready-token verdict: a refusal code, or `ok` for a restart that went ahead.
@@ -197,6 +223,8 @@ declare module 'claude-code' {
       roleClaim: RoleClaim | null
       config: ConfigState | null
       pendingResume: PendingResume | null
+      pendingCompact: PendingCompact | null
+      lastCompact: LastCompact | null
       pause: Pause | null
       // When this session last cleared: a handoff must be newer to count.
       lastClearAt: number | null
