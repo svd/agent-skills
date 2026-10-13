@@ -78,6 +78,39 @@ export function limitsFrom(
   return out
 }
 
+const count = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null)
+
+/**
+ * A request's context fill from its usage: uncached, cache-read and
+ * cache-written input together, what the status line counts. Null with no usage.
+ */
+export function stepTokens(
+  usage: { input_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number } | null | undefined,
+): number | null {
+  if (!usage) return null
+  const parts = [usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens].map(count)
+  return parts.some(p => p === null) ? null : (parts as number[]).reduce((a, b) => a + b, 0)
+}
+
+export type MetricsSource = {
+  // Absent before the first response and after /clear: unknown.
+  tokens?: number | null
+  rateLimits?: readonly { kind: string; percentUsed: number; resetsAt?: string }[] | null
+  cost?: { usd: number } | null
+}
+
+/** One reading from the engine's figures, against the effective window. */
+export function metricsOf(src: MetricsSource, window: number, idle: number | null, now: number): Metrics {
+  return {
+    tokens: count(src.tokens),
+    window,
+    limits: limitsFrom(src.rateLimits),
+    cost: count(src.cost?.usd),
+    idleMs: idle,
+    now,
+  }
+}
+
 export function contextPercent(m: Metrics): number | null {
   return m.tokens === null || !(m.window > 0) ? null : (m.tokens / m.window) * 100
 }
@@ -205,6 +238,52 @@ export function evaluate(
     if (actions.length) fire.push({ trigger, actions, step, vars: varsOf(trigger, cs, step, metrics) })
   }
   return { fire, marks: { role, byId } }
+}
+
+// ---- step gates --------------------------------------------------------------
+
+// Between `rise` and `fall` a new context reading cannot change any context
+// trigger's mark; null is unbounded on that side.
+export type TokenGates = { rise: number | null; fall: number | null }
+
+function asTokens(q: Quantity, window: number): number | null {
+  if (q.kind === 'tokens') return q.value
+  if (q.kind === 'percent') return window > 0 ? (q.value / 100) * window : null
+  return null
+}
+
+/**
+ * Where the next context reading must land for an evaluation to matter: at or
+ * past `rise` an unmarked trigger (or the next `every` step) may fire; below
+ * `fall` a marked step may drop. Lets a main-loop step skip the evaluation in
+ * between. A threshold that cannot be placed (percent with no window) gives
+ * gates that always evaluate.
+ */
+export function tokenGates(triggers: readonly Trigger[], marks: Marks | null, role: string | null, window: number): TokenGates {
+  const prev = priorMarks(marks, role)
+  let rise = Infinity
+  let fall = -Infinity
+  for (const t of triggers) {
+    const q = t.when.context
+    if (!q) continue
+    const base = asTokens(q, window)
+    const every = t.when.every && t.when.everyMetric === 'context' ? asTokens(t.when.every, window) : 0
+    if (base === null || every === null) return { rise: 0, fall: null }
+    const raw = Object.hasOwn(prev, t.id) ? prev[t.id] : undefined
+    const mark = isMark(raw) ? raw : null
+    if (!mark) rise = Math.min(rise, base)
+    else {
+      fall = Math.max(fall, base + mark.step * every)
+      if (every > 0) rise = Math.min(rise, base + (mark.step + 1) * every)
+    }
+  }
+  return { rise: Number.isFinite(rise) ? rise : null, fall: Number.isFinite(fall) ? fall : null }
+}
+
+/** Whether a reading of `tokens` may change a mark under `gates` (rounding slack of one token). */
+export function crossesGates(tokens: number, gates: TokenGates | null): boolean {
+  if (!gates) return true
+  return (gates.rise !== null && tokens + 1 >= gates.rise) || (gates.fall !== null && tokens - 1 < gates.fall)
 }
 
 export type ActionPlan = {

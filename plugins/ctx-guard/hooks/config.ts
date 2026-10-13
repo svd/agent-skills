@@ -4,6 +4,7 @@ import type {
   Action,
   Config,
   ConfigSource,
+  ConfigState,
   Display,
   HandoffStyle,
   Level,
@@ -739,9 +740,15 @@ export type Effective = {
  * on its own so errors name it. Any invalid file keeps `lastGood`; with none,
  * the built-ins run with auto actions off.
  */
-export function effectiveConfig(input: { switches: Switches; files: readonly FileLayer[]; lastGood: Config | null }): Effective {
+export function effectiveConfig(input: {
+  switches: Switches
+  files: readonly FileLayer[]
+  lastGood: Config | null
+  // Files that exist but could not be read count as invalid.
+  readErrors?: readonly string[]
+}): Effective {
   const { switches, files, lastGood } = input
-  const errors: string[] = []
+  const errors: string[] = [...(input.readErrors ?? [])]
   const raws: Obj[] = []
   for (const file of files) {
     const { raw, errors: parseErrors } = parseLayer(file)
@@ -769,6 +776,91 @@ export function effectiveConfig(input: { switches: Switches; files: readonly Fil
   }
   if (lastGood) return result(lastGood, 'last-good', true, switches.autoActions)
   return result(builtInConfig(), 'built-in', true, false)
+}
+
+/**
+ * The window percentages count against: a fixed `contextWindow`, or with
+ * `auto` the model's window, lowered to `autoCompactWindow` when settings set
+ * one (compaction starts there, so the model never sees the rest).
+ */
+export function effectiveWindow(contextWindow: number | 'auto', modelWindow: number, autoCompactWindow: unknown): number {
+  if (typeof contextWindow === 'number') return contextWindow
+  const acw = typeof autoCompactWindow === 'number' && Number.isFinite(autoCompactWindow) && autoCompactWindow > 0 ? autoCompactWindow : null
+  if (!(Number.isFinite(modelWindow) && modelWindow > 0)) return acw ?? 0
+  return acw === null ? modelWindow : Math.min(modelWindow, acw)
+}
+
+// The window the engine itself settled (`context.breakdown.rawMaxTokens`)
+// and how (`autocompactSource`): per-model settings, the env override and the
+// engine's defaults included.
+export type EngineWindow = { tokens: number; source: string }
+
+export type WindowInfo = { tokens: number; source: string }
+
+/**
+ * The window percentages count against, and where it came from: a fixed
+ * `contextWindow`; else the engine's own compaction window when it answered
+ * one; else effectiveWindow()'s model window lowered by `autoCompactWindow`.
+ */
+export function resolveWindow(
+  contextWindow: number | 'auto',
+  modelWindow: number,
+  engine: EngineWindow | null,
+  autoCompactWindow: unknown,
+): WindowInfo {
+  if (typeof contextWindow === 'number') return { tokens: contextWindow, source: 'config' }
+  if (engine && Number.isFinite(engine.tokens) && engine.tokens > 0) {
+    const tokens = Number.isFinite(modelWindow) && modelWindow > 0 ? Math.min(modelWindow, engine.tokens) : engine.tokens
+    return { tokens, source: `engine: ${engine.source}` }
+  }
+  const tokens = effectiveWindow('auto', modelWindow, autoCompactWindow)
+  return { tokens, source: tokens < modelWindow ? 'autoCompactWindow setting' : 'model window' }
+}
+
+// ---- stored config state -----------------------------------------------------
+
+const isStrArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => typeof x === 'string')
+
+function isSpecShape(v: unknown): boolean {
+  if (!isObj(v)) return false
+  const { triggers, notes, handoff, restart, compact } = v
+  return (
+    Array.isArray(triggers) &&
+    triggers.every(t => isObj(t) && typeof t.id === 'string' && isObj(t.when) && Array.isArray(t.do)) &&
+    isObj(notes) &&
+    isObj(handoff) &&
+    typeof handoff.path === 'string' &&
+    isObj(restart) &&
+    typeof restart.mode === 'string' &&
+    isStrArray(restart.peers) &&
+    Array.isArray(restart.readyChecks) &&
+    isObj(compact)
+  )
+}
+
+/** A normalized Config as another version of ctx-guard may have stored it; null when it does not look like one. */
+export function asConfig(v: unknown): Config | null {
+  if (!isObj(v) || v.version !== 1 || typeof v.enabled !== 'boolean') return null
+  if (typeof v.stateDir !== 'string' || typeof v.readyToken !== 'string') return null
+  if (!(v.defaultRole === null || typeof v.defaultRole === 'string')) return null
+  if (!(v.contextWindow === 'auto' || (typeof v.contextWindow === 'number' && v.contextWindow > 0))) return null
+  if (!isSpecShape(v.defaults) || !isObj(v.roles) || !Object.values(v.roles).every(isSpecShape) || !isObj(v.subagents)) return null
+  return v as unknown as Config
+}
+
+/** The stored ConfigState, checked; a lastGood that does not look like a config is dropped. */
+export function asConfigState(v: unknown): ConfigState | null {
+  if (!isObj(v) || !isStrArray(v.errors) || !Array.isArray(v.files) || typeof v.source !== 'string') return null
+  const files = v.files.filter(
+    (f): f is ConfigState['files'][number] => isObj(f) && typeof f.path === 'string' && (f.mtime === null || typeof f.mtime === 'number'),
+  )
+  return {
+    lastGood: asConfig(v.lastGood),
+    source: v.source as ConfigSource,
+    errors: v.errors,
+    files,
+    loadedAt: typeof v.loadedAt === 'number' ? v.loadedAt : 0,
+  }
 }
 
 // ---- trust -------------------------------------------------------------------

@@ -8,6 +8,10 @@ import {
   deepMerge,
   defaultTriggers,
   effectiveConfig,
+  effectiveWindow,
+  asConfig,
+  asConfigState,
+  resolveWindow,
   localPathFor,
   mergeLayers,
   parseLayer,
@@ -776,5 +780,66 @@ describe('trust hash', () => {
     ]) {
       expect(hashOf(over)).not.toBe(h0)
     }
+  })
+})
+
+describe('effectiveWindow', () => {
+  test('a fixed window wins over everything', () => {
+    expect(effectiveWindow(200_000, 1_000_000, 150_000)).toBe(200_000)
+  })
+
+  test('auto is the model window, lowered by autoCompactWindow', () => {
+    expect(effectiveWindow('auto', 1_000_000, undefined)).toBe(1_000_000)
+    expect(effectiveWindow('auto', 1_000_000, 400_000)).toBe(400_000)
+    expect(effectiveWindow('auto', 200_000, 400_000)).toBe(200_000)
+  })
+
+  test('a junk autoCompactWindow is ignored', () => {
+    for (const junk of ['300000', -5, 0, Number.NaN, null]) expect(effectiveWindow('auto', 1_000_000, junk)).toBe(1_000_000)
+  })
+})
+
+describe('effectiveConfig read errors', () => {
+  test('a file that could not be read keeps the last good config', () => {
+    const good = effectiveConfig({ switches: DEFAULT_SWITCHES, files: [file(TEAM, { version: 1, roles: { lead: {} } })], lastGood: null })
+    const r = effectiveConfig({ switches: DEFAULT_SWITCHES, files: [], lastGood: good.config, readErrors: [`${TEAM}: unreadable`] })
+    expect(r.source).toBe('last-good')
+    expect(r.errors).toEqual([`${TEAM}: unreadable`])
+    expect(roleSpec(r.config, 'lead')).not.toBeNull()
+  })
+})
+
+describe('resolveWindow', () => {
+  test('a fixed window comes from the config', () => {
+    expect(resolveWindow(200_000, 1_000_000, { tokens: 150_000, source: 'settings' }, 100_000)).toEqual({ tokens: 200_000, source: 'config' })
+  })
+
+  test('auto takes the engine window, capped at the model window', () => {
+    expect(resolveWindow('auto', 1_000_000, { tokens: 400_000, source: 'env' }, undefined)).toEqual({ tokens: 400_000, source: 'engine: env' })
+    expect(resolveWindow('auto', 200_000, { tokens: 400_000, source: 'model-default' }, undefined).tokens).toBe(200_000)
+  })
+
+  test('with no engine window, the settings fallback', () => {
+    expect(resolveWindow('auto', 1_000_000, null, 300_000)).toEqual({ tokens: 300_000, source: 'autoCompactWindow setting' })
+    expect(resolveWindow('auto', 1_000_000, { tokens: 0, source: 'x' }, undefined)).toEqual({ tokens: 1_000_000, source: 'model window' })
+  })
+})
+
+describe('stored config state', () => {
+  const good = builtInConfig()
+
+  test('a normalized config passes, junk does not', () => {
+    expect(asConfig(good)).toBe(good)
+    expect(asConfig(JSON.parse(JSON.stringify(good)))).not.toBeNull()
+    for (const junk of [null, 1, {}, { ...good, version: 2 }, { ...good, roles: { x: { triggers: 'no' } } }, { ...good, contextWindow: -1 }]) {
+      expect(asConfig(junk)).toBeNull()
+    }
+  })
+
+  test('a bad lastGood is dropped, the rest kept', () => {
+    const s = asConfigState({ lastGood: { version: 1 }, source: 'files', errors: ['e'], files: [{ path: 'a', mtime: 1 }, 'x'], loadedAt: 5 })
+    expect(s).toEqual({ lastGood: null, source: 'files', errors: ['e'], files: [{ path: 'a', mtime: 1 }], loadedAt: 5 })
+    expect(asConfigState({ errors: 'x' })).toBeNull()
+    expect(asConfigState(null)).toBeNull()
   })
 })

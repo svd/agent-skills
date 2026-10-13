@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { roleSpec, validate } from './config'
-import { conditions, deniedBy, evaluate, idleMs, limitsFrom, liveDenies, planActions, resetMarks, triggersFor } from './triggers'
+import { conditions, crossesGates, deniedBy, evaluate, idleMs, limitsFrom, liveDenies, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
 import type { Metrics } from './triggers'
 import type { Config, Marks, Trigger } from '../types'
 
@@ -368,5 +368,75 @@ describe('planActions', () => {
     expect(plan.notifies.map(f => f.trigger.id)).toEqual(['c'])
     expect(plan.compact?.trigger.id).toBe('a')
     expect(planActions([])).toEqual({ notes: [], toasts: [], notifies: [], compact: null })
+  })
+})
+
+describe('stepTokens', () => {
+  test('sums uncached, cache-read and cache-written input', () => {
+    expect(stepTokens({ input_tokens: 10, cache_read_input_tokens: 200_000, cache_creation_input_tokens: 5000 })).toBe(205_010)
+  })
+
+  test('no usage, or a junk count, is unknown', () => {
+    expect(stepTokens(null)).toBeNull()
+    expect(stepTokens(undefined)).toBeNull()
+    expect(stepTokens({ input_tokens: Number.NaN, cache_read_input_tokens: 1, cache_creation_input_tokens: 1 })).toBeNull()
+  })
+})
+
+describe('metricsOf', () => {
+  test('absent tokens and cost are unknown', () => {
+    const r = metricsOf({ rateLimits: [] }, WINDOW, null, 5)
+    expect(r).toEqual({ tokens: null, window: WINDOW, limits: { five_hour: null, seven_day: null }, cost: null, idleMs: null, now: 5 })
+  })
+
+  test('carries tokens, limits, cost and idle', () => {
+    const r = metricsOf(
+      { tokens: 312_000, rateLimits: [{ kind: 'seven_day', percentUsed: 61, resetsAt: '2026-10-14T00:00:00Z' }], cost: { usd: 2.5 } },
+      WINDOW,
+      60_000,
+      5,
+    )
+    expect(r.tokens).toBe(312_000)
+    expect(r.limits.seven_day).toEqual({ pct: 61, resetsAt: '2026-10-14T00:00:00Z' })
+    expect(r.cost).toBe(2.5)
+    expect(r.idleMs).toBe(60_000)
+  })
+})
+
+describe('tokenGates', () => {
+  const ladder = trigs(
+    soft,
+    { id: 'pct', when: { context: '50%' }, do: ['note'] },
+    { id: 'step', when: { context: '700k', every: '100k' }, do: ['note'] },
+    { id: 'lim', when: { 'limit.any': 90 }, do: ['note'] },
+  )
+
+  test('no marks: rise at the lowest threshold, no fall', () => {
+    expect(tokenGates(ladder, null, 'lead', WINDOW)).toEqual({ rise: 300_000, fall: null })
+  })
+
+  test('marked triggers raise rise to the next one and set fall', () => {
+    const marks: Marks = { role: 'lead', byId: { soft: { step: 0, at: 1 }, pct: { step: 0, at: 1 } } }
+    expect(tokenGates(ladder, marks, 'lead', WINDOW)).toEqual({ rise: 700_000, fall: 500_000 })
+    const stepped: Marks = { role: 'lead', byId: { ...marks.byId, step: { step: 1, at: 1 } } }
+    expect(tokenGates(ladder, stepped, 'lead', WINDOW)).toEqual({ rise: 900_000, fall: 800_000 })
+  })
+
+  test('agrees with evaluate: inside the gates nothing changes', () => {
+    let marks: Marks | null = null
+    for (const tokens of [100_000, 310_000, 320_000, 520_000, 690_000, 710_000, 790_000, 805_000, 650_000, 200_000, 950_000]) {
+      const gates = tokenGates(ladder, marks, 'lead', WINDOW)
+      const ev = evaluate(ladder, m({ tokens }), marks, 'lead')
+      const changed = ev.fire.length > 0 || JSON.stringify(Object.keys(ev.marks.byId).sort()) !== JSON.stringify(Object.keys(marks?.byId ?? {}).sort()) ||
+        Object.entries(ev.marks.byId).some(([id, mk]) => marks?.byId[id]?.step !== mk.step)
+      if (changed) expect(crossesGates(tokens, gates)).toBe(true)
+      marks = ev.marks
+    }
+  })
+
+  test('a percent threshold with no window always evaluates', () => {
+    expect(tokenGates(ladder, null, 'lead', 0)).toEqual({ rise: 0, fall: null })
+    expect(crossesGates(5, null)).toBe(true)
+    expect(crossesGates(5, { rise: null, fall: null })).toBe(false)
   })
 })

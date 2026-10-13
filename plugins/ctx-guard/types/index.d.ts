@@ -145,6 +145,20 @@ export type Pause = { until: number }
 
 export type LastVerdict = { code: string; text: string; at: number }
 
+// The newest main-loop context fill and when it was read; tokens null is unknown (after /clear).
+export type MainReading = { tokens: number | null; at: number }
+
+export type Activity = {
+  // When the last main-loop turn ended; null before the first. Idle counts from it.
+  lastMainEndAt: number | null
+  // When the running main-loop turn started; null between turns.
+  mainTurnAt: number | null
+  // Newer than `$.session.usage()` can be mid-turn, so evaluations off a step read it first.
+  lastMain: MainReading | null
+  // One-time notices already toasted (version, collision, a role problem), so a reload does not repeat them.
+  shown: string[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'ctx-guard': {
@@ -157,6 +171,7 @@ declare module 'claude-code' {
       // When this session last cleared: a handoff must be newer to count.
       lastClearAt: number | null
       lastVerdict: LastVerdict | null
+      activity: Activity | null
     }
   }
 }
