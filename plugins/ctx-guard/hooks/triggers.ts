@@ -1,0 +1,253 @@
+// ctx-guard triggers: metric readings, rising-edge evaluation with JSON marks,
+// and the level-triggered live deny set. Pure: no `$`, never throws.
+import type { Config, EdgeAction, Mark, Marks, Metric, Quantity, Trigger } from '../types'
+import { roleSpec, zeroConfigTriggers } from './config'
+
+export type LimitKind = 'five_hour' | 'seven_day'
+export type LimitReading = { pct: number; resetsAt: string | null }
+
+// One reading of everything a trigger can test; null is unknown.
+export type Metrics = {
+  tokens: number | null
+  window: number
+  limits: { five_hour: LimitReading | null; seven_day: LimitReading | null }
+  cost: number | null
+  // See idleMs(): 0 while a main turn runs, null before the first main turn ends.
+  idleMs: number | null
+  now: number
+}
+
+/**
+ * Time since the last main-loop turn end. A running main turn is never idle
+ * (0); before any main turn has ended there is nothing to measure from (null).
+ */
+export function idleMs(lastEnd: number | null, busy: boolean, now: number): number | null {
+  if (busy) return 0
+  return lastEnd === null || !Number.isFinite(lastEnd) ? null : Math.max(0, now - lastEnd)
+}
+
+export type LimitInfo = LimitReading & { kind: LimitKind }
+
+// One metric of a trigger's AND, read against the live metrics.
+export type Condition = {
+  metric: Metric
+  threshold: Quantity
+  // In the threshold's own unit (tokens, percent, USD, ms); null is unknown.
+  value: number | null
+  holds: boolean
+  // The window behind a limit metric (the highest one for limit.any).
+  limit: LimitInfo | null
+}
+
+// What a note, toast or deny reason needs about a fired trigger.
+export type FireVars = {
+  // The metric the text is about: `every`'s metric, else the first in METRIC_ORDER.
+  metric: Metric
+  // That metric's threshold at the fired step.
+  threshold: Quantity
+  tokens: number | null
+  percent: number | null
+  window: number
+  limit: LimitInfo | null
+  cost: number | null
+  idleMs: number | null
+  now: number
+}
+
+export type Fire = { trigger: Trigger; actions: EdgeAction[]; step: number; vars: FireVars }
+
+export type Evaluation = { fire: Fire[]; marks: Marks }
+
+export type DenyEntry = { tool: string; triggerId: string }
+
+export const METRIC_ORDER: readonly Metric[] = ['context', 'limit.five_hour', 'limit.seven_day', 'limit.any', 'cost', 'idle']
+
+// Float slack so 70 + 2 × 5 counts as reaching step 2 at exactly 80.
+const EPS = 1e-9
+
+/** The rate-limit windows ctx-guard tests, from the engine's list. */
+export function limitsFrom(
+  rateLimits: readonly { kind: string; percentUsed: number; resetsAt?: string }[] | null | undefined,
+): Metrics['limits'] {
+  const out: Metrics['limits'] = { five_hour: null, seven_day: null }
+  for (const r of rateLimits ?? []) {
+    if ((r.kind === 'five_hour' || r.kind === 'seven_day') && Number.isFinite(r.percentUsed)) {
+      out[r.kind] = { pct: r.percentUsed, resetsAt: r.resetsAt ?? null }
+    }
+  }
+  return out
+}
+
+export function contextPercent(m: Metrics): number | null {
+  return m.tokens === null || !(m.window > 0) ? null : (m.tokens / m.window) * 100
+}
+
+function limitFor(metric: Metric, m: Metrics): LimitInfo | null {
+  const of = (kind: LimitKind): LimitInfo | null => {
+    const r = m.limits[kind]
+    return r ? { kind, ...r } : null
+  }
+  if (metric === 'limit.five_hour') return of('five_hour')
+  if (metric === 'limit.seven_day') return of('seven_day')
+  if (metric !== 'limit.any') return null
+  const five = of('five_hour')
+  const week = of('seven_day')
+  if (five && week) return week.pct > five.pct ? week : five
+  return five ?? week
+}
+
+function valueOf(metric: Metric, q: Quantity, m: Metrics, limit: LimitInfo | null): number | null {
+  switch (metric) {
+    case 'context':
+      return q.kind === 'percent' ? contextPercent(m) : m.tokens
+    case 'cost':
+      return m.cost
+    case 'idle':
+      return m.idleMs
+    default:
+      return limit ? limit.pct : null
+  }
+}
+
+/** Each metric of the trigger's AND with its live value. */
+export function conditions(trigger: Trigger, m: Metrics): Condition[] {
+  const out: Condition[] = []
+  for (const metric of METRIC_ORDER) {
+    const threshold = trigger.when[metric]
+    if (!threshold) continue
+    const limit = limitFor(metric, m)
+    const value = valueOf(metric, threshold, m, limit)
+    out.push({ metric, threshold, value, holds: value !== null && value + EPS >= threshold.value, limit })
+  }
+  return out
+}
+
+const known = (cs: readonly Condition[]): boolean => cs.every(c => c.value !== null)
+const allHold = (cs: readonly Condition[]): boolean => cs.length > 0 && cs.every(c => c.holds)
+
+// 0 at the first threshold, +1 per `every` past it.
+function stepOf(trigger: Trigger, cs: readonly Condition[]): number {
+  const { every, everyMetric } = trigger.when
+  const c = everyMetric ? cs.find(x => x.metric === everyMetric) : undefined
+  if (!every || !c || c.value === null || !(every.value > 0)) return 0
+  return Math.max(0, Math.floor((c.value - c.threshold.value) / every.value + EPS))
+}
+
+function varsOf(trigger: Trigger, cs: readonly Condition[], step: number, m: Metrics): FireVars {
+  const main = cs.find(c => c.metric === trigger.when.everyMetric) ?? (cs[0] as Condition)
+  const stepSize = trigger.when.every && main.metric === trigger.when.everyMetric ? trigger.when.every.value : 0
+  return {
+    metric: main.metric,
+    threshold: { kind: main.threshold.kind, value: main.threshold.value + step * stepSize },
+    tokens: m.tokens,
+    percent: contextPercent(m),
+    window: m.window,
+    limit: cs.find(c => c.limit)?.limit ?? null,
+    cost: m.cost,
+    idleMs: m.idleMs,
+    now: m.now,
+  }
+}
+
+const edgeActions = (t: Trigger): EdgeAction[] => t.do.filter((a): a is EdgeAction => typeof a === 'string')
+
+export function resetMarks(role: string | null): Marks {
+  return { role, byId: {} }
+}
+
+// Marks come back from $.state, which another version may have written.
+function isMark(v: unknown): v is Mark {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  return typeof o.step === 'number' && Number.isInteger(o.step) && o.step >= 0 && typeof o.at === 'number' && Number.isFinite(o.at)
+}
+
+function priorMarks(marks: unknown, role: string | null): Record<string, unknown> {
+  if (typeof marks !== 'object' || marks === null) return {}
+  const m = marks as Record<string, unknown>
+  const byId = m.byId
+  return m.role === role && typeof byId === 'object' && byId !== null && !Array.isArray(byId) ? (byId as Record<string, unknown>) : {}
+}
+
+/**
+ * Rising edges since `marks`. A trigger fires when its whole AND holds and it
+ * did not at the last mark, or `every` reached a higher step (a jump of several
+ * steps fires once, at the highest). The mark drops when the AND stops holding
+ * and falls with the step, so the trigger re-arms. A trigger with an unknown
+ * metric is skipped and keeps its mark; marks of another role, or of triggers
+ * no longer configured, are dropped.
+ */
+export function evaluate(
+  triggers: readonly Trigger[],
+  metrics: Metrics,
+  marks: Marks | null,
+  role: string | null,
+): Evaluation {
+  const prev = priorMarks(marks, role)
+  const byId: Record<string, Mark> = {}
+  const fire: Fire[] = []
+  for (const trigger of triggers) {
+    const raw = Object.hasOwn(prev, trigger.id) ? prev[trigger.id] : undefined
+    const old = isMark(raw) ? raw : undefined
+    const cs = conditions(trigger, metrics)
+    if (!known(cs)) {
+      if (old) byId[trigger.id] = old
+      continue
+    }
+    if (!allHold(cs)) continue
+    const step = stepOf(trigger, cs)
+    if (old && old.step >= step) {
+      byId[trigger.id] = old.step === step ? old : { step, at: old.at }
+      continue
+    }
+    byId[trigger.id] = { step, at: metrics.now }
+    const actions = edgeActions(trigger)
+    if (actions.length) fire.push({ trigger, actions, step, vars: varsOf(trigger, cs, step, metrics) })
+  }
+  return { fire, marks: { role, byId } }
+}
+
+export type ActionPlan = {
+  // Every fired trigger with a note; the caller sends them as one note.
+  notes: Fire[]
+  toasts: Fire[]
+  notifies: Fire[]
+  // At most one compact per evaluation: the first trigger asking for it.
+  compact: Fire | null
+}
+
+/** Groups one evaluation's fires by action, so a burst of crossings costs one note. */
+export function planActions(fire: readonly Fire[]): ActionPlan {
+  const by = (a: EdgeAction): Fire[] => fire.filter(f => f.actions.includes(a))
+  return { notes: by('note'), toasts: by('toast'), notifies: by('notify'), compact: by('compact')[0] ?? null }
+}
+
+/**
+ * Tools denied right now, judged afresh from live metrics on every call. An
+ * unknown metric denies nothing (fail open), as do `blocking` off and a pause.
+ */
+export function liveDenies(
+  triggers: readonly Trigger[],
+  metrics: Metrics,
+  opts: { blocking: boolean; paused: boolean },
+): DenyEntry[] {
+  if (!opts.blocking || opts.paused) return []
+  const out: DenyEntry[] = []
+  for (const trigger of triggers) {
+    const tools = trigger.do.flatMap(a => (typeof a === 'object' ? a.deny : []))
+    if (!tools.length || !allHold(conditions(trigger, metrics))) continue
+    for (const tool of tools) if (!out.some(d => d.tool === tool && d.triggerId === trigger.id)) out.push({ tool, triggerId: trigger.id })
+  }
+  return out
+}
+
+/** The first live deny that names `tool`, or null. */
+export function deniedBy(tool: string, denies: readonly DenyEntry[]): DenyEntry | null {
+  return denies.find(d => d.tool === tool) ?? null
+}
+
+/** A role's triggers; with no role (or a role gone from the config), the zero-config toasts. */
+export function triggersFor(config: Config, role: string | null): Trigger[] {
+  const spec = role === null ? null : roleSpec(config, role)
+  return spec ? spec.triggers : zeroConfigTriggers()
+}
