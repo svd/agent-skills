@@ -16,7 +16,9 @@ the version and CHANGELOG record what shipped.
    to output, schema or CLI; MINOR for anything additive; PATCH for fixes, docs and refactors.
 2. Run `git status`. The release commits should hold only the version bump, so if unrelated changes
    are present, ask the user how to handle them. Run each plugin's smoke test if it has one
-   (`find plugins/<plugin> -name smoke_test.py`). If a test fails, stop and report: a push would ship it.
+   (`find plugins/<plugin> -name smoke_test.py`). When the plugin has `hooks/hooks.json` (a mod),
+   run `claude plugin validate plugins/<plugin>` and `claude plugin test plugins/<plugin>`. If a
+   check fails, stop and report: a push would ship it.
 3. For each plugin, set `"version"` in `.claude-plugin/plugin.json`, and in `CHANGELOG.md` rename
    `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` (today, `date +%F`), keeping its bullets as they
    are. With no Unreleased section, write one from the commits and their diffs. Leave

@@ -5,7 +5,7 @@
     "name": "Sviatoslav Sviridov",
     "email": "sviridov@gmail.com"
   },
-  "description": "Personal Claude Code skills for managing local projects, analyzing sessions, and handing off context between sessions.",
+  "description": "Personal Claude Code skills for managing local projects, analyzing sessions, handing off context between sessions, and guarding context and usage limits.",
   "metadata": {
     "pluginRoot": "./plugins"
   },
@@ -24,6 +24,11 @@
       "name": "session-handoff",
       "source": "./plugins/session-handoff",
       "description": "Write and resume structured context handoffs between Claude sessions."
+    },
+    {
+      "name": "ctx-guard",
+      "source": "./plugins/ctx-guard",
+      "description": "Guard context fill and usage limits by config: per-role notes and tool blocks, guarded clear-and-resume or compact, and subagent context budgets."
     },
     {
       "name": "mcp-client-kit",

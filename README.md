@@ -14,6 +14,7 @@ Personal Claude Code plugin marketplace. Marketplace name: `svd-agent-skills`.
 /plugin install mcp-client-kit@svd-agent-skills
 /plugin install session-handoff@svd-agent-skills
 /plugin install mgraphctl@svd-agent-skills
+/plugin install ctx-guard@svd-agent-skills
 ```
 
 ## Plugins
@@ -81,6 +82,162 @@ Skills: `/mgraphctl:mgraphctl`
 Trigger phrases: "check my inbox", "what meetings do I have", "send a Teams message",
 "find that SharePoint doc", "summarize this meeting transcript", "my tasks".
 
+### ctx-guard
+
+Watch a session's context fill and usage limits, and act on them by config. ctx-guard draws a band
+above the prompt (`lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h)`) and shows toasts. It sends
+per-role `[ctx-guard]` notes to the model, blocks tools such as `Agent` near the limits and caps
+each subagent's context by type. When the model ends a reply with a ready token, it runs a guarded
+`/clear` and resumes from a handoff file, or runs `/compact`. Roles, thresholds, triggers, handoff
+instructions and budgets live in a JSON file, so no code changes are needed.
+
+```bash
+/plugin install ctx-guard --marketplace svd/agent-skills
+```
+
+Requires Claude Code 2.1.293 or later. ctx-guard checks the version at session start and shows a
+toast on an older one. Unlike the other plugins here it is a mod, a TypeScript hooks module that
+Claude Code loads itself. Mods are a new plugin kind, and the mod API may still change.
+
+Skills: `/ctx-guard:ctx-guard`. Commands: `/ctx-guard` (report, plus `role`, `check`, `trust`,
+`reload`, `pause`, `init [solo|peers]`) and `/ctx-guard:resume`.
+
+Trigger phrases: "set up ctx-guard", "configure a context guard", "auto clear at 60 %",
+"subagent budgets", or any `[ctx-guard]` note.
+
+**Zero config.** With no config file and no role, ctx-guard draws the band and shows toasts at
+50 / 70 / 85 % context and at 80 / 90 % of any usage limit. It sends the model nothing, blocks
+nothing and runs nothing on its own, so a user-scope install leaves the model's behaviour as it
+was. Model notes start once a session has a role. Set the `defaultRole` switch to `main` in
+`/config` for the built-in ladder: notes at 40 / 60 / 75 % context (then every 5 %) and at
+80 / 90 / 95 % usage, `Agent` blocked at 95 %, and restarts left to you. Or write
+`.claude/ctx-guard.json`; `/ctx-guard init` writes a starter.
+
+**Config.** Layers, later wins: built-in defaults, the `/config` switches, the team file
+`.claude/ctx-guard.json` (committed) and the personal `.claude/ctx-guard.local.json` (gitignored).
+Every key, default and recipe is in the
+[config reference](plugins/ctx-guard/skills/ctx-guard/references/config-reference.md).
+
+**Trust.** Settings that run things unattended need your approval per repo: automatic restarts
+(`restart.mode: "auto"` with its command and prompt), `compact` actions and `readyChecks`, plus
+the paths, peers and ready token they use (the full list is under Trust in the config
+reference). Type `/ctx-guard trust` to approve the current config; any later change to those
+settings, or to a ready-check script under the repo, withdraws the approval. Until you approve, notes, toasts and blocks still work, but ready tokens are refused with
+`untrusted` and no compact or ready check runs.
+
+#### Roles & scenarios
+
+A role selects triggers, handoff and restart settings from `roles`. A session takes the first role
+it finds, in this order: `/ctx-guard role <name|none>` typed by you, the `CTX_GUARD_ROLE`
+environment variable, the project's `defaultRole`, then the `defaultRole` switch. Only interactive
+sessions get a role; `claude -p` runs with none.
+
+**Solo session.** One long-running session, role `main`. A role without `triggers` gets the
+built-in ladder above. At a safe point the model rewrites `.ctx-guard/main-handoff.md` and ends its
+reply with `CTX-READY`. ctx-guard then checks that no agent is running and the handoff is fresh,
+clears, and resumes from the handoff.
+
+```json
+{
+  "version": 1,
+  "defaultRole": "main",
+  "roles": {
+    "main": {
+      "handoff": { "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Next action." },
+      "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting." }
+    }
+  }
+}
+```
+
+**Coordinator + workers.** One long-lived coordinator dispatches subagents. Per-type budgets keep
+each worker small: a note at `warn`, then at `stop` the worker is told to report and its further
+tool calls are denied. Near the usage limit the coordinator stops dispatching.
+
+```json
+{
+  "version": 1,
+  "defaultRole": "coordinator",
+  "roles": {
+    "coordinator": {
+      "triggers": [
+        { "id": "ctx-soft", "when": { "context": "40%" }, "do": ["note"], "level": "soft" },
+        { "id": "ctx-stop", "when": { "context": "70%", "every": "5%" }, "do": ["note", "toast"], "level": "stop" },
+        { "id": "usage-brake", "when": { "limit.any": 90 }, "do": ["note", "notify", { "deny": ["Agent", "Workflow"] }], "level": "stop" }
+      ],
+      "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting." }
+    }
+  },
+  "subagents": {
+    "*": { "warn": "120k", "stop": "170k" },
+    "Explore": { "stop": "150k", "message": "Budget of {stop} reached: return your findings now." }
+  }
+}
+```
+
+**Peer sessions talking via SendMessage.** Two or more long-lived interactive sessions, say `lead`
+and `reviewer`, message each other by name. Cross-session messaging is on by default, with no
+setting to turn on. Name each session at start with `claude --name <name>`, or later with
+`/rename <name>`. `/peers` (alias of `/list-agents`) lists the sessions this one can reach. If
+messages do not arrive, check that `crossSessionInbound` is not `hold` or `refuse` and that no
+deny rule covers `SendMessage`.
+
+Give each session its role with `CTX_GUARD_ROLE`, or type `/ctx-guard role reviewer` in a running
+session:
+
+```sh
+CTX_GUARD_ROLE=lead claude --name lead
+CTX_GUARD_ROLE=reviewer claude --name reviewer
+```
+
+`restart.peers` with `peerGap` keeps the sessions from clearing within ten minutes of each other.
+`notes.suffix` adds a line to every note, here telling the session to message its peer before it
+stops. Settings shared by both roles go in `defaults`.
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "handoff": { "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Open questions for the peer, Next action." },
+    "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting.", "peerGap": "10m" }
+  },
+  "roles": {
+    "lead": {
+      "notes": { "suffix": "Before you stop, message the reviewer session: what you finished and what you hand over." },
+      "restart": { "peers": ["reviewer"] }
+    },
+    "reviewer": {
+      "notes": { "suffix": "Before you stop, message the lead session: what you reviewed and what is still open." },
+      "restart": { "peers": ["lead"] }
+    }
+  }
+}
+```
+
+**Compact instead of clear.** The session keeps its context, compacted, instead of starting over
+from a handoff. With `via: "compact"` the ready token runs `/compact` with the role's
+instructions. The `compact` action compacts at 85 % even if the model has not sent the token.
+
+```json
+{
+  "version": 1,
+  "defaultRole": "main",
+  "roles": {
+    "main": {
+      "triggers": [
+        { "id": "ctx-soft", "when": { "context": "50%" }, "do": ["note"], "level": "soft" },
+        { "id": "ctx-stop", "when": { "context": "70%" }, "do": ["note"], "level": "stop" },
+        { "id": "squeeze", "when": { "context": "85%" }, "do": ["compact"] }
+      ],
+      "restart": { "mode": "auto", "via": "compact" },
+      "compact": { "instructions": "Keep open tasks, decisions made, and the file paths in play." }
+    }
+  }
+}
+```
+
+Run `/ctx-guard trust` after writing any of these, since each runs restarts or compacts on its own.
+
 ## Pricing
 
 Both plugins use the same pricing table (USD per 1M tokens), matched by substring on the
@@ -113,4 +270,5 @@ estimates from token counts, not actual billing amounts.
 Versions use commit-SHA tracking — every push to `main` ships the latest code to
 users who run `/plugin marketplace update svd-agent-skills`.
 
-Both scripts are pure Python 3 stdlib — no pip install required.
+The Python helper scripts are pure Python 3 stdlib — no pip install required. ctx-guard is a
+TypeScript mod that Claude Code loads directly, with no build step.

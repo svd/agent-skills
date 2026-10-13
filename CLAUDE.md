@@ -11,15 +11,19 @@ python3 plugins/<plugin>/skills/<plugin>/scripts/<script>.py <subcommand> [args]
 # The two test suites (session-analyzer and session-handoff)
 python3 plugins/session-analyzer/skills/session-analyzer/scripts/smoke_test.py
 python3 plugins/session-handoff/skills/session-handoff/scripts/smoke_test.py
+
+# ctx-guard (TypeScript mod): manifest/module check, then its hooks/*.test.ts suite
+claude plugin validate plugins/ctx-guard
+claude plugin test plugins/ctx-guard
 ```
 
 ## What this repo is
 
 `svd-agent-skills` — personal Claude Code **plugin marketplace**. Each plugin under
 `plugins/<name>/` is an independently versioned unit shipping one skill (occasionally more) plus
-a stdlib-only Python helper script. There is no build step and no repo-wide version — plugins are
-distributed by commit SHA: every push to `main` is live for anyone who runs
-`/plugin marketplace update svd-agent-skills`.
+a stdlib-only Python helper script (`ctx-guard` is the exception: a TypeScript mod, see below).
+There is no build step and no repo-wide version — plugins are distributed by commit SHA: every
+push to `main` is live for anyone who runs `/plugin marketplace update svd-agent-skills`.
 
 ## Repo layout
 
@@ -36,9 +40,23 @@ plugins/<name>/
 .claude/skills/releasing-a-version/  # repo-local skill for cutting releases (see below)
 ```
 
-Current plugins: `manage-claude-projects`, `session-analyzer`, `session-handoff`. Two more are
-listed in `marketplace.json` but sourced from separate GitHub repos, not present here:
-`mcp-client-kit` (`svd/mcp-client-kit`) and `mgraphctl` (`svd/mgraphctl`). Externally-sourced
+Exception — `plugins/ctx-guard/` is a **mod** (TypeScript hooks module loaded in-process by
+Claude Code), so it has no `scripts/` and adds:
+
+```
+plugins/ctx-guard/
+  .claude-plugin/types/           # API types laid by the engine on load — gitignored, never commit
+  tsconfig.json                   # extends ./.claude-plugin/types/tsconfig.json
+  hooks/hooks.json                # { "modules": ["./register.tsx"] }
+  hooks/register.tsx              # thin wiring: events → pure modules → `$` calls
+  hooks/*.ts                      # pure logic (no `$`), each with a *.test.ts beside it
+  types/index.d.ts                # the plugin's PluginState contract
+  commands/*.md                   # slash commands (`/ctx-guard:resume`)
+```
+
+Current plugins: `manage-claude-projects`, `session-analyzer`, `session-handoff`, `ctx-guard`.
+Two more are listed in `marketplace.json` but sourced from separate GitHub repos, not present
+here: `mcp-client-kit` (`svd/mcp-client-kit`) and `mgraphctl` (`svd/mgraphctl`). Externally-sourced
 entries pin an explicit tag `ref`; local plugins ship by commit SHA on `main`.
 
 ## Architecture pattern (applies to every plugin)
@@ -55,6 +73,13 @@ Each plugin follows the same split:
   to parse and render — scripts never format output for direct human reading.
 - Scripts are referenced from `SKILL.md` via `${CLAUDE_PLUGIN_ROOT}` or `$CLAUDE_PLUGIN_ROOT`
   (the plugin's own root), not hardcoded paths.
+
+Exception: **ctx-guard** is a TypeScript mod, not skill + script. Claude Code runs
+`hooks/register.tsx` itself on session events; `SKILL.md` only tells the model how to answer the
+mod's `[ctx-guard]` notes and how to help configure it. Logic lives in pure modules
+(`config.ts`, `roles.ts`, `triggers.ts`, `messages.ts`, `restart.ts`, …) with no `$` access;
+`register.tsx` keeps the I/O thin, and hooks never throw. Still no build step and no
+`package.json` — the engine loads the `.ts`/`.tsx` files directly.
 
 Per-plugin specifics:
 
@@ -73,6 +98,12 @@ Per-plugin specifics:
   `validate`, `stale`, `inspect`. Handoffs live at
   `.claude/session-handoffs/<project-slug>/<YYYYMMDD-HHMM>-<4-char-id>.md` (gitignored — see
   `.gitignore`). The skill enforces trust-tagging every claim `[V]`/`[?]`/`[S]` when writing one.
+- **ctx-guard** (`hooks/register.tsx`) — context and usage guard. Reads layered JSON config
+  (built-ins → `userConfig` switches → `.claude/ctx-guard.json` → `.claude/ctx-guard.local.json`),
+  resolves a role (`/ctx-guard role` > `CTX_GUARD_ROLE` > `defaultRole`), fires triggers (notes,
+  toasts, notify, tool denies, compact), and on the ready token runs a fail-closed verdict before
+  `/clear` + `/ctx-guard:resume` or `/compact`. Auto actions and ready checks need per-repo
+  `/ctx-guard trust`. Every key is in `skills/ctx-guard/references/config-reference.md`.
 
 ## Releasing
 
@@ -87,7 +118,8 @@ bumping versions by hand — it encodes the exact convention:
 - `marketplace.json` and `README.md` are **not** touched by a release (no version field to sync;
   README only changes when a plugin is added/removed).
 - Run a plugin's `smoke_test.py` (if it has one — currently `session-analyzer` and
-  `session-handoff`) before releasing it.
+  `session-handoff`) before releasing it; for a mod (`hooks/hooks.json`, currently `ctx-guard`),
+  run `claude plugin validate` and `claude plugin test` on it instead.
 
 ## Testing
 
@@ -103,6 +135,22 @@ python3 plugins/session-handoff/skills/session-handoff/scripts/smoke_test.py
 `manage-claude-projects` has no automated tests — verify changes to `projects.py` by running the
 subcommand directly against real `~/.claude` data and inspecting the JSON output. Take particular
 care with `remove`, the only destructive subcommand: dry-run first.
+
+`ctx-guard` tests are `hooks/*.test.ts` (pure-module unit tests plus engine-kit tests against a
+fake world, via `claude-code/testing`), run by `claude plugin test`. `claude plugin validate`
+checks the manifest, the module and the `PluginState` contract. Type-check with
+`tsc -p plugins/ctx-guard` once a `claude --plugin-dir plugins/ctx-guard` session has laid
+`.claude-plugin/types/`:
+
+```bash
+claude plugin validate plugins/ctx-guard
+claude plugin test plugins/ctx-guard
+tsc -p plugins/ctx-guard
+```
+
+The test kit can't read plugin files, so `register.test.ts` serves inline copies of
+`skills/ctx-guard/assets/presets/*.json` to `/ctx-guard init`. When you edit a preset, update its
+copy (`PRESET_TEXT`) to match byte for byte.
 
 ## Pricing table (shared across manage-claude-projects and session-analyzer)
 
