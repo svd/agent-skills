@@ -88,3 +88,17 @@ All notable changes to the `ctx-guard` plugin are documented here.
   a compact runs is refused with `already-busy`, and a via-compact refusal says nothing was
   compacted. The report shows a queued compact and the last one; `/ctx-guard check` covers via
   compact.
+- Subagent budgets: each subagent's fill (input + cache read + cache creation of its latest
+  request) is measured on its `turn.step`, with arithmetic only on the request's path. Its type
+  and kind come from its `agent.spawn` (workflow agents included), kept across reloads, with
+  `$.agent.list` as the fallback; an agent neither names (the engine's compaction and memory
+  forks) gets no budget, and forks and teammates get one only from an entry naming their type,
+  `fork` or `teammate`. A type's `subagents` entry merges field by field
+  over `"*"` (unset or `null` inherits, `"off"` drops that step). Past `warn` the agent gets one
+  note; past `stop` it gets one stop note (the entry's `message`, or "context budget {stop}
+  reached; return your final report now.") and every later tool call of that agent is refused
+  with that reason, unless blocking is off or ctx-guard is paused (the notes still go). Budgets
+  apply only once the session has a role. Agents past a step are kept across reloads, so a reload
+  does not lift a deny; an agent is dropped at its `turn.complete`, or after 2 hours unseen. The
+  band shows `sub N!` while N agents are past their warn, and the report lists the merged budgets
+  and a table of followed agents (id, type, fill, warn, stop, state).

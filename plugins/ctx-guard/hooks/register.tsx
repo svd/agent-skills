@@ -8,6 +8,7 @@ import type { Register } from 'claude-code'
 
 import type {
   Activity,
+  AgentKind,
   Band,
   Config,
   HeldStamp,
@@ -21,6 +22,8 @@ import type {
   PendingCompact,
   PendingResume,
   RoleSpec,
+  SpawnedAgent,
+  SubagentMark,
   Switches,
   Trigger,
   Work,
@@ -40,7 +43,7 @@ import {
   starterConfig,
   versionBelow,
 } from './commands'
-import type { Preset, RestartReport } from './commands'
+import type { Preset, RestartReport, SubagentReport } from './commands'
 import {
   DEFAULT_SWITCHES,
   asConfigState,
@@ -54,13 +57,26 @@ import {
   resolveWindow,
   roleSpec,
   sha256Hex,
+  subagentBudget,
   trustFields,
   trustHash,
   trustKey,
   trustState,
 } from './config'
 import type { Effective, EngineWindow, FileLayer, ScriptHashes, TrustRecord, TrustState, WindowInfo } from './config'
-import { PREFIX, collapseNotes, denyReason, effectiveMode, handoffPathFor, humanDuration, refusalNote, toastText } from './messages'
+import {
+  PREFIX,
+  collapseNotes,
+  denyReason,
+  effectiveMode,
+  handoffPathFor,
+  humanDuration,
+  refusalNote,
+  subagentDenyReason,
+  subagentStopText,
+  subagentWarnText,
+  toastText,
+} from './messages'
 import {
   COMPACT_QUIET_MS,
   RACE_SETTLE_MS,
@@ -108,6 +124,25 @@ import {
   triggersFor,
 } from './triggers'
 import type { ActionPlan, Fire, Metrics, TokenGates } from './triggers'
+import {
+  PRUNE_AFTER_MS,
+  asMarks,
+  asSpawned,
+  budgetFor,
+  decide,
+  fromMark,
+  identityType,
+  kindOf,
+  listedIdentity,
+  lowestGate,
+  markOf,
+  overCount,
+  staleIds,
+  staleSpawns,
+  stopDeny,
+  track,
+} from './subagents'
+import type { Tracked } from './subagents'
 
 const BAND = { plugin: 'ctx-guard', key: 'band' } as const
 const MARKS = { plugin: 'ctx-guard', key: 'marks' } as const
@@ -123,6 +158,8 @@ const WORK = { plugin: 'ctx-guard', key: 'work' } as const
 const STAMP = { plugin: 'ctx-guard', key: 'stamp' } as const
 const PENDING_COMPACT = { plugin: 'ctx-guard', key: 'pendingCompact' } as const
 const LAST_COMPACT = { plugin: 'ctx-guard', key: 'lastCompact' } as const
+const SUBAGENTS = { plugin: 'ctx-guard', key: 'subagents' } as const
+const SPAWNED = { plugin: 'ctx-guard', key: 'spawned' } as const
 // A /clear this soon after a not-cleared restart was dropped is that restart's, landing late.
 const LATE_CLEAR_MS = 60 * 1000
 
@@ -188,6 +225,14 @@ type Mod = {
   stepWrites: Map<string, number>
   // Ids whose turn completed, so a step write that lands late does not bring them back.
   ended: Set<string>
+  // The config has a subagent budget, so subagent steps are measured.
+  budgeted: boolean
+  // Subagents followed against their budgets, by id; the ones past a step are mirrored in `$.state.subagents`.
+  agents: Map<string, Tracked>
+  // Agents agent.spawn started, with their type and kind; `$.state.spawned` keeps them across a reload.
+  spawned: Map<string, SpawnedAgent>
+  // Moves when the budgets or the role do, so an evaluation that started before keeps no stale gate.
+  budgetGen: number
 }
 
 const fresh = (): Mod => ({
@@ -216,6 +261,10 @@ const fresh = (): Mod => ({
   steps: new Map(),
   stepWrites: new Map(),
   ended: new Set(),
+  budgeted: false,
+  agents: new Map(),
+  spawned: new Map(),
+  budgetGen: 0,
 })
 
 let mod: Mod = fresh()
@@ -358,6 +407,8 @@ async function loadConfig($: EngineInterface, force: boolean): Promise<boolean> 
   await $.state.set(CONFIG, state)
   mod.eff = eff
   mod.gates = null
+  mod.budgeted = Object.keys(eff.config.subagents).length > 0
+  rejudgeAll()
   await readTrust($, root)
   const settings = await $.settings.read().catch(() => ({}) as Record<string, unknown>)
   mod.autoCompactWindow = settings.autoCompactWindow
@@ -382,7 +433,10 @@ async function resolveNow($: EngineInterface): Promise<RoleResolution> {
     interactive: mod.interactive,
     config: eff.config,
   })
-  if (r.role !== mod.role.role) mod.gates = null
+  if (r.role !== mod.role.role) {
+    mod.gates = null
+    rejudgeAll()
+  }
   mod.role = r
   if (r.problem && active()) await noticeOnce($, `role:${r.problem}`, `ctx-guard: ${r.problem}`)
   return r
@@ -443,7 +497,7 @@ async function setBand($: EngineInterface, metrics: Metrics, isPaused: boolean, 
   const denies =
     eff && mod.role.role !== null ? liveDenies(roleTriggers(), metrics, { blocking: eff.blocking, paused: isPaused }) : []
   const prev = (await $.state.get(BAND)).value ?? null
-  const band = bandOf(mod.role.role, metrics, denies, prev)
+  const band: Band = { ...bandOf(mod.role.role, metrics, denies, prev), subagentsOver: subagentsOver() }
   if (write === 'changed' && sameBand(prev, band)) return
   await $.state.set(BAND, band)
   if (mod.standIn) $.ui.status(bandText(band) || undefined)
@@ -600,6 +654,162 @@ async function recentSteps($: EngineInterface, now: number): Promise<string[]> {
   for (const [id, at] of mod.steps) if (Number.isNaN(at) || now - at < STEP_SEEN_MS) ids.add(id)
   for (const [id, at] of Object.entries((await work($)).steps)) if (now - at < STEP_SEEN_MS && !mod.ended.has(id)) ids.add(id)
   return [...ids]
+}
+
+// ---- subagent budgets ---------------------------------------------------------
+
+// Budgets apply once the session has a role, like model notes: a user-scope install changes no subagent unasked.
+const budgetsOn = (): boolean => active() && mod.budgeted && mod.role.role !== null
+
+const subagentsOver = (): number => (mod.role.role === null ? 0 : overCount(mod.agents))
+
+// The budgets or the role moved: every agent's next step is judged again, and an evaluation under way must not undo that.
+function rejudgeAll(): void {
+  mod.budgetGen += 1
+  for (const t of mod.agents.values()) t.gate = 0
+}
+
+async function patchMarks($: EngineInterface, fn: (m: Record<string, SubagentMark>) => Record<string, SubagentMark>): Promise<void> {
+  await update($, SUBAGENTS, v => {
+    const cur = asMarks(v)
+    const next = fn(cur)
+    return JSON.stringify(next) === JSON.stringify(cur) ? (v ?? null) : next
+  })
+}
+
+async function patchSpawned($: EngineInterface, fn: (m: Record<string, SpawnedAgent>) => Record<string, SpawnedAgent>): Promise<void> {
+  await update($, SPAWNED, v => {
+    const cur = asSpawned(v)
+    const next = fn(cur)
+    return JSON.stringify(next) === JSON.stringify(cur) ? (v ?? null) : next
+  })
+}
+
+/** An agent.spawn that started an agent: its type and kind, kept so its steps know what budget it has. */
+async function onSpawn($: EngineInterface, id: string, type: string, kind: AgentKind): Promise<void> {
+  const rec: SpawnedAgent = { type, kind, at: await $.clock.now() }
+  mod.spawned.set(id, rec)
+  // A step that came before the spawn answered found no name: it is judged again.
+  const t = mod.agents.get(id)
+  if (t) {
+    t.identity = { type, kind }
+    t.gate = 0
+  }
+  await patchSpawned($, m => (mod.spawned.get(id) === rec ? { ...m, [id]: rec } : m))
+}
+
+/**
+ * A subagent step's fill, on the step's path: arithmetic only. A fill that
+ * reaches the agent's gate schedules one evaluation off the path.
+ */
+function subagentStep($: EngineInterface, id: string, tokens: number | null): void {
+  if (tokens === null) return
+  let t = mod.agents.get(id)
+  if (!t) {
+    const known = mod.spawned.get(id)
+    t = track(known ? { type: known.type, kind: known.kind } : null)
+    mod.agents.set(id, t)
+  }
+  t.tokens = tokens
+  if (tokens < t.gate) return
+  // One evaluation at a time per agent; it sets the next gate.
+  t.gate = Number.POSITIVE_INFINITY
+  const tracked = t
+  $.clock.after(0, () => void serial(() => judgeSubagent($, id, tracked)))
+}
+
+/** The budget of who the agent is (asked of `$.agent.list` only when no spawn named it), and the warn or stop note to the agent itself; marked before it is sent. */
+async function judgeSubagent($: EngineInterface, id: string, t: Tracked): Promise<void> {
+  const gen = mod.budgetGen
+  let gate = 0
+  try {
+    const eff = mod.eff
+    if (mod.agents.get(id) !== t || !budgetsOn() || !eff) return
+    const now = await $.clock.now()
+    t.seenAt = now
+    if (t.identity === null) {
+      try {
+        t.identity = listedIdentity((await $.agent.list()).find(a => a.id === id))
+      } catch {
+        // Unknown for now: no budget, and the next evaluation asks again.
+      }
+    }
+    const b = budgetFor(eff.config, t.identity)
+    const d = decide(b, t.tokens, t.warned, t.stopped)
+    // Unknown, any type's lowest step could be its own.
+    gate = t.identity === null ? lowestGate(eff.config) : d.gate
+    if (!d.step || !b || mod.agents.get(id) !== t) return
+    t.warned = true
+    if (d.step === 'stop') t.stopped = true
+    t.warn = b.warn
+    t.stop = b.stop
+    const mark = markOf(t, now)
+    if (mark) await patchMarks($, m => (mod.agents.get(id) === t ? { ...m, [id]: mark } : m))
+    const vars = { type: identityType(t.identity) ?? b.type, tokens: t.tokens, warn: b.warn, stop: b.stop }
+    const text = d.step === 'stop' ? subagentStopText(vars, b.message) : subagentWarnText(vars)
+    await quietly(() => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] }, agentId: id }))
+    await quietly(() => patchBand($, 'subagentsOver', subagentsOver()))
+  } finally {
+    t.gate = gen === mod.budgetGen ? gate : 0
+  }
+}
+
+async function forgetSubagents($: EngineInterface, ids: readonly string[]): Promise<void> {
+  if (!ids.length) return
+  for (const id of ids) {
+    mod.agents.delete(id)
+    mod.spawned.delete(id)
+  }
+  const drop = <T,>(m: Record<string, T>): Record<string, T> => {
+    const out = { ...m }
+    for (const id of ids) delete out[id]
+    return out
+  }
+  await patchMarks($, drop)
+  await patchSpawned($, drop)
+  await patchBand($, 'subagentsOver', subagentsOver())
+}
+
+// On the band timer: agents whose turn.complete never came.
+async function pruneSubagents($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  const stale = new Set(staleIds(mod.agents, mod.steps, now))
+  for (const id of staleSpawns(Object.fromEntries(mod.spawned), mod.steps, now)) if (!mod.agents.has(id)) stale.add(id)
+  await forgetSubagents($, [...stale])
+}
+
+/** At a session start: the spawns and the agents past a step before a reload are followed again, so a stop's deny holds. */
+async function loadSubagents($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  const steps = new Map(Object.entries((await work($)).steps))
+  const spawned = asSpawned((await $.state.get(SPAWNED)).value)
+  const oldSpawns = new Set(staleSpawns(spawned, steps, now))
+  for (const [id, rec] of Object.entries(spawned)) if (!oldSpawns.has(id)) mod.spawned.set(id, rec)
+  const stored = asMarks((await $.state.get(SUBAGENTS)).value)
+  const stale: string[] = []
+  for (const [id, m] of Object.entries(stored)) {
+    const step = steps.get(id)
+    if (now - Math.max(m.at, step ?? m.at) >= PRUNE_AFTER_MS) stale.push(id)
+    else mod.agents.set(id, fromMark(m))
+  }
+  if (stale.length) await patchMarks($, m => Object.fromEntries(Object.entries(m).filter(([id]) => !stale.includes(id))))
+  if (oldSpawns.size) await patchSpawned($, m => Object.fromEntries(Object.entries(m).filter(([id]) => !oldSpawns.has(id))))
+}
+
+function subagentReport(config: Config, blocking: boolean, isPausedNow: boolean): SubagentReport {
+  const budgets = Object.keys(config.subagents)
+    .sort()
+    .map(type => ({ type, budget: subagentBudget(config, type) }))
+  const off = budgets.length && mod.role.role === null ? 'no role: not applied' : null
+  const rows = [...mod.agents].flatMap(([id, t]) => {
+    const b = budgetFor(config, t.identity)
+    // Agents with no budget (engine forks, unnamed teammates) are no part of the table.
+    if (!b && !t.warned) return []
+    const state = t.stopped ? 'stopped' : t.warned ? 'warned' : 'under'
+    return [{ id, type: identityType(t.identity), tokens: t.tokens, warn: b?.warn ?? null, stop: b?.stop ?? null, state } as const]
+  })
+  const noDeny = !blocking ? 'blocking is off in /config' : isPausedNow ? 'ctx-guard is paused' : null
+  return { off, noDeny, budgets, rows: mod.role.role === null ? [] : rows }
 }
 
 // ---- trust ------------------------------------------------------------------
@@ -832,14 +1042,19 @@ async function leaseBeat($: EngineInterface, force: boolean): Promise<void> {
 
 // ---- restart ----------------------------------------------------------------
 
-async function setRestartFailed($: EngineInterface, text: string | null): Promise<void> {
-  const now = await $.clock.now()
+// One band field changed with no new reading; nothing is written when it already holds `value`.
+async function patchBand<K extends 'restartFailed' | 'subagentsOver'>($: EngineInterface, key: K, value: Band[K]): Promise<void> {
   const prev = (await $.state.get(BAND)).value ?? null
-  if ((prev?.restartFailed ?? null) === text) return
+  if ((prev?.[key] ?? (key === 'subagentsOver' ? 0 : null)) === value) return
+  const now = await $.clock.now()
   const base: Band = prev ?? { role: mod.role.role, tokens: null, percent: null, window: null, limits: [], subagentsOver: 0, denies: [], restartFailed: null, now }
-  const band: Band = { ...base, restartFailed: text }
+  const band: Band = { ...base, [key]: value }
   await $.state.set(BAND, band)
   if (mod.standIn) $.ui.status(bandText(band) || undefined)
+}
+
+async function setRestartFailed($: EngineInterface, text: string | null): Promise<void> {
+  await patchBand($, 'restartFailed', text)
 }
 
 async function setVerdict($: EngineInterface, code: RefusalCode | 'ok', text: string): Promise<void> {
@@ -1453,6 +1668,7 @@ async function syncActive($: EngineInterface): Promise<void> {
     mod.timers.push(
       $.clock.every(BAND_TICK_MS, () =>
         void serial(async () => {
+          await quietly(() => pruneSubagents($))
           await refreshBand($)
           // The lease's heartbeat also beats here, so a quiet session keeps its role.
           await quietly(() => leaseBeat($, false))
@@ -1490,6 +1706,7 @@ async function start($: EngineInterface, isInteractive: boolean, surface: Render
   mod.env = await $.env.get('CTX_GUARD_ROLE')
   await loadConfig($, true)
   mod.lastMain = (await activity($)).lastMain
+  await quietly(() => loadSubagents($))
   mod.started = true
   // Again now that the session counts as started, so a role problem toasts.
   await resolveNow($)
@@ -1622,6 +1839,7 @@ async function report($: EngineInterface): Promise<string> {
     denies: role === null || !eff ? [] : liveDenies(roleTriggers(), metrics, { blocking: eff.blocking, paused: isPausedNow }),
     lastClearAt: await getLastClear($),
     restart: await restartReport($, role, spec, now),
+    subagents: subagentReport(config, eff?.blocking ?? true, isPausedNow),
   })
 }
 
@@ -1878,7 +2096,10 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const r = yield* next(e)
     // Seen stepping: a workflow's agents are in no list, so this is the only sign they run.
-    if (e.agentId !== undefined && active()) noteStep($, e.agentId)
+    if (e.agentId !== undefined && active()) {
+      noteStep($, e.agentId)
+      if (budgetsOn()) subagentStep($, e.agentId, stepTokens(r.usage))
+    }
     if (e.agentId === undefined && active()) {
       const tokens = stepTokens(r.usage)
       if (tokens !== null) {
@@ -1889,7 +2110,6 @@ export const register: Register = (on, options) => {
         }
       }
     }
-    // Subagent fill and budgets (build step 6) are measured here too, from `e.agentId`.
     return r
   })
 
@@ -1905,6 +2125,7 @@ export const register: Register = (on, options) => {
     } else {
       const id = e.agentId
       await quietly(() => endStep($, id))
+      if (mod.agents.delete(id)) await quietly(() => serial(() => forgetSubagents($, [id])))
     }
     return next(e)
   })
@@ -1932,6 +2153,14 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // Who each agent is, from its own spawn: only agents named here or by `$.agent.list` get a budget.
+  on('agent.spawn', async ($, e, next) => {
+    const r = await next(e)
+    const id = r.agentId
+    if (id !== undefined && active()) await quietly(() => onSpawn($, id, e.subagentType, kindOf(e)))
+    return r
+  })
+
   // A resume typed by the person claims its role= for a session with none.
   on('command.run', { command: 'ctx-guard:resume' }, async ($, e, next) => {
     if (!mod.commandOwned || !active() || e.origin.kind !== 'composer') return next(e)
@@ -1947,7 +2176,15 @@ export const register: Register = (on, options) => {
   // cannot read the figures blocks nothing (fail open).
   on('tool.call', async ($, e, next) => {
     const eff = mod.eff
-    if (!active() || !eff || !eff.blocking || e.agentId !== undefined || mod.role.role === null) return next(e)
+    if (!active() || !eff || !eff.blocking || mod.role.role === null) return next(e)
+    // A subagent past its stop budget: every call refused until its turn ends, and nothing else of the main loop's applies.
+    if (e.agentId !== undefined) {
+      const t = mod.agents.get(e.agentId)
+      const stop = budgetsOn() && t ? stopDeny(t, budgetFor(eff.config, t.identity)) : null
+      if (stop === null || !t) return next(e)
+      if (await paused($, await $.clock.now())) return next(e)
+      return { deny: subagentDenyReason({ type: identityType(t.identity) ?? '*', tokens: t.tokens, warn: null, stop }) }
+    }
     const tool = String(e.tool)
     const triggers = roleTriggers()
     if (!triggers.some(t => t.do.some(a => typeof a === 'object' && a.deny.includes(tool)))) return next(e)

@@ -65,8 +65,13 @@ export type RoleSpec = {
   compact: { instructions: string | null }
 }
 
-// Token budgets; null leaves that step out.
-export type SubagentBudget = { warn: number | null; stop: number | null; message: string | null }
+// One `subagents` entry: token budgets, "off" for no such step, null for
+// unset (a type then inherits the "*" entry's value).
+export type SubagentBudget = { warn: number | 'off' | null; stop: number | 'off' | null; message: string | null }
+
+// A type's entry merged over "*": what a subagent runs under. `type` is the
+// entry that matched ("*" when the type has none); a null step is no step.
+export type Budget = { type: string; warn: number | null; stop: number | null; message: string | null }
 
 export type Config = {
   version: 1
@@ -210,6 +215,19 @@ export type Work = {
   background: BackgroundTask[] | null
 }
 
+// How an agent was started: a plain subagent (a workflow's included), a fork
+// of its parent, or a teammate. Forks and teammates get a budget only from an
+// entry that names them.
+export type AgentKind = 'agent' | 'fork' | 'teammate'
+
+// An agent as `agent.spawn` started it: its type and kind, and when.
+export type SpawnedAgent = { type: string; kind: AgentKind; at: number }
+
+// A subagent past a budget step, kept across reloads so a stop's deny is not
+// lifted by one: its type and kind, its fill and the step and budget at that
+// time, and when it was last written.
+export type SubagentMark = { type: string; kind: AgentKind; tokens: number; step: 'warn' | 'stop'; warn: number | null; stop: number | null; at: number }
+
 // The own restart stamp while a restart has written it but not yet reached
 // /clear: where, what it replaced, and its own value, so a session start after
 // a reload in between puts the old one back instead of holding peers off.
@@ -231,6 +249,10 @@ declare module 'claude-code' {
       lastVerdict: LastVerdict | null
       lease: LeaseState | null
       work: Work | null
+      // Subagents past their warn or stop budget, by agent id; dropped at their turn.complete.
+      subagents: { [agentId: string]: SubagentMark } | null
+      // Agents started through agent.spawn, by id: only these (and ones `$.agent.list` names) are budgeted.
+      spawned: { [agentId: string]: SpawnedAgent } | null
       stamp: HeldStamp | null
       activity: Activity | null
     }

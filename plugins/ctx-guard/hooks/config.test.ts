@@ -399,8 +399,46 @@ describe('validation', () => {
   test('subagent budgets', () => {
     expect(errorsOf({ subagents: { Explore: { warn: '20%' } } })[0]).toContain('subagents.Explore.warn: expected tokens')
     expect(errorsOf({ subagents: { Explore: { warn: '200k', stop: '100k' } } })[0]).toContain('warn (200000) must be below stop (100000)')
-    expect(errorsOf({ subagents: { Explore: {} } })[0]).toContain('subagents.Explore: needs warn, stop or both')
+    expect(errorsOf({ subagents: { Explore: {} } })[0]).toContain('subagents.Explore: needs warn, stop or message')
     expect(errorsOf({ subagents: { Explore: 5 } })[0]).toContain('subagents.Explore: expected {"warn"')
+    expect(errorsOf({ subagents: { Explore: { stop: 'never' } } })[0]).toContain('subagents.Explore.stop: expected tokens ("120k") or "off"')
+    // The check sees what a type inherits from "*".
+    expect(errorsOf({ subagents: { '*': { warn: '120k' }, Explore: { stop: '100k' } } })[0]).toContain(
+      'subagents.Explore: warn (120000 from "*") must be below stop (100000)',
+    )
+    expect(ok({ subagents: { '*': { warn: '120k' }, Explore: { warn: 'off', stop: '100k' } } }).subagents.Explore?.warn).toBe('off')
+  })
+
+  test('a type merges field by field over "*"; "off" drops a step, an unset or null one inherits', () => {
+    const c = ok({
+      subagents: {
+        '*': { warn: '120k', stop: '170k', message: 'star' },
+        Explore: { stop: '150k', message: 'mine' },
+        Plan: { warn: 'off' },
+        quiet: { warn: 'off', stop: 'off' },
+        nulls: { warn: null, stop: '160k' },
+      },
+    })
+    expect(c.subagents.Plan).toEqual({ warn: 'off', stop: null, message: null })
+    expect(subagentBudget(c, 'Explore')).toEqual({ type: 'Explore', warn: 120_000, stop: 150_000, message: 'mine' })
+    expect(subagentBudget(c, 'Plan')).toEqual({ type: 'Plan', warn: null, stop: 170_000, message: 'star' })
+    expect(subagentBudget(c, 'quiet')).toBeNull()
+    expect(subagentBudget(c, 'nulls')).toEqual({ type: 'nulls', warn: 120_000, stop: 160_000, message: 'star' })
+    // An unknown type, or none known, runs under "*".
+    expect(subagentBudget(c, 'general-purpose')).toEqual({ type: '*', warn: 120_000, stop: 170_000, message: 'star' })
+    expect(subagentBudget(c, null)).toEqual(subagentBudget(c, '*'))
+    expect(subagentBudget(ok({ subagents: { Explore: { stop: '10k' } } }), 'general-purpose')).toBeNull()
+    // A merge the validation never saw: a warn at or past the stop is dropped.
+    const odd = { ...c, subagents: { '*': { warn: 200_000, stop: null, message: null }, Explore: { warn: null, stop: 150_000, message: null } } }
+    expect(subagentBudget(odd as Config, 'Explore')).toEqual({ type: 'Explore', warn: null, stop: 150_000, message: null })
+  })
+
+  test('a local "off" turns off a team step; a local null brings back the "*" value', () => {
+    const team = file(TEAM, { subagents: { '*': { warn: '100k', stop: '200k' }, Explore: { warn: '50k', stop: '150k' } } })
+    const local = file(LOCAL, { subagents: { Explore: { warn: null, stop: 'off' } } })
+    const e = effectiveConfig({ switches: DEFAULT_SWITCHES, files: [team, local], lastGood: null })
+    expect(e.errors).toEqual([])
+    expect(subagentBudget(e.config, 'Explore')).toEqual({ type: 'Explore', warn: 100_000, stop: null, message: null })
   })
 
   test('reserved names are refused as roles and subagent types', () => {

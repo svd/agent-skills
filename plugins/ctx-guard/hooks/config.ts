@@ -2,6 +2,7 @@
 // effective-config fallback rule and the trust hash. Pure: no `$`, never throws.
 import type {
   Action,
+  Budget,
   Config,
   ConfigSource,
   ConfigState,
@@ -199,9 +200,27 @@ export function roleSpec(config: Config, name: string): RoleSpec | null {
   return own(config.roles, name)
 }
 
-/** A subagent type's own budget, or null. */
-export function subagentBudget(config: Config, type: string): SubagentBudget | null {
-  return own(config.subagents, type)
+/** A subagent type's own entry merged field by field over "*": unset inherits, "off" has no such step. */
+function resolveBudget(map: Record<string, SubagentBudget>, type: string): Budget | null {
+  const star = own(map, '*')
+  const mine = type === '*' ? null : own(map, type)
+  if (!star && !mine) return null
+  const pick = (k: 'warn' | 'stop'): number | null => {
+    const v = mine?.[k] ?? star?.[k] ?? null
+    return v === 'off' ? null : v
+  }
+  return { type: mine ? type : '*', warn: pick('warn'), stop: pick('stop'), message: mine?.message ?? star?.message ?? null }
+}
+
+/**
+ * The budget a subagent of `type` runs under (an unknown type or none, "*"),
+ * or null when no step applies.
+ */
+export function subagentBudget(config: Config, type: string | null): Budget | null {
+  const b = resolveBudget(config.subagents, type ?? '*')
+  if (!b || (b.warn === null && b.stop === null)) return null
+  // A warn at or past the stop says nothing the stop note does not (a merge the validation never saw).
+  return b.warn !== null && b.stop !== null && b.warn >= b.stop ? { ...b, warn: null } : b
 }
 
 export function mergeLayers(...layers: unknown[]): unknown {
@@ -531,6 +550,16 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
   }
 }
 
+// A budget step: tokens, or "off" for none (null, as everywhere, leaves the key unset: the "*" value applies).
+function budgetAt(ctx: Ctx, path: string, v: unknown): number | 'off' | null {
+  if (v === undefined) return null
+  if (v === 'off') return 'off'
+  // Tokens only: a subagent's model and window may differ from the main loop's.
+  const q = parseQuantity(v, ['tokens'], 'tokens')
+  if (!q) err(ctx, path, `expected tokens ("120k") or "off", got ${shown(v)}`)
+  return q ? q.value : null
+}
+
 function normalizeSubagents(ctx: Ctx, path: string, v: unknown): Record<string, SubagentBudget> {
   const o = objAt(ctx, path, v)
   const out = dict<SubagentBudget>()
@@ -546,20 +575,24 @@ function normalizeSubagents(ctx: Ctx, path: string, v: unknown): Record<string, 
     }
     checkKeys(ctx, p, raw, ['warn', 'stop', 'message'])
     const before = ctx.errors.length
-    // Tokens only: a subagent's model and window may differ from the main loop's.
-    const warn = raw.warn === undefined ? null : qtyAt(ctx, join(p, 'warn'), raw.warn, ['tokens'], 'tokens')
-    const stop = raw.stop === undefined ? null : qtyAt(ctx, join(p, 'stop'), raw.stop, ['tokens'], 'tokens')
+    const warn = budgetAt(ctx, join(p, 'warn'), raw.warn)
+    const stop = budgetAt(ctx, join(p, 'stop'), raw.stop)
     const message = textAt(ctx, join(p, 'message'), raw.message, null)
     if (ctx.errors.length > before) continue
-    if (!warn && !stop) {
-      err(ctx, p, 'needs warn, stop or both')
+    if (warn === null && stop === null && message === null) {
+      err(ctx, p, 'needs warn, stop or message')
       continue
     }
-    if (warn && stop && warn.value >= stop.value) {
-      err(ctx, p, `warn (${warn.value}) must be below stop (${stop.value})`)
-      continue
+    out[type] = { warn, stop, message }
+  }
+  // Checked once merged with "*", since a type inherits what it leaves unset.
+  for (const type of Object.keys(out)) {
+    const b = resolveBudget(out, type)
+    if (b?.warn != null && b.stop != null && b.warn >= b.stop) {
+      const from = (k: 'warn' | 'stop'): string => (type !== '*' && out[type]?.[k] === null ? ' from "*"' : '')
+      err(ctx, join(path, type), `warn (${b.warn}${from('warn')}) must be below stop (${b.stop}${from('stop')})`)
+      delete out[type]
     }
-    out[type] = { warn: warn?.value ?? null, stop: stop?.value ?? null, message }
   }
   return out
 }

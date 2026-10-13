@@ -1,13 +1,14 @@
 // ctx-guard's `/ctx-guard` command and start-up checks: argument parsing, the
 // pause, `init` starters and .gitignore lines, the report text, the engine
 // version gate and the command-collision check. Pure: no `$`, never throws.
-import type { Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger } from '../types'
+import type { Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger } from '../types'
 import { parseQuantity } from './config'
 import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
 import type { RoleResolution } from './roles'
 import { METRIC_ORDER, contextPercent } from './triggers'
 import type { DenyEntry, Metrics } from './triggers'
 import type { CheckLine } from './restart'
+import { shortId } from './subagents'
 
 export const COMMAND = 'ctx-guard'
 // The first engine with every event and `$` call ctx-guard uses.
@@ -228,6 +229,27 @@ export type ReportInput = {
   lastClearAt: number | null
   // The restart guard's state; absent leaves its lines out.
   restart?: RestartReport
+  // The subagent budgets and the agents followed; absent leaves the table out.
+  subagents?: SubagentReport
+}
+
+export type SubagentRow = {
+  id: string
+  type: string | null
+  tokens: number
+  warn: number | null
+  stop: number | null
+  state: 'under' | 'warned' | 'stopped'
+}
+
+export type SubagentReport = {
+  // Why no budget applies now (no role, none configured); null when they do.
+  off: string | null
+  // Why a stopped agent's tool calls go through anyway (blocking off, a pause); null when they are refused.
+  noDeny: string | null
+  // Each configured type merged over "*"; null when it has no step at all.
+  budgets: readonly { type: string; budget: Budget | null }[]
+  rows: readonly SubagentRow[]
 }
 
 export type RestartReport = {
@@ -326,7 +348,36 @@ export function reportText(r: ReportInput): string {
   lines.push(`marks: ${marks.length ? marks.map(([id, mk]) => `${id}${mk.step ? `@${mk.step}` : ''} (${ago(r.now - mk.at)})`).join(', ') : 'none'}`)
   lines.push(`blocks: ${r.denies.length ? r.denies.map(d => `${d.tool} (${d.triggerId})`).join(', ') : 'none'}`)
   if (r.restart) lines.push(...restartLines(r.restart, r.now))
-  const budgets = Object.keys(c.subagents).sort()
-  lines.push(`subagent budgets: ${budgets.length ? budgets.join(', ') : 'none'}`)
+  if (r.subagents) lines.push(...subagentLines(r.subagents))
+  else {
+    const budgets = Object.keys(c.subagents).sort()
+    lines.push(`subagent budgets: ${budgets.length ? budgets.join(', ') : 'none'}`)
+  }
   return lines.join('\n')
+}
+
+const tokensOr = (v: number | null): string => (v === null ? '-' : humanTokens(v))
+
+function budgetText({ type, budget: b }: { type: string; budget: Budget | null }): string {
+  if (!b) return `${type} off`
+  const steps = [b.warn === null ? null : `warn ${humanTokens(b.warn)}`, b.stop === null ? null : `stop ${humanTokens(b.stop)}`].filter(Boolean)
+  return `${type} ${steps.join(', ')}${b.message === null ? '' : ', own stop message'}`
+}
+
+function subagentLines(s: SubagentReport): string[] {
+  const lines = [`subagent budgets: ${s.budgets.length ? s.budgets.map(budgetText).join('; ') : 'none'}${s.off ? ` (${s.off})` : ''}`]
+  if (!s.rows.length) return [...lines, 'subagents: none followed']
+  lines.push('subagents:')
+  const cells = s.rows.map(row => [
+    shortId(row.id),
+    row.type ?? 'unknown',
+    humanTokens(row.tokens),
+    tokensOr(row.warn),
+    tokensOr(row.stop),
+    row.state === 'stopped' ? `stopped (${s.noDeny ? `tool calls allowed: ${s.noDeny}` : 'tool calls refused'})` : row.state,
+  ])
+  const table = [['id', 'type', 'fill', 'warn', 'stop', 'state'], ...cells]
+  const widths = table[0]?.map((_, i) => Math.max(...table.map(r => (r[i] ?? '').length))) ?? []
+  for (const r of table) lines.push(`  ${r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(widths[i] ?? 0))).join('  ')}`)
+  return lines
 }
