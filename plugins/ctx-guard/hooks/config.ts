@@ -875,15 +875,18 @@ export function canonicalJson(v: unknown): string {
   return JSON.stringify(v) ?? 'null'
 }
 
-/** The fields that can run code or prompts unattended, per role. */
+/**
+ * The fields that can run code or prompts unattended, or steer where and when
+ * that happens, per role; `*` holds the config-wide ones.
+ */
 export function trustMaterial(config: Config): unknown {
-  const out: Obj = {}
+  const out: Obj = { '*': { readyToken: config.readyToken, stateDir: config.stateDir } }
   for (const name of Object.keys(config.roles).sort()) {
     const spec = roleSpec(config, name)
     if (!spec) continue
-    const { mode, via, command, prompt, readyChecks } = spec.restart
+    const { mode, via, command, prompt, readyChecks, peers, peerGap } = spec.restart
     out[name] = {
-      restart: { mode, via, command, prompt, readyChecks },
+      restart: { mode, via, command, prompt, readyChecks, peers, peerGap },
       // The handoff path and style land in the resume command line.
       handoff: { path: spec.handoff.path, style: spec.handoff.style },
       compact: spec.compact.instructions,
@@ -893,9 +896,69 @@ export function trustMaterial(config: Config): unknown {
   return out
 }
 
-/** SHA-256 (hex) over the canonical trust material. */
-export function trustHash(config: Config): string {
-  return sha256Hex(canonicalJson(trustMaterial(config)))
+// Ready-check scripts under the root, by their argv[0], to a hash of their content.
+export type ScriptHashes = Record<string, string>
+
+/**
+ * SHA-256 (hex) over the canonical trust material and, when given, the
+ * content hashes of the ready-check scripts, so editing a script withdraws trust.
+ */
+export function trustHash(config: Config, scripts: ScriptHashes = {}): string {
+  const material = trustMaterial(config)
+  return sha256Hex(canonicalJson(Object.keys(scripts).length ? { material, scripts } : material))
+}
+
+/**
+ * Every distinct argument of every ready check (the command and its args):
+ * each one that turns out to be a file under the root is hashed, so
+ * `["bash", "scripts/check.sh"]` covers the script as `["./check.sh"]` does.
+ */
+export function checkScripts(config: Config): string[] {
+  const out = new Set<string>()
+  for (const name of Object.keys(config.roles)) {
+    for (const c of roleSpec(config, name)?.restart.readyChecks ?? []) for (const arg of c.run) if (arg && !arg.startsWith('-')) out.add(arg)
+  }
+  return [...out].sort()
+}
+
+/** One hash per `<role>.<field>` of the trust material (and `script:<path>`), so a report can name what changed. */
+export function trustFields(config: Config, scripts: ScriptHashes = {}): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const k of Object.keys(scripts).sort()) out[`script:${k}`] = scripts[k] as string
+  const material = trustMaterial(config) as Record<string, Record<string, unknown>>
+  for (const role of Object.keys(material).sort()) {
+    const fields = material[role] ?? {}
+    for (const k of Object.keys(fields).sort()) out[`${role}.${k}`] = sha256Hex(canonicalJson(fields[k]))
+  }
+  return out
+}
+
+// What `/ctx-guard trust` keeps in `$.store`, keyed by the repo root.
+export type TrustRecord = { hash: string; fields: Record<string, string>; at: number }
+
+export function trustKey(root: string): string {
+  return `trust:${root.replace(/[/\\]+$/, '')}`
+}
+
+export function asTrustRecord(v: unknown): TrustRecord | null {
+  if (!isObj(v) || typeof v.hash !== 'string' || !isObj(v.fields) || typeof v.at !== 'number') return null
+  const fields: Record<string, string> = {}
+  for (const [k, h] of Object.entries(v.fields)) if (typeof h === 'string') fields[k] = h
+  return { hash: v.hash, fields, at: v.at }
+}
+
+export type TrustState = { trusted: boolean; changed: string[]; record: TrustRecord | null }
+
+/**
+ * Trusted iff the approved hash is the current one. Otherwise `changed` names
+ * the fields that differ from the approval (all of them when none was given).
+ */
+export function trustState(config: Config, record: TrustRecord | null, scripts: ScriptHashes = {}): TrustState {
+  if (record && record.hash === trustHash(config, scripts)) return { trusted: true, changed: [], record }
+  const now = trustFields(config, scripts)
+  const keys = [...new Set([...Object.keys(now), ...Object.keys(record?.fields ?? {})])].sort()
+  const changed = record ? keys.filter(k => now[k] !== record.fields[k]) : keys
+  return { trusted: false, changed, record }
 }
 
 const K = [

@@ -83,6 +83,11 @@ function resetsText(limit: LimitInfo | null, now: number): string {
   return ms === null ? UNKNOWN : humanDuration(ms)
 }
 
+/** The session-handoff project slug ctx-guard reads a role's handoffs under. */
+export function sessionHandoffSlug(role: string): string {
+  return `ctx-guard-${role}`
+}
+
 /** The role's handoff path with `{role}` filled in. */
 export function handoffPathFor(spec: RoleSpec, role: string): string {
   return spec.handoff.path.replace(/\{role\}/g, role)
@@ -171,14 +176,22 @@ export function effectiveMode(spec: RoleSpec, gates: RestartGates): RestartMode 
 }
 
 /** What a note ends with by restart mode; empty with mode off. */
-export function restartTail(spec: RoleSpec, handoffPath: string, readyToken: string, mode: RestartMode = spec.restart.mode): string {
+export function restartTail(
+  spec: RoleSpec,
+  handoffPath: string,
+  readyToken: string,
+  mode: RestartMode = spec.restart.mode,
+  // The session-handoff project slug ctx-guard looks under (the role).
+  slug?: string,
+): string {
   const { via } = spec.restart
   if (mode === 'off') return ''
   const instructions = spec.handoff.instructions
   let write: string
   if (via === 'compact') write = ''
   else if (spec.handoff.style === 'session-handoff') {
-    write = ` write a handoff with the session-handoff skill${instructions ? `: ${sentence(instructions)}` : '.'}`
+    const where = slug ? ` Use the project slug \`${slug}\` and run its handoff tool from the project root.` : ''
+    write = ` write a handoff with the session-handoff skill${instructions ? `: ${sentence(instructions)}` : '.'}${where}`
   } else write = ` rewrite \`${handoffPath}\`${instructions ? `: ${sentence(instructions)}` : '.'}`
   const after = via === 'compact' ? 'ready for /compact' : 'ready for /clear'
   if (mode === 'manual') return write ? `${SAFE_POINT}${write} Then tell the operator '${after}'.` : `${SAFE_POINT} tell the operator '${after}'.`
@@ -232,7 +245,7 @@ export function collapseNotes(fires: readonly Fire[], opts: NoteOptions): string
   const parts = [...byFigure.values()].map(f => head(f.vars))
   if (top) parts.push(levelText(top.trigger.level, top.vars.metric))
   for (const f of fires) if (f.trigger.message !== null) parts.push(unprefixed(render(f.trigger.message, tvOf(f)).trim()))
-  parts.push(restartTail(spec, handoffPath, readyToken, opts.mode ?? spec.restart.mode))
+  parts.push(restartTail(spec, handoffPath, readyToken, opts.mode ?? spec.restart.mode, sessionHandoffSlug(role)))
   const suffixVars = tvOf(top ?? (fires[0] as Fire))
   if (spec.notes.suffix) parts.push(render(spec.notes.suffix, suffixVars).trim())
   return `${PREFIX} ${parts.filter(Boolean).join(' ')}`

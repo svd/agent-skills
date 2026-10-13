@@ -132,18 +132,33 @@ export type ConfigState = {
   loadedAt: number
 }
 
+// A restart under way: written before /clear (`step: 'clear'`), moved to
+// `resume` once it ran and to `sent` just before the resume command is run,
+// cleared after it. A reload in between finishes a `clear`/`resume` one at the
+// next session start; a `sent` one is only flagged, never sent twice.
 export type PendingResume = {
   role: string
   handoff: string
   command: string
   prompt: string | null
-  step: 'clear' | 'resume'
+  step: 'clear' | 'resume' | 'sent'
   at: number
 }
 
 export type Pause = { until: number }
 
+// The last ready-token verdict: a refusal code, or `ok` for a restart that went ahead.
 export type LastVerdict = { code: string; text: string; at: number }
+
+// This session's role lease: the id it writes into owner files and restart
+// stamps (kept across /clear, which changes the session id, and reloads), the
+// role it holds, its last heartbeat, and who else held the role at the last look.
+export type LeaseState = {
+  id: string
+  role: string | null
+  beatAt: number | null
+  sharedWith: string | null
+}
 
 // The newest main-loop context fill and when it was read; tokens null is unknown (after /clear).
 export type MainReading = { tokens: number | null; at: number }
@@ -159,6 +174,21 @@ export type Activity = {
   shown: string[]
 }
 
+export type BackgroundTask = { type: string; description: string }
+
+// Work the restart guard must see finished, kept across reloads: subagent ids
+// seen stepping (and when) with no turn.complete since, and what the last
+// Stop listed as in flight (null until a Stop reported a list).
+export type Work = {
+  steps: { [agentId: string]: number }
+  background: BackgroundTask[] | null
+}
+
+// The own restart stamp while a restart has written it but not yet reached
+// /clear: where, what it replaced, and its own value, so a session start after
+// a reload in between puts the old one back instead of holding peers off.
+export type HeldStamp = { path: string; previous: string | null; at: number; owner: string; peerGap: number }
+
 declare module 'claude-code' {
   interface PluginState {
     'ctx-guard': {
@@ -171,6 +201,9 @@ declare module 'claude-code' {
       // When this session last cleared: a handoff must be newer to count.
       lastClearAt: number | null
       lastVerdict: LastVerdict | null
+      lease: LeaseState | null
+      work: Work | null
+      stamp: HeldStamp | null
       activity: Activity | null
     }
   }

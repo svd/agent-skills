@@ -35,3 +35,40 @@ All notable changes to the `ctx-guard` plugin are documented here.
   only when there is none and adds the local config and state folder to `.gitignore`.
 - Start-up checks: a toast and no hooks when another plugin owns `/ctx-guard`, and a toast on
   Claude Code older than 2.1.293.
+- Guarded restart on the ready token: when the main loop's answer ends on a line holding only
+  `readyToken` and the role's `restart.mode` is `auto`, a fail-closed verdict runs, refusing in
+  order with `untrusted`, `already-busy`, `no-restart-command`, `agents-running` (listed agents,
+  or an agent seen stepping with no end, which covers workflow agents), `background-tasks` (the
+  last Stop's list; none reported counts as unknown and refuses), `role-shared`, `no-handoff`, `handoff-stale`, `stamp-unreadable`,
+  `peer-restarting`, `ready-check-failed`, `race-lost` or `error`. A refusal toasts and notes
+  why; nothing is cleared. Just before its stamp and again just before `/clear` it re-checks that no turn,
+  agent or background task started since the token. On success it writes `pendingResume`, runs
+  `/clear`, then `/<restart.command> role=<role> handoff=<path> <prompt>`. A reload in between
+  finishes the resume at the next session start (dropped and flagged once it is over 5 minutes
+  old); a reload while the resume is being sent only flags it, so it never runs twice; a resume
+  that fails shows "restart failed — type /…" on the band. Subagent steps and the last Stop's
+  background list are kept across reloads.
+- Restart stamps `{stateDir}/{role}.restart` with a peer race: after writing its own stamp a
+  session waits 1.5 s and reads its peers' again; the oldest young stamp wins, and a loser puts
+  its stamp back, as does the next session start when a reload cut a restart off before
+  `/clear`. A `/clear` from such a restart that lands late flags the band.
+- `/ctx-guard:resume` command: reads the handoff, checks its claims against the repository, then
+  carries out its Next action or reports the mismatch. Typed by the person in a session with no
+  role, its `role=` claims that role; a different role already held is refused.
+- `handoff.style: "session-handoff"`: the handoff is the newest non-empty `.md` under
+  `.claude/session-handoffs/ctx-guard-<role>/`, and notes name the skill, that project slug and
+  that its tool runs from the project root.
+- Role lease `{stateDir}/{role}.owner`: a heartbeat on measure and every 5 minutes, one warning toast when another
+  live session holds the role, released when the session ends (not on `/clear`).
+- Per-repo trust: `/ctx-guard trust` (typed by the person) re-reads the config, approves the
+  restart (mode, via, command, prompt, peers, peerGap), ready-check, handoff and compact
+  settings plus `readyToken` and `stateDir`, and prints each as approved; every ready-check
+  argument that is a file under the project root is hashed by content and checked again before
+  each restart. Any change to them withdraws the approval. Untrusted, notes and blocks still work, but
+  nothing clears, compacts or runs a ready check, and notes ask for the operator instead.
+- Path confinement through the file system: a state folder, handoff, stamp or owner file that
+  resolves outside the project root (a symlink, or a missing file under a linked folder) refuses
+  the restart with `error`.
+- `/ctx-guard check` (typed by the person): a dry run of every restart check (ready checks run when trusted), with no
+  stamp written, no race and no clear. The report adds trust (and which fields need approval),
+  the last verdict, the handoff's age, the lease owner and a pending resume.

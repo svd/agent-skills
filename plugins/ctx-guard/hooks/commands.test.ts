@@ -36,7 +36,10 @@ describe('parseCommand', () => {
   test('anything else is usage with the reason', () => {
     expect(parseCommand('reload now')).toEqual({ kind: 'usage', error: 'reload takes no arguments' })
     expect(parseCommand('init team')).toEqual({ kind: 'usage', error: 'unknown preset "team"; use solo or peers' })
-    expect(parseCommand('check')).toEqual({ kind: 'usage', error: 'unknown subcommand "check"' })
+    expect(parseCommand('frobnicate')).toEqual({ kind: 'usage', error: 'unknown subcommand "frobnicate"' })
+    expect(parseCommand('check')).toEqual({ kind: 'check' })
+    expect(parseCommand('TRUST')).toEqual({ kind: 'trust' })
+    expect(parseCommand('trust me')).toEqual({ kind: 'usage', error: 'trust takes no arguments' })
   })
 })
 

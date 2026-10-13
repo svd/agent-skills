@@ -1,24 +1,27 @@
 // ctx-guard's `/ctx-guard` command and start-up checks: argument parsing, the
 // pause, `init` starters and .gitignore lines, the report text, the engine
 // version gate and the command-collision check. Pure: no `$`, never throws.
-import type { Config, ConfigState, Display, Marks, Pause, RestartMode, Trigger } from '../types'
+import type { Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger } from '../types'
 import { parseQuantity } from './config'
 import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
 import type { RoleResolution } from './roles'
 import { METRIC_ORDER, contextPercent } from './triggers'
 import type { DenyEntry, Metrics } from './triggers'
+import type { CheckLine } from './restart'
 
 export const COMMAND = 'ctx-guard'
 // The first engine with every event and `$` call ctx-guard uses.
 export const MIN_VERSION = '2.1.293'
 export const DEFAULT_PAUSE_MS = 30 * 60 * 1000
 
-export const ARGUMENT_HINT = '[role <name|none> | reload | pause [30m|off] | init [solo|peers]]'
+export const ARGUMENT_HINT = '[role <name|none> | check | trust | reload | pause [30m|off] | init [solo|peers]]'
 
 export const USAGE = [
   'Usage:',
   '  /ctx-guard                   report: role, config, metrics, marks, blocks',
   '  /ctx-guard role <name|none>  set this session\'s role (typed by you only)',
+  '  /ctx-guard check             dry-run the restart guard: each check and its verdict',
+  '  /ctx-guard trust             approve this repo\'s restart, ready-check and compact settings (typed by you only)',
   '  /ctx-guard reload            re-read the config files',
   '  /ctx-guard pause [30m|off]   lift tool blocks and automatic actions for a while; notes go on',
   '  /ctx-guard init [solo|peers] write a starter config if there is none, and .gitignore lines',
@@ -33,6 +36,8 @@ export type Subcommand =
   | { kind: 'report' }
   | { kind: 'role'; arg: string }
   | { kind: 'reload' }
+  | { kind: 'check' }
+  | { kind: 'trust' }
   | { kind: 'pause'; arg: string }
   | { kind: 'init'; preset: Preset }
   | { kind: 'usage'; error: string | null }
@@ -46,7 +51,11 @@ export function parseCommand(args: string): Subcommand {
     case 'role':
       return { kind: 'role', arg }
     case 'reload':
-      return arg ? { kind: 'usage', error: 'reload takes no arguments' } : { kind: 'reload' }
+    case 'check':
+    case 'trust': {
+      const kind = head.toLowerCase() as 'reload' | 'check' | 'trust'
+      return arg ? { kind: 'usage', error: `${kind} takes no arguments` } : { kind }
+    }
     case 'pause':
       return { kind: 'pause', arg }
     case 'init': {
@@ -217,6 +226,49 @@ export type ReportInput = {
   triggers: readonly Trigger[]
   denies: readonly DenyEntry[]
   lastClearAt: number | null
+  // The restart guard's state; absent leaves its lines out.
+  restart?: RestartReport
+}
+
+export type RestartReport = {
+  trusted: boolean
+  // Fields that need approval while untrusted.
+  changed: readonly string[]
+  approvedAt: number | null
+  lastVerdict: LastVerdict | null
+  // The handoff path and its mtime (null: absent); null when there is no role.
+  handoff: { path: string; mtime: number | null } | null
+  // Who holds the role lease: `this session`, another id, `free`; null with no role.
+  lease: string | null
+  pending: string | null
+}
+
+function trustLine(t: RestartReport, now: number): string {
+  if (t.trusted) return `trust: approved${t.approvedAt === null ? '' : ` ${ago(now - t.approvedAt)}`}`
+  const what = t.changed.length ? ` (needs approval: ${t.changed.join(', ')})` : ''
+  return `trust: not approved${what}; automatic clear and compact and ready checks stay off until the operator runs /ctx-guard trust`
+}
+
+function restartLines(t: RestartReport, now: number): string[] {
+  const lines = [trustLine(t, now)]
+  const v = t.lastVerdict
+  lines.push(`last verdict: ${v ? `${v.code} (${ago(now - v.at)})${v.text ? `: ${v.text}` : ''}` : 'none'}`)
+  if (t.handoff) lines.push(`handoff: ${t.handoff.path}, ${t.handoff.mtime === null ? 'absent' : `written ${ago(now - t.handoff.mtime)}`}`)
+  if (t.lease) lines.push(`lease: ${t.lease}`)
+  if (t.pending) lines.push(`pending resume: ${t.pending}`)
+  return lines
+}
+
+/** The `/ctx-guard check` answer: one line per check, then the verdict. */
+export function checkText(role: string | null, via: string | null, lines: readonly CheckLine[] | null, note: string | null): string {
+  if (role === null || via === null || lines === null) return `ctx-guard check: ${note ?? 'no role, so no restart to check'}`
+  const mark = { pass: 'ok  ', fail: 'FAIL', skip: '--  ' } as const
+  const out = [`ctx-guard check (dry run, role ${role}, via ${via}; nothing written or cleared):`]
+  for (const l of lines) out.push(`  ${mark[l.status]} ${l.code}: ${l.text}`)
+  const failed = lines.find(l => l.status === 'fail')
+  out.push(failed ? `verdict: refused (${failed.code})` : 'verdict: would restart (the race is judged at the real one)')
+  if (note) out.push(note)
+  return out.join('\n')
 }
 
 /** The `/ctx-guard` report, plain text. */
@@ -268,7 +320,7 @@ export function reportText(r: ReportInput): string {
   const marks = Object.entries(r.marks?.byId ?? {})
   lines.push(`marks: ${marks.length ? marks.map(([id, mk]) => `${id}${mk.step ? `@${mk.step}` : ''} (${ago(r.now - mk.at)})`).join(', ') : 'none'}`)
   lines.push(`blocks: ${r.denies.length ? r.denies.map(d => `${d.tool} (${d.triggerId})`).join(', ') : 'none'}`)
-  lines.push('trust: not checked in this version; automatic clear and compact stay manual')
+  if (r.restart) lines.push(...restartLines(r.restart, r.now))
   const budgets = Object.keys(c.subagents).sort()
   lines.push(`subagent budgets: ${budgets.length ? budgets.join(', ') : 'none'}`)
   return lines.join('\n')

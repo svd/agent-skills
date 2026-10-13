@@ -21,7 +21,12 @@ import {
   roleSpec,
   sha256Hex,
   subagentBudget,
+  asTrustRecord,
+  checkScripts,
+  trustFields,
   trustHash,
+  trustKey,
+  trustState,
   validate,
   zeroConfigTriggers,
 } from './config'
@@ -733,10 +738,8 @@ describe('trust hash', () => {
     for (const over of [
       { roles: { lead: { notes: { suffix: 'other' } } } },
       { roles: { lead: { handoff: { instructions: 'other' } } } },
-      { roles: { lead: { restart: { peers: ['c'], peerGap: '30m' } } } },
       { roles: { lead: { description: 'new' } } },
       { subagents: { '*': { stop: '50k' } } },
-      { readyToken: 'GO' },
       {
         roles: {
           lead: {
@@ -764,6 +767,9 @@ describe('trust hash', () => {
       { roles: { lead: { handoff: { path: 'elsewhere/{role}.md' } } } },
       { roles: { lead: { handoff: { style: 'session-handoff' } } } },
       { stateDir: 'state' },
+      { readyToken: 'GO' },
+      { roles: { lead: { restart: { peers: ['c'] } } } },
+      { roles: { lead: { restart: { peerGap: '30m' } } } },
       {
         roles: {
           lead: {
@@ -780,6 +786,32 @@ describe('trust hash', () => {
     ]) {
       expect(hashOf(over)).not.toBe(h0)
     }
+  })
+
+  test('trust state: approved hash trusts; a change names its field; none approved lists all', () => {
+    const c0 = ok(mergeLayers(base, {}))
+    const record = { hash: trustHash(c0), fields: trustFields(c0), at: 5 }
+    expect(trustState(c0, record)).toEqual({ trusted: true, changed: [], record })
+    const c1 = ok(mergeLayers(base, { roles: { lead: { restart: { readyChecks: [{ run: ['make', 'evil'] }] } } } }))
+    expect(trustState(c1, record)).toEqual({ trusted: false, changed: ['lead.restart'], record })
+    const c2 = ok(mergeLayers(base, { roles: { other: { restart: { mode: 'auto' } } } }))
+    expect(trustState(c2, record).changed).toEqual(['other.compact', 'other.compactTriggers', 'other.handoff', 'other.restart'])
+    const c3 = ok(mergeLayers(base, { readyToken: 'GO' }))
+    expect(trustState(c3, record).changed).toEqual(['*.readyToken'])
+    // A script's content is part of the approval.
+    const withScript = { hash: trustHash(c0, { './ready.sh': 'aa' }), fields: trustFields(c0, { './ready.sh': 'aa' }), at: 5 }
+    expect(trustState(c0, withScript, { './ready.sh': 'aa' }).trusted).toBe(true)
+    expect(trustState(c0, withScript, { './ready.sh': 'bb' }).changed).toEqual(['script:./ready.sh'])
+    expect(checkScripts(ok(mergeLayers(base, { roles: { lead: { restart: { readyChecks: [{ run: ['./a.sh'] }, { run: ['bash', 'scripts/b.sh', '--fast'] }] } } } })))).toEqual(['./a.sh', 'bash', 'scripts/b.sh'])
+    expect(trustState(c0, null)).toEqual({ trusted: false, changed: Object.keys(trustFields(c0)).sort(), record: null })
+    expect(Object.keys(trustFields(c0))).toContain('lead.handoff')
+  })
+
+  test('trust records are checked and keyed by root', () => {
+    expect(trustKey('/repo/')).toBe('trust:/repo')
+    expect(asTrustRecord({ hash: 'h', fields: { a: 'x', b: 3 }, at: 1 })).toEqual({ hash: 'h', fields: { a: 'x' }, at: 1 })
+    expect(asTrustRecord({ hash: 1 })).toBeNull()
+    expect(asTrustRecord(undefined)).toBeNull()
   })
 })
 
