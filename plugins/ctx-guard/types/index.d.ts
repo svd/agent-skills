@@ -133,6 +133,8 @@ export type Band = {
   percent: number | null
   window: number | null
   limits: BandLimit[]
+  // Band probe segments in config order, as last drawn.
+  probes: BandProbe[]
   subagentsOver: number
   denies: string[]
   restartFailed: string | null

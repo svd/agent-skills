@@ -28,7 +28,7 @@ function limitSegment(l: BandLimit, now: number): Segment {
 }
 
 /**
- * `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · sub 1! · deny Agent`;
+ * `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · step 03 · sub 1! · deny Agent`;
  * figures that are unknown are left out, so a fresh session shows little.
  */
 export function bandSegments(b: Band): Segment[] {
@@ -41,6 +41,8 @@ export function bandSegments(b: Band): Segment[] {
     out.push(color ? { text, color } : { text })
   }
   for (const l of b.limits) out.push(limitSegment(l, b.now))
+  // A band another version stored may have none.
+  for (const p of b.probes ?? []) out.push(p.color ? { text: p.text, color: p.color } : { text: p.text })
   if (b.subagentsOver > 0) out.push({ text: `sub ${b.subagentsOver}!`, color: 'warning' })
   if (b.denies.length) out.push({ text: `deny ${b.denies.join(', ')}`, color: 'error' })
   if (b.restartFailed) out.push({ text: b.restartFailed, color: 'error' })
@@ -69,6 +71,7 @@ export function bandOf(role: string | null, m: Metrics, denies: readonly DenyEnt
     percent: contextPercent(m),
     window: m.window > 0 ? m.window : null,
     limits,
+    probes: prev?.probes ?? [],
     subagentsOver: prev?.subagentsOver ?? 0,
     denies: [...new Set(denies.map(d => d.tool))],
     restartFailed: prev?.restartFailed ?? null,
