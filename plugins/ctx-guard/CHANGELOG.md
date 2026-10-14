@@ -44,7 +44,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - The band above the prompt (`lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · deny Agent`),
   or the same text on the status line on other surfaces or with `display: status`. It draws the
   band last written, never waiting on a busy session start.
-- `/ctx-guard` command: report (role and its source, config files and errors, effective config
+- `/ctx-guard` command: report (role and its source, with a claimed role's age — a claim lasts the
+  whole session, through `/clear` and a reinstall of the plugin — config files and errors, effective config
   and where its window came from, metrics, marks, live blocks), `reload`, and, typed by the
   person only, `role <name|none>` (survives a reload), `pause [30m|off]`, and
   `init [solo|peers]`, which writes a starter config

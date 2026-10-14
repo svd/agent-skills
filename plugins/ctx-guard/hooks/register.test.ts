@@ -447,7 +447,7 @@ test('a /clear that wipes $.state: the next hook writes back the role, pause, ve
   expect((await peek($)).roleClaim?.role).toBe('lead')
   const report = await ctxGuard($, '')
   expect(report).toContain('paused for')
-  expect(report).toContain('role: lead (from /ctx-guard role)')
+  expect(report).toContain('role: lead (from /ctx-guard role, set ')
   expect(report).toContain('last /clear: 0s ago')
   expect(report).toContain('lease: held by this session')
   // The marks were reset by the clear: a new crossing notes again.
@@ -733,9 +733,9 @@ test('/ctx-guard role from the composer sets the claim, which survives a reload'
   expect(w.statuses.at(-1)).toBe('reviewer · 312k (31%) · 5h 42%')
   await start($, 'vscode')
   expect((await peek($)).roleClaim?.role).toBe('reviewer')
-  expect(await ctxGuard($, '')).toContain('role: reviewer (from /ctx-guard role)')
+  expect(await ctxGuard($, '')).toContain('role: reviewer (from /ctx-guard role, set ')
   expect(await ctxGuard($, 'role none')).toContain('role is now none')
-  expect(await ctxGuard($, '')).toContain('role: none (from /ctx-guard role)')
+  expect(await ctxGuard($, '')).toContain('role: none (from /ctx-guard role, set ')
 })
 
 test('/ctx-guard role from a plugin or an unknown role changes nothing', async ($, on) => {
@@ -1644,14 +1644,14 @@ test('a typed resume claims its role for a session with none; a different held r
     $.command.run({ command: 'ctx-guard:resume', args, origin: { kind } as never, presentation: { isFullscreen: false, columns: 120 } })
   await run('role=lead handoff=.ctx-guard/lead-handoff.md Carry on.')
   expect(w.ran).toEqual(['ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md Carry on.'])
-  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume)')
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume, set ')
   const refused = await run('role=reviewer handoff=x.md')
   expect(refused.text).toContain('/ctx-guard:resume refused: this session holds role "lead"')
   expect(w.ran.length).toBe(1)
   // Not typed by the person: no claim and no refusal.
   await run('role=reviewer handoff=x.md', 'plugin')
   expect(w.ran.length).toBe(2)
-  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume)')
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume, set ')
   expect((await run('role=Bad!')).text).toContain('bad arguments')
   expect((await run('role=ghost')).text).toContain('refused')
 })
@@ -2799,7 +2799,7 @@ test('after a /clear, a $.state that stays empty: the report still has the pause
   expect(peeked.config).toBeUndefined()
   const report = await ctxGuard($, '')
   expect(report).toContain('ctx-guard: paused for')
-  expect(report).toContain('role: lead (from /ctx-guard role)')
+  expect(report).toContain('role: lead (from /ctx-guard role, set ')
   expect(report).toContain('last verdict: untrusted')
   expect(report).toContain('config: files')
   expect(report).toContain('last /clear: 0s ago')
@@ -3062,7 +3062,7 @@ test('a failed read at a session start: the retry restores the claimed role and 
   await $.turn.start({ text: 'go', turnId: 't2' })
   await clock.settle()
   expect(w.ran).toEqual(['clear', RESUME])
-  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard role)')
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard role, set ')
 })
 
 test('an idle tick right after a /clear that wiped $.state still sees the pause', { plugins: [WIPE] }, async ($, on) => {

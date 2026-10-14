@@ -213,6 +213,8 @@ export type ReportInput = {
   off: string | null
   pause: Pause | null
   role: RoleResolution
+  // When the session's role claim was made (/ctx-guard role or /ctx-guard:resume); null without one.
+  claimAt?: number | null
   configState: ConfigState | null
   config: Config
   switches: { blocking: boolean; autoActions: boolean; display: Display }
@@ -305,7 +307,10 @@ export function reportText(r: ReportInput): string {
   )
 
   const role = r.role.role
-  const from = r.role.source ? ` (from ${SOURCE_TEXT[r.role.source] ?? r.role.source})` : ''
+  // A claim lasts the whole session, /clear and plugin reloads included: its age says how old it is.
+  const at = r.role.source === 'command' || r.role.source === 'resume' ? r.claimAt : null
+  const set = typeof at === 'number' ? `, set ${ago(r.now - at)}` : ''
+  const from = r.role.source ? ` (from ${SOURCE_TEXT[r.role.source] ?? r.role.source}${set})` : ''
   lines.push(`role: ${role ?? 'none'}${from}${r.interactive ? '' : ' (non-interactive session: no role)'}`)
   if (r.role.problem) lines.push(`  problem: ${r.role.problem}`)
 

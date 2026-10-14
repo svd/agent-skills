@@ -2064,6 +2064,7 @@ async function report($: EngineInterface): Promise<string> {
     off,
     pause,
     role: mod.role,
+    claimAt: mem.roleClaim?.at ?? null,
     configState: mem.config,
     config,
     switches: { blocking: eff?.blocking ?? true, autoActions: eff?.autoActions ?? false, display: eff?.display ?? 'band' },

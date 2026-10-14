@@ -222,4 +222,29 @@ describe('report', () => {
     expect(off).toContain('blocks: none')
     expect(reportText({ ...base, off: null, pause: { until: 600_000 } })).toContain('ctx-guard: paused for 10m more')
   })
+
+  test('a claimed role shows how long ago it was set; other sources do not', () => {
+    const base: ReportInput = {
+      now: 7_200_000,
+      interactive: true,
+      off: null,
+      pause: null,
+      role: { role: 'main', source: 'command', problem: null },
+      claimAt: 0,
+      configState: null,
+      config: builtInConfig(),
+      switches: { blocking: true, autoActions: false, display: 'band' },
+      windowSource: 'model window',
+      mode: null,
+      metrics: metricsOf({}, 1_000_000, null, 7_200_000),
+      marks: null,
+      triggers: [],
+      denies: [],
+      lastClearAt: null,
+    }
+    expect(reportText(base)).toContain('role: main (from /ctx-guard role, set 2h ago)')
+    expect(reportText({ ...base, role: { role: 'main', source: 'resume', problem: null } })).toContain('role: main (from /ctx-guard:resume, set 2h ago)')
+    expect(reportText({ ...base, role: { role: 'main', source: 'repo-default', problem: null } })).toContain('role: main (from project defaultRole)\n')
+    expect(reportText({ ...base, claimAt: null })).toContain('role: main (from /ctx-guard role)\n')
+  })
 })
