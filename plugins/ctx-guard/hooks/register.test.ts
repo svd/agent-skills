@@ -3208,3 +3208,101 @@ test('a ready check under via compact gets no handoff', async ($, on) => {
   expect(env?.CTX_GUARD_HANDOFF).toBe('')
   expect(env?.CTX_GUARD_HANDOFF_MTIME_MS).toBe('')
 })
+
+const PROBE_CMD = './probe.sh'
+
+function probeConfig(probes: unknown[] = [{ id: 'run', run: [PROBE_CMD] }]) {
+  return { version: 1, roles: { lead: {} }, band: { probes } }
+}
+
+// A trusted lead on a surface with no band, so the band's text lands on the status line.
+async function probed($: Engine, on: On, w: World, config: unknown = probeConfig()): Promise<{ clock: MockClock; session: MockSession }> {
+  w.files[`${ROOT}/probe.sh`] = { text: '#!/bin/sh\necho step\n', mtimeMs: NOW }
+  writeConfig(w, config)
+  const env = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($, 'vscode')
+  expect(await ctxGuard($, 'trust')).toContain('band probe run: ["./probe.sh"]')
+  await env.clock.settle()
+  return env
+}
+
+const status = (w: World): string => [...w.statuses].reverse().find(s => s !== undefined) ?? ''
+const probeRuns = (w: World): number => w.processes.filter(p => p[0] === PROBE_CMD).length
+
+test('a band probe draws its line, with the probe environment', async ($, on) => {
+  const w = newWorld({ stdout: { [PROBE_CMD]: 'step 03 sonnet 12m\nwarning\n' } })
+  const { clock } = await probed($, on, w)
+  expect(status(w)).toContain('step 03 sonnet 12m')
+  const i = w.processes.findIndex(p => p[0] === PROBE_CMD)
+  expect(w.inits[i]?.cwd).toBe(ROOT)
+  expect(w.inits[i]?.env).toEqual({
+    CTX_GUARD_PURPOSE: 'band-probe',
+    CTX_GUARD_SCRIPT_ROLE: 'lead',
+    CTX_GUARD_ROOT: ROOT,
+    CTX_GUARD_STATE_DIR: `${ROOT}/.ctx-guard`,
+    CTX_GUARD_HANDOFF: `${ROOT}/.ctx-guard/lead-handoff.md`,
+    CTX_GUARD_HANDOFF_MTIME_MS: '',
+    CTX_GUARD_SINCE_MS: String(NOW),
+    CTX_GUARD_VIA: 'clear',
+  })
+  // The next tick redraws; empty output drops the segment; a failure shows `run ?`.
+  w.stdout[PROBE_CMD] = 'step 04\n'
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(status(w)).toContain('step 04')
+  w.stdout[PROBE_CMD] = ''
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(status(w)).not.toContain('step 0')
+  w.exitCode = 3
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(status(w)).toContain('run ?')
+})
+
+test('untrusted: a probe never runs', async ($, on) => {
+  const w = newWorld({ stdout: { [PROBE_CMD]: 'step 03\n' } })
+  writeConfig(w, probeConfig())
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($, 'vscode')
+  await clock.advance(120_000)
+  await clock.settle()
+  expect(probeRuns(w)).toBe(0)
+  expect(status(w)).not.toContain('step 03')
+})
+
+test('a hanging probe holds nothing up; its ticks are skipped', async ($, on) => {
+  const w = newWorld({ processHang: 10 * 60_000, stdout: { [PROBE_CMD]: 'slow\n' } })
+  const { clock, session } = await probed($, on, w, {
+    ...probeConfig([{ id: 'run', run: [PROBE_CMD], every: '15s', timeout: '30s' }]),
+    roles: { lead: { triggers: [{ id: 'soft', when: { context: '300k' }, do: ['note'], level: 'soft' }] } },
+  })
+  await clock.advance(60_000)
+  expect(probeRuns(w)).toBe(1)
+  // A note still goes out while the probe hangs.
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(1)
+})
+
+test('a /clear runs the probes again', async ($, on) => {
+  const w = newWorld({ stdout: { [PROBE_CMD]: 'step 03\n' } })
+  const { clock } = await probed($, on, w)
+  const before = probeRuns(w)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await measure($, w, 1000)
+  await clock.settle()
+  expect(probeRuns(w)).toBe(before + 1)
+})
+
+test('a probe removed from the config, or its script edited, stops drawing', async ($, on) => {
+  const w = newWorld({ stdout: { [PROBE_CMD]: 'step 03\n' } })
+  const { clock } = await probed($, on, w)
+  expect(status(w)).toContain('step 03')
+  // The script edited: trust is withdrawn at the next run, which then does not run it.
+  w.files[`${ROOT}/probe.sh`] = { text: '#!/bin/sh\nrm -rf /\n', mtimeMs: clock.now() }
+  const runs = probeRuns(w)
+  await clock.advance(60_000)
+  await clock.settle()
+  expect(probeRuns(w)).toBe(runs)
+  expect(status(w)).not.toContain('step 03')
+})

@@ -9,6 +9,8 @@ import type {
   Activity,
   AgentKind,
   Band,
+  BandProbe,
+  BandProbeSpec,
   Config,
   HeldStamp,
   ConfigFile,
@@ -52,6 +54,7 @@ import {
   asConfigState,
   asTrustRecord,
   builtInConfig,
+  canonicalJson,
   checkScripts,
   confinePath,
   effectiveConfig,
@@ -150,8 +153,8 @@ import {
   track,
 } from './subagents'
 import type { Tracked } from './subagents'
-import { scriptEnv } from './scripts'
-import type { ScriptContext, ScriptPurpose } from './scripts'
+import { parseProbe, probeSegment, scriptEnv } from './scripts'
+import type { ProbeOutcome, ProbeRun, ScriptContext, ScriptPurpose } from './scripts'
 
 const BAND = { plugin: 'ctx-guard', key: 'band' } as const
 const MARKS = { plugin: 'ctx-guard', key: 'marks' } as const
@@ -251,6 +254,13 @@ type Mod = {
   spawned: Map<string, SpawnedAgent>
   // Moves when the budgets or the role do, so an evaluation that started before keeps no stale gate.
   budgetGen: number
+  // Band probe timers and the probe list they were armed for ('' when none run).
+  probeTimers: Timer[]
+  probeKey: string
+  // Probe ids with a run under way: a tick meanwhile is skipped.
+  probeRunning: Set<string>
+  // The last run of each probe, for the band and the report.
+  probeResults: Map<string, ProbeRun>
 }
 
 const fresh = (): Mod => ({
@@ -287,6 +297,10 @@ const fresh = (): Mod => ({
   agents: new Map(),
   spawned: new Map(),
   budgetGen: 0,
+  probeTimers: [],
+  probeKey: '',
+  probeRunning: new Set(),
+  probeResults: new Map(),
 })
 
 let mod: Mod = fresh()
@@ -734,7 +748,7 @@ async function setBand($: EngineInterface, metrics: Metrics, isPaused: boolean, 
   const denies =
     eff && mod.role.role !== null ? liveDenies(roleTriggers(), metrics, { blocking: eff.blocking, paused: isPaused }) : []
   const prev = mem.band
-  const band: Band = { ...bandOf(mod.role.role, metrics, denies, prev), subagentsOver: subagentsOver() }
+  const band: Band = { ...bandOf(mod.role.role, metrics, denies, prev), subagentsOver: subagentsOver(), probes: probeSegments() }
   if (write === 'changed' && sameBand(prev, band)) return
   await drawBand($, band)
 }
@@ -1863,6 +1877,100 @@ function disarm(): void {
   mod.timers = []
   mod.compactTimer?.cancel()
   mod.compactTimer = null
+  for (const t of mod.probeTimers) t.cancel()
+  mod.probeTimers = []
+  mod.probeKey = ''
+}
+
+// ---- band probes --------------------------------------------------------------
+
+/** Why probes do not run now; null when they do. */
+function probesOff(): string | null {
+  if (!active()) return 'ctx-guard is off'
+  if (mod.eff?.display === 'off') return 'display off'
+  if (!trusted()) return 'untrusted'
+  return null
+}
+
+const configuredProbes = (): BandProbeSpec[] => mod.eff?.config.band?.probes ?? []
+
+/**
+ * Timers for the probes the config names, armed again only when the list or
+ * whether they may run changed. Results of probes no longer run are dropped.
+ */
+function armProbes($: EngineInterface): void {
+  const probes = probesOff() === null ? configuredProbes() : []
+  const key = probes.length ? canonicalJson(probes) : ''
+  if (key === mod.probeKey) return
+  for (const t of mod.probeTimers) t.cancel()
+  mod.probeTimers = []
+  mod.probeKey = key
+  const ids = new Set(probes.map(p => p.id))
+  let dropped = false
+  for (const id of [...mod.probeResults.keys()]) {
+    if (!ids.has(id)) {
+      mod.probeResults.delete(id)
+      dropped = true
+    }
+  }
+  for (const p of probes) mod.probeTimers.push($.clock.every(p.every, () => void runProbe($, p)))
+  runAllProbes($)
+  if (dropped || !probes.length) void serial(() => refreshBand($))
+}
+
+function runAllProbes($: EngineInterface): void {
+  if (!mod.probeKey) return
+  for (const p of configuredProbes()) void runProbe($, p)
+}
+
+/**
+ * One run of a probe, off the `serial` chain so a slow script holds up no
+ * evaluation; only the band redraw after it joins the chain. Trust is read
+ * again first, so an edited script never runs under the old approval.
+ */
+async function runProbe($: EngineInterface, p: BandProbeSpec): Promise<void> {
+  if (mod.probeRunning.has(p.id)) return
+  const gen = mod
+  gen.probeRunning.add(p.id)
+  try {
+    const root = await $.session.root()
+    await readTrust($, root)
+    if (probesOff() !== null) {
+      armProbes($)
+      return
+    }
+    const role = mod.role.role
+    const spec = role === null || !mod.eff ? null : roleSpec(mod.eff.config, role)
+    const handoff = role !== null && spec ? await handoffOf($, root, await realRootOf($, root), role, spec).catch(() => null) : null
+    const startedAt = (await $.session.usage()).startedAt
+    const env = scriptEnv(scriptContextOf(root, 'band-probe', role, spec, handoff, startedAt, mem.lastClearAt))
+    let outcome: ProbeOutcome
+    try {
+      outcome = parseProbe(await $.process.run(p.run, { cwd: root, timeoutMs: p.timeout, env }))
+    } catch (e) {
+      outcome = parseProbe({ error: `did not finish within ${humanDuration(p.timeout)} or could not start (${errorText(e)})` })
+    }
+    // A reload, a config change or a withdrawn trust meanwhile: this run's result is not drawn.
+    if (gen !== mod || !mod.probeKey || !configuredProbes().some(x => x.id === p.id)) return
+    mod.probeResults.set(p.id, { outcome, at: await $.clock.now() })
+    await serial(() => refreshBand($))
+  } catch {
+    // A probe that cannot run leaves the band as it was.
+  } finally {
+    gen.probeRunning.delete(p.id)
+  }
+}
+
+/** The probe segments to draw, in config order: this run's results, else what the band kept across a reload. */
+function probeSegments(): BandProbe[] {
+  if (!mod.probeKey) return []
+  const out: BandProbe[] = []
+  for (const p of configuredProbes()) {
+    const run = mod.probeResults.get(p.id)
+    const seg = run ? probeSegment(p.id, run.outcome) : (mem.band?.probes ?? []).find(x => x.id === p.id) ?? null
+    if (seg) out.push(seg)
+  }
+  return out
 }
 
 /**
@@ -1898,6 +2006,7 @@ async function syncActive($: EngineInterface): Promise<void> {
       ),
     )
   }
+  armProbes($)
 }
 
 async function start($: EngineInterface, isInteractive: boolean, surface: RenderSurface | null): Promise<void> {
@@ -2013,6 +2122,7 @@ async function onClear($: EngineInterface): Promise<void> {
   }
   if (!active()) return
   await setBand($, await metricsFor($, await currentReading($), now), paused(now), 'always')
+  runAllProbes($)
 }
 
 function asHeldStamp(v: unknown): HeldStamp | null {
@@ -2239,24 +2349,28 @@ async function trustCommand($: EngineInterface): Promise<string> {
   const record: TrustRecord = { hash: trustHash(config, hashes), fields: trustFields(config, hashes), at: await $.clock.now() }
   await $.store.set(trustKey(root), record)
   mod.trust = trustState(config, record, hashes)
+  armProbes($)
   const q = (v: unknown): string => JSON.stringify(v)
+  const how = (run: readonly string[]): string => {
+    const hashed = run.filter(a => hashes[a])
+    const out = run.filter(a => outside.includes(a))
+    return hashed.length
+      ? `content hashed: ${hashed.join(', ')}`
+      : out.length
+        ? `outside the project root, trusted by name only: ${out.join(', ')}`
+        : 'no file under the project root: trusted by name only'
+  }
   const lines: string[] = [`${PREFIX} approved for ${root}:`, `  all roles: readyToken ${q(config.readyToken)}, stateDir ${q(config.stateDir)}`]
+  for (const p of config.band.probes) {
+    lines.push(`  band probe ${p.id}: ${q(p.run)}, every ${humanDuration(p.every)}, timeout ${humanDuration(p.timeout)} (${how(p.run)})`)
+  }
   for (const name of Object.keys(config.roles).sort()) {
     const spec = roleSpec(config, name)
     if (!spec) continue
     const r = spec.restart
     lines.push(`  ${name}:`)
     lines.push(`    restart: mode ${r.mode}, via ${r.via}, command /${r.command}, prompt ${q(r.prompt)}, peers ${q(r.peers)}, peerGap ${humanDuration(r.peerGap)}, selfGap ${r.selfGap ? humanDuration(r.selfGap) : "0 (off)"}, minContext ${r.minContext ? humanQuantity(r.minContext) : 'off'}`)
-    for (const c of r.readyChecks) {
-      const hashed = c.run.filter(a => hashes[a])
-      const out = c.run.filter(a => outside.includes(a))
-      const how = hashed.length
-        ? `content hashed: ${hashed.join(', ')}`
-        : out.length
-          ? `outside the project root, trusted by name only: ${out.join(', ')}`
-          : 'no file under the project root: trusted by name only'
-      lines.push(`    ready check: ${q(c.run)}, timeout ${humanDuration(c.timeout)} (${how})`)
-    }
+    for (const c of r.readyChecks) lines.push(`    ready check: ${q(c.run)}, timeout ${humanDuration(c.timeout)} (${how(c.run)})`)
     if (!r.readyChecks.length) lines.push('    ready checks: none')
     lines.push(`    handoff: path ${q(spec.handoff.path)}`)
     if (spec.compact.instructions !== null) lines.push(`    compact.instructions: ${q(spec.compact.instructions)}`)
