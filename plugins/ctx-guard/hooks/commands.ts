@@ -231,6 +231,8 @@ export type ReportInput = {
   restart?: RestartReport
   // The subagent budgets and the agents followed; absent leaves the table out.
   subagents?: SubagentReport
+  // Band probes and their last run; absent leaves the lines out.
+  probes?: { id: string; state: string }[]
 }
 
 export type SubagentRow = {
@@ -350,6 +352,10 @@ export function reportText(r: ReportInput): string {
   const marks = Object.entries(r.marks?.byId ?? {})
   lines.push(`marks: ${marks.length ? marks.map(([id, mk]) => `${id}${mk.step ? `@${mk.step}` : ''} (${ago(r.now - mk.at)})`).join(', ') : 'none'}`)
   lines.push(`blocks: ${r.denies.length ? r.denies.map(d => `${d.tool} (${d.triggerId})`).join(', ') : 'none'}`)
+  if (r.probes) {
+    if (!r.probes.length) lines.push('band probes: none')
+    for (const p of r.probes) lines.push(`probe ${p.id}: ${p.state}`)
+  }
   if (r.restart) lines.push(...restartLines(r.restart, r.now))
   if (r.subagents) lines.push(...subagentLines(r.subagents))
   else {

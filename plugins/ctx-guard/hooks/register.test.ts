@@ -3305,4 +3305,5 @@ test('a probe removed from the config, or its script edited, stops drawing', asy
   await clock.settle()
   expect(probeRuns(w)).toBe(runs)
   expect(status(w)).not.toContain('step 03')
+  expect(await ctxGuard($, '')).toContain('probe run: not run (untrusted)')
 })

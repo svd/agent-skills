@@ -153,7 +153,7 @@ import {
   track,
 } from './subagents'
 import type { Tracked } from './subagents'
-import { parseProbe, probeSegment, scriptEnv } from './scripts'
+import { parseProbe, probeSegment, probeState, scriptEnv } from './scripts'
 import type { ProbeOutcome, ProbeRun, ScriptContext, ScriptPurpose } from './scripts'
 
 const BAND = { plugin: 'ctx-guard', key: 'band' } as const
@@ -2198,6 +2198,7 @@ async function report($: EngineInterface): Promise<string> {
     lastClearAt: mem.lastClearAt,
     restart: await restartReport($, role, spec, now),
     subagents: subagentReport(config, eff?.blocking ?? true, isPausedNow),
+    probes: configuredProbes().map(p => ({ id: p.id, state: probeState(mod.probeResults.get(p.id) ?? null, now, probesOff()) })),
   })
 }
 

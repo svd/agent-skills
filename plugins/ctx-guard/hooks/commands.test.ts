@@ -135,6 +135,31 @@ describe('start-up checks', () => {
 })
 
 describe('report', () => {
+  test('the report lists band probes', () => {
+    const base: ReportInput = {
+      now: 0,
+      interactive: true,
+      off: null,
+      pause: null,
+      role: { role: 'lead', source: 'env', problem: null },
+      configState: null,
+      config: builtInConfig(),
+      switches: { blocking: true, autoActions: true, display: 'band' },
+      windowSource: 'model window',
+      mode: null,
+      metrics: metricsOf({}, 1_000_000, null, 0),
+      marks: null,
+      triggers: [],
+      denies: [],
+      lastClearAt: null,
+    }
+    const text = reportText({ ...base, probes: [{ id: 'run', state: '"step 03" (warning), 2m ago' }, { id: 'git', state: 'not run (untrusted)' }] })
+    expect(text).toContain('probe run: "step 03" (warning), 2m ago')
+    expect(text).toContain('probe git: not run (untrusted)')
+    expect(reportText({ ...base, probes: [] })).toContain('band probes: none')
+    expect(reportText(base)).not.toContain('band probes')
+  })
+
   const config = (() => {
     const r = validate({
       version: 1,
