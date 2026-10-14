@@ -951,3 +951,53 @@ describe('stored config state', () => {
     expect(asConfigState(null)).toBeNull()
   })
 })
+
+describe('band probes', () => {
+  const band = (probes: unknown) => ({ version: 1, band: { probes } })
+
+  test('defaults, and a full entry', () => {
+    expect(ok({ version: 1 }).band).toEqual({ probes: [] })
+    expect(ok(band([{ id: 'run', run: ['./probe.sh'] }])).band.probes).toEqual([{ id: 'run', run: ['./probe.sh'], every: 60_000, timeout: 5_000 }])
+    expect(ok(band([{ id: 'run', run: ['sh', 'p.sh'], every: '15s', timeout: '30s' }])).band.probes[0]).toEqual({ id: 'run', run: ['sh', 'p.sh'], every: 15_000, timeout: 30_000 })
+  })
+
+  test('errors', () => {
+    expect(errorsOf(band('x'))[0]).toContain('band.probes: expected a list')
+    expect(errorsOf(band([{ run: ['./p.sh'] }]))[0]).toContain('band.probes[0].id: is required')
+    expect(errorsOf(band([{ id: 'Run', run: ['./p.sh'] }]))[0]).toContain('band.probes[0].id')
+    expect(errorsOf(band([{ id: 'run', run: [] }]))[0]).toContain('band.probes[0].run: expected a non-empty list')
+    expect(errorsOf(band([{ id: 'run', run: ['./p.sh'], every: '10s' }]))[0]).toContain('shorter than the 15s minimum')
+    expect(errorsOf(band([{ id: 'run', run: ['./p.sh'], timeout: '31s' }]))[0]).toContain('longer than the 30s maximum')
+    expect(errorsOf(band([{ id: 'run', run: ['./a.sh'] }, { id: 'run', run: ['./b.sh'] }]))[0]).toContain('duplicate probe id "run"')
+    const five = ['a', 'b', 'c', 'd', 'e'].map(id => ({ id, run: ['./p.sh'] }))
+    expect(errorsOf(band(five))[0]).toContain('band.probes: at most 4 probes, got 5')
+    expect(errorsOf(band([{ id: 'run', run: ['./p.sh'], shell: true }]))[0]).toContain('band.probes[0].shell: unknown key')
+    expect(errorsOf({ version: 1, band: { segments: [] } })[0]).toContain('band.segments: unknown key')
+  })
+
+  test('a later layer replaces the list', () => {
+    const merged = mergeLayers(band([{ id: 'a', run: ['./a.sh'] }, { id: 'b', run: ['./b.sh'] }]), band([{ id: 'c', run: ['./c.sh'] }]))
+    expect(ok(merged).band.probes.map(p => p.id)).toEqual(['c'])
+  })
+
+  test('a stored config from before band reads as no probes; a bad band is not a config', () => {
+    const stored = JSON.parse(JSON.stringify(builtInConfig())) as Record<string, unknown>
+    delete stored.band
+    expect(asConfig(stored)?.band).toEqual({ probes: [] })
+    expect(asConfig({ ...stored, band: { probes: 'x' } })).toBeNull()
+    expect(asConfig({ ...stored, band: { probes: [{ id: 'run' }] } })).toBeNull()
+  })
+
+  test('trust: probes and their scripts are approved; no probes leaves an old approval valid', () => {
+    const plain = ok({ version: 1, roles: { lead: { restart: { mode: 'auto' } } } })
+    expect(Object.keys(trustFields(plain))).not.toContain('*.band')
+    // The hash of a config without probes is what it was before band existed.
+    const material = JSON.parse(JSON.stringify(plain)) as Record<string, unknown>
+    delete material.band
+    expect(trustHash(plain)).toBe(trustHash(material as never))
+    const withProbe = ok({ version: 1, roles: { lead: { restart: { mode: 'auto' } } }, band: { probes: [{ id: 'run', run: ['./probe.sh', '--fast'] }] } })
+    const record = { hash: trustHash(plain), fields: trustFields(plain), at: 1 }
+    expect(trustState(withProbe, record).changed).toEqual(['*.band'])
+    expect(checkScripts(withProbe)).toEqual(['./probe.sh'])
+  })
+})

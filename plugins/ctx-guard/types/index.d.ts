@@ -58,6 +58,9 @@ export type RestartVia = 'clear' | 'compact'
 
 export type ReadyCheck = { run: string[]; timeout: number }
 
+// A script whose output is a band segment; `every` and `timeout` in ms.
+export type BandProbeSpec = { id: string; run: string[]; every: number; timeout: number }
+
 export type RoleSpec = {
   description: string | null
   triggers: Trigger[]
@@ -99,6 +102,8 @@ export type Config = {
   // Effective specs: `defaults` already merged under each role.
   roles: { [name: string]: RoleSpec }
   subagents: { [type: string]: SubagentBudget }
+  // Probes shared by every role; empty when none.
+  band: { probes: BandProbeSpec[] }
 }
 
 export type Display = 'band' | 'status' | 'off'

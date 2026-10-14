@@ -2,6 +2,7 @@
 // effective-config fallback rule and the trust hash. Pure: no `$`, never throws.
 import type {
   Action,
+  BandProbeSpec,
   Budget,
   Config,
   ConfigSource,
@@ -40,6 +41,11 @@ export const DEFAULT_RESTART_COMMAND = 'ctx-guard:resume'
 export const DEFAULT_PEER_GAP = 10 * MINUTE
 export const DEFAULT_SELF_GAP = 5 * MINUTE
 export const DEFAULT_CHECK_TIMEOUT = 30 * SECOND
+export const DEFAULT_PROBE_EVERY = 60 * SECOND
+export const MIN_PROBE_EVERY = 15 * SECOND
+export const DEFAULT_PROBE_TIMEOUT = 5 * SECOND
+export const MAX_PROBE_TIMEOUT = 30 * SECOND
+export const MAX_PROBES = 4
 export const DISPLAYS: readonly Display[] = ['band', 'status', 'off']
 
 export const DEFAULT_SWITCHES: Switches = {
@@ -333,7 +339,7 @@ function pathAt(ctx: Ctx, path: string, v: unknown, fallback: string, template =
 
 // ---- schema v1 ---------------------------------------------------------------
 
-const TOP_KEYS = ['$schema', 'version', 'enabled', 'stateDir', 'readyToken', 'defaultRole', 'contextWindow', 'defaults', 'roles', 'subagents']
+const TOP_KEYS = ['$schema', 'version', 'enabled', 'stateDir', 'readyToken', 'defaultRole', 'contextWindow', 'defaults', 'roles', 'subagents', 'band']
 const ROLE_KEYS = ['description', 'triggers', 'notes', 'handoff', 'restart', 'compact']
 const TRIGGER_KEYS = ['id', 'when', 'do', 'level', 'message']
 const LIMIT_METRICS = ['limit.five_hour', 'limit.seven_day', 'limit.any'] as const
@@ -486,19 +492,76 @@ function normalizeTriggers(ctx: Ctx, path: string, v: unknown): Trigger[] {
   return out
 }
 
+// A command and its arguments, run without a shell; null after reporting what is wrong.
+function runAt(ctx: Ctx, path: string, run: unknown): string[] | null {
+  if (!Array.isArray(run) || run.length === 0 || !run.every(a => typeof a === 'string') || (run[0] as string).trim() === '') {
+    err(ctx, path, `expected a non-empty list of strings (command, then args), got ${shown(run)}`)
+    return null
+  }
+  return [...(run as string[])]
+}
+
+// A duration held between `min` and `max` (null for no bound), told in seconds.
+function secondsAt(ctx: Ctx, path: string, v: unknown, fallback: number, min: number | null, max: number | null): number {
+  if (v === undefined) return fallback
+  const q = qtyAt(ctx, path, v, ['duration'])
+  if (!q) return fallback
+  if (min !== null && q.value < min) {
+    err(ctx, path, `${shown(v)} is shorter than the ${min / SECOND}s minimum`)
+    return fallback
+  }
+  if (max !== null && q.value > max) {
+    err(ctx, path, `${shown(v)} is longer than the ${max / SECOND}s maximum`)
+    return fallback
+  }
+  return q.value
+}
+
 function normalizeReadyCheck(ctx: Ctx, path: string, v: unknown): ReadyCheck | null {
   if (!isObj(v)) {
     err(ctx, path, `expected {"run": [command, ...args], "timeout": "10s"}, got ${shown(v)}`)
     return null
   }
   checkKeys(ctx, path, v, ['run', 'timeout'])
-  const run = v.run
   const before = ctx.errors.length
-  if (!Array.isArray(run) || run.length === 0 || !run.every(a => typeof a === 'string') || (run[0] as string).trim() === '') {
-    err(ctx, join(path, 'run'), `expected a non-empty list of strings (command, then args), got ${shown(run)}`)
-  }
+  const run = runAt(ctx, join(path, 'run'), v.run)
   const timeout = durationAt(ctx, join(path, 'timeout'), v.timeout, DEFAULT_CHECK_TIMEOUT, MAX_CHECK_TIMEOUT)
-  return ctx.errors.length > before ? null : { run: [...(run as string[])], timeout }
+  return ctx.errors.length > before || !run ? null : { run, timeout }
+}
+
+function normalizeProbe(ctx: Ctx, path: string, v: unknown): BandProbeSpec | null {
+  if (!isObj(v)) {
+    err(ctx, path, `expected {"id": "run", "run": [command, ...args], "every": "60s", "timeout": "5s"}, got ${shown(v)}`)
+    return null
+  }
+  checkKeys(ctx, path, v, ['id', 'run', 'every', 'timeout'])
+  const before = ctx.errors.length
+  if (v.id === undefined) err(ctx, join(path, 'id'), 'is required')
+  const id = strAt(ctx, join(path, 'id'), v.id, '', ROLE_NAME)
+  const run = runAt(ctx, join(path, 'run'), v.run)
+  const every = secondsAt(ctx, join(path, 'every'), v.every, DEFAULT_PROBE_EVERY, MIN_PROBE_EVERY, null)
+  const timeout = secondsAt(ctx, join(path, 'timeout'), v.timeout, DEFAULT_PROBE_TIMEOUT, null, MAX_PROBE_TIMEOUT)
+  return ctx.errors.length > before || !run ? null : { id, run, every, timeout }
+}
+
+function normalizeBand(ctx: Ctx, path: string, v: unknown): Config['band'] {
+  const o = objAt(ctx, path, v)
+  checkKeys(ctx, path, o, ['probes'])
+  const probes: BandProbeSpec[] = []
+  if (o.probes === undefined) return { probes }
+  const pp = join(path, 'probes')
+  if (!Array.isArray(o.probes)) {
+    err(ctx, pp, `expected a list, got ${shown(o.probes)}`)
+    return { probes }
+  }
+  if (o.probes.length > MAX_PROBES) err(ctx, pp, `at most ${MAX_PROBES} probes, got ${o.probes.length}`)
+  o.probes.forEach((raw, i) => {
+    const p = normalizeProbe(ctx, `${pp}[${i}]`, raw)
+    if (!p) return
+    if (probes.some(x => x.id === p.id)) err(ctx, `${pp}[${i}].id`, `duplicate probe id "${p.id}"`)
+    else probes.push(p)
+  })
+  return { probes }
 }
 
 function handoffPathAt(ctx: Ctx, path: string, v: unknown, fallback: string): string {
@@ -668,6 +731,7 @@ function normalizeConfig(ctx: Ctx, raw: unknown): Config {
     defaults,
     roles,
     subagents: normalizeSubagents(ctx, 'subagents', o.subagents),
+    band: normalizeBand(ctx, 'band', o.band),
   }
 }
 
@@ -898,6 +962,9 @@ function isSpecShape(v: unknown): boolean {
   )
 }
 
+const isProbeShape = (p: unknown): boolean =>
+  isObj(p) && typeof p.id === 'string' && isStrArray(p.run) && typeof p.every === 'number' && typeof p.timeout === 'number'
+
 /** A normalized Config as another version of ctx-guard may have stored it; null when it does not look like one. */
 export function asConfig(v: unknown): Config | null {
   if (!isObj(v) || v.version !== 1 || typeof v.enabled !== 'boolean') return null
@@ -905,6 +972,9 @@ export function asConfig(v: unknown): Config | null {
   if (!(v.defaultRole === null || typeof v.defaultRole === 'string')) return null
   if (!(v.contextWindow === 'auto' || (typeof v.contextWindow === 'number' && v.contextWindow > 0))) return null
   if (!isSpecShape(v.defaults) || !isObj(v.roles) || !Object.values(v.roles).every(isSpecShape) || !isObj(v.subagents)) return null
+  // A config stored before band existed reads as no probes.
+  if (v.band === undefined) return { ...v, band: { probes: [] } } as unknown as Config
+  if (!isObj(v.band) || !Array.isArray(v.band.probes) || !v.band.probes.every(isProbeShape)) return null
   return v as unknown as Config
 }
 
@@ -940,7 +1010,11 @@ export function canonicalJson(v: unknown): string {
  * that happens, per role; `*` holds the config-wide ones.
  */
 export function trustMaterial(config: Config): unknown {
-  const out: Obj = { '*': { readyToken: config.readyToken, stateDir: config.stateDir } }
+  const probes = config.band?.probes ?? []
+  // Only when there are probes, so an approval given before band existed still matches.
+  const all: Obj = { readyToken: config.readyToken, stateDir: config.stateDir }
+  if (probes.length) all.band = probes
+  const out: Obj = { '*': all }
   for (const name of Object.keys(config.roles).sort()) {
     const spec = roleSpec(config, name)
     if (!spec) continue
@@ -969,7 +1043,7 @@ export function trustHash(config: Config, scripts: ScriptHashes = {}): string {
 }
 
 /**
- * Every distinct argument of every ready check (the command and its args):
+ * Every distinct argument of every ready check and band probe (the command and its args):
  * each one that turns out to be a file under the root is hashed, so
  * `["bash", "scripts/check.sh"]` covers the script as `["./check.sh"]` does.
  */
@@ -978,6 +1052,7 @@ export function checkScripts(config: Config): string[] {
   for (const name of Object.keys(config.roles)) {
     for (const c of roleSpec(config, name)?.restart.readyChecks ?? []) for (const arg of c.run) if (arg && !arg.startsWith('-')) out.add(arg)
   }
+  for (const p of config.band?.probes ?? []) for (const arg of p.run) if (arg && !arg.startsWith('-')) out.add(arg)
   return [...out].sort()
 }
 

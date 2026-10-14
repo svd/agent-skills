@@ -179,6 +179,21 @@
           "type": "null"
         }
       ]
+    },
+    "band": {
+      "description": "What the band shows besides ctx-guard's own figures.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "probes": {
+          "description": "Scripts whose output is a band segment. They run on their own timers, only in a trusted repo, and never gate anything.",
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/bandProbe"
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -854,6 +869,42 @@
       "required": [
         "run"
       ]
+    },
+    "bandProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "run"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "run": {
+          "description": "Command and arguments, run without a shell from the project root. First line of output: the segment; optional second line: inactive, green, warning, error or subtle. Empty output: no segment.",
+          "type": "array",
+          "minItems": 1,
+          "prefixItems": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "every": {
+          "description": "How often it runs; at least 15s. Default 60s.",
+          "$ref": "#/$defs/duration"
+        },
+        "timeout": {
+          "description": "At most 30s. Default 5s.",
+          "$ref": "#/$defs/duration"
+        }
+      }
     },
     "role": {
       "type": "object",
