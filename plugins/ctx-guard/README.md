@@ -7,7 +7,9 @@ config:
 - draws a **band** above the prompt: `main · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h)`;
 - shows **toasts** and OS **notifications** at thresholds you pick;
 - sends the model **`[ctx-guard]` notes** that tell it to plan a handoff, wrap up or stop;
-- **blocks tools** such as `Agent` while a usage window is nearly spent;
+- **blocks tools** while a usage window is nearly spent: `Agent`, `Workflow`, `WebSearch`,
+  `WebFetch`, browser automation such as `mcp__playwright__browser_navigate`, or any other
+  built-in or MCP tool by name (see [What to block](#what-to-block));
 - caps each **subagent's** context by type;
 - when the model ends a reply with a **ready token** (`CTX-READY`), runs a guarded `/clear` and
   resumes from a handoff file, or runs `/compact`.
@@ -588,8 +590,23 @@ Either set the `defaultRole` switch to `main` (all projects), or commit this (on
 }
 ```
 
-When the model says "ready for /clear", type `/clear` and then
-`/ctx-guard:resume role=main handoff=.ctx-guard/main-handoff.md`. No trust needed.
+At 40 % the model gets a note like this:
+
+> [ctx-guard] Context is at 400k (40% of 1M), past 40%. Plan for a handoff: finish the item in
+> hand and keep new work small. At the next safe point — no subagents running, current work
+> recorded — write the handoff to `.ctx-guard/main-handoff.md`: Rewrite the whole file.
+> Sections: Goal, State, Next action. Then tell the operator 'ready for /clear'.
+
+It finishes the item in hand, writes the handoff and says "ready for /clear". Then:
+
+1. Read `.ctx-guard/main-handoff.md` if you want to check it.
+2. Type `/clear`.
+3. Type `/ctx-guard:resume role=main handoff=.ctx-guard/main-handoff.md`. Text after the path
+   is passed on as the prompt, e.g. `… Carry out Next action without waiting.`
+
+Not a good moment? Keep working: the notes at 60 % and from 75 % (every 5 %) ask again. No
+trust needed, since nothing runs without you. With `"via": "compact"` the note asks for no
+handoff and the model says "ready for /compact": type `/compact` yourself.
 
 ### 3. Solo session with automatic clear and resume
 
