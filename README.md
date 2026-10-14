@@ -110,9 +110,10 @@ Trigger phrases: "set up ctx-guard", "configure a context guard", "auto clear at
 nothing and runs nothing on its own, so a user-scope install leaves the model's behaviour as it
 was. Model notes start once a session has a role. Set the `defaultRole` switch to `main` in
 `/config` for the built-in ladder: notes at 40 / 60 / 75 % context (then every 5 %) and at
-80 / 90 / 95 % usage, `Agent` blocked at 95 % (and earlier while the weekly limit fills fast:
-at 80 % with two days or more to its reset, at 90 % with one day or more), and restarts left to
-you. Or write `.claude/ctx-guard.json`; `/ctx-guard init` writes a starter.
+80 / 90 / 95 % usage, `Agent`, `Workflow`, `WebSearch` and `WebFetch` blocked at 95 % (and
+`Agent` and `Workflow` earlier while the weekly limit fills fast: at 80 % with two days or more
+to its reset, at 90 % with one day or more), and restarts left to you. Or write
+`.claude/ctx-guard.json`; `/ctx-guard init` writes a starter.
 
 **Config.** Layers, later wins: built-in defaults, the `/config` switches, the team file
 `.claude/ctx-guard.json` (committed) and the personal `.claude/ctx-guard.local.json` (gitignored).

@@ -222,13 +222,13 @@ A role with no `triggers` of its own (and none in `defaults`) gets:
 | `ctx-stop` | context ≥ 75 %, every 5 % | note | stop |
 | `limit-soft` | `limit.any` ≥ 80 % | note | soft |
 | `limit-hard` | `limit.any` ≥ 90 % | note, toast | hard |
-| `week-80-early` | `limit.seven_day` ≥ 80 % and its reset ≥ 2 days away | note, deny `Agent` | hard |
-| `week-90-early` | `limit.seven_day` ≥ 90 % and its reset ≥ 1 day away | note, deny `Agent` | hard |
-| `limit-stop` | `limit.any` ≥ 95 % | note, toast, deny `Agent` | stop |
+| `week-80-early` | `limit.seven_day` ≥ 80 % and its reset ≥ 2 days away | note, deny `Agent`, `Workflow` | hard |
+| `week-90-early` | `limit.seven_day` ≥ 90 % and its reset ≥ 1 day away | note, deny `Agent`, `Workflow` | hard |
+| `limit-stop` | `limit.any` ≥ 95 % | note, toast, deny `Agent`, `Workflow`, `WebSearch`, `WebFetch` | stop |
 
 The two `week-*-early` triggers carry their own note: "With {resetsIn} still to the weekly
 reset, start no new subagents so the rest of the window lasts; do small steps in this session."
-They stop subagents sooner the earlier the weekly window fills, and lift by themselves as the
+They stop subagents and workflows sooner the earlier the weekly window fills, and lift by themselves as the
 reset nears (see [Time left to a reset](#metrics)). A window that reports no reset time leaves
 them unknown, so only `limit-stop` blocks then.
 
@@ -549,8 +549,8 @@ Recipes use generic role names; rename them to fit your project.
 
 One long-running session, role `main`. `assets/presets/solo.json` spells out the built-in ladder:
 notes at 40 / 60 / 75 % (then every 5 %), usage notes at 80 / 90 %, an early brake that denies
-`Agent` while the weekly window is at 80 % with two days or more to its reset (90 % with one day
-or more), and a brake at 95 % that denies `Agent`. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume.
+`Agent` and `Workflow` while the weekly window is at 80 % with two days or more to its reset (90 %
+with one day or more), and a brake at 95 % that also denies `WebSearch` and `WebFetch`. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume.
 `/ctx-guard init` writes it to `.claude/ctx-guard.json`; review it, then run `/ctx-guard trust`.
 
 ### Coordinator and workers
@@ -570,7 +570,7 @@ coordinator stops dispatching near the usage limit.
         { "id": "ctx-hard", "when": { "context": "60%" }, "do": ["note"], "level": "hard" },
         { "id": "ctx-stop", "when": { "context": "75%", "every": "5%" }, "do": ["note", "toast"], "level": "stop" },
         { "id": "usage-hard", "when": { "limit.any": 85 }, "do": ["note"], "level": "hard" },
-        { "id": "usage-brake", "when": { "limit.any": 95 }, "do": ["note", "notify", { "deny": ["Agent"] }], "level": "stop" }
+        { "id": "usage-brake", "when": { "limit.any": 95 }, "do": ["note", "notify", { "deny": ["Agent", "Workflow"] }], "level": "stop" }
       ],
       "handoff": {
         "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD, if this is a git repo. Sections: Goal, Dispatched work and results, Next action."
@@ -670,10 +670,10 @@ triggers too.
   "roles": {
     "main": {
       "triggers": [
-        { "id": "week-80-early", "when": { "limit.seven_day": 80, "limit.seven_day.resetsIn": "2d" }, "do": ["note", { "deny": ["Agent"] }], "level": "hard" },
-        { "id": "week-90-early", "when": { "limit.seven_day": 90, "limit.seven_day.resetsIn": "1d" }, "do": ["note", { "deny": ["Agent"] }], "level": "hard" },
-        { "id": "week-95", "when": { "limit.seven_day": 95 }, "do": ["note", { "deny": ["Agent"] }], "level": "stop" },
-        { "id": "five-hour-95", "when": { "limit.five_hour": 95 }, "do": ["note", { "deny": ["Agent"] }], "level": "stop" }
+        { "id": "week-80-early", "when": { "limit.seven_day": 80, "limit.seven_day.resetsIn": "2d" }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "hard" },
+        { "id": "week-90-early", "when": { "limit.seven_day": 90, "limit.seven_day.resetsIn": "1d" }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "hard" },
+        { "id": "week-95", "when": { "limit.seven_day": 95 }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "stop" },
+        { "id": "five-hour-95", "when": { "limit.five_hour": 95 }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "stop" }
       ]
     }
   }

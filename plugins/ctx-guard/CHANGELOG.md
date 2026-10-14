@@ -24,8 +24,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
   that tightens the earlier a window fills (`{ "limit.seven_day": 80,
   "limit.seven_day.resetsIn": "2d" }`); unknown while the window reports no reset time, and a
   deny on one names when the reset comes close enough to lift it. The built-in ladder (and the
-  `solo` preset) uses them: `week-80-early` and `week-90-early` note and deny `Agent` while the
-  weekly window is at 80 % with two days or more to its reset, or at 90 % with one day or more.
+  `solo` preset) uses them: `week-80-early` and `week-90-early` note and deny `Agent` and
+  `Workflow` while the weekly window is at 80 % with two days or more to its reset, or at 90 %
+  with one day or more.
 - Note, toast, deny-reason, refusal and subagent-budget texts, worded by level and restart mode.
   Only a note with a fired context trigger carries the restart tail: a restart frees context, so
   a note on usage, cost or idle alone asks for none.
@@ -142,3 +143,6 @@ All notable changes to the `ctx-guard` plugin are documented here.
   `/ctx-guard trust` when the preset restarts or compacts on its own.
 - A failed ready check's refusal now ends with the last 300 characters of its stderr (stdout
   when stderr is empty), on one line with control characters dropped.
+- The built-in brakes and both presets block `Workflow` wherever they block `Agent`, since a
+  workflow fans out subagents past an `Agent` block. The 95 % brake (`limit-stop`, and
+  `limit-brake` in the presets) also blocks `WebSearch` and `WebFetch`.

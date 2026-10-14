@@ -288,13 +288,21 @@ describe('resetsIn', () => {
 
   test('the built-in ladder blocks Agent sooner the earlier the weekly window fills', () => {
     const t = defaultTriggers()
-    const ids = (r: Metrics): string[] => liveDenies(t, r, on).map(d => d.triggerId)
+    const ids = (r: Metrics): string[] => [...new Set(liveDenies(t, r, on).map(d => d.triggerId))]
     expect(ids(week(85, 3 * 24 * H))).toEqual(['week-80-early'])
     expect(ids(week(85, 30 * H))).toEqual([])
     expect(ids(week(92, 30 * H))).toEqual(['week-90-early'])
     expect(ids(week(92, 20 * H))).toEqual([])
     expect(ids(week(96, 20 * H))).toEqual(['limit-stop'])
     expect(ids(week(92, null))).toEqual([])
+  })
+
+  test('the built-in brakes block workflows with subagents, and the web at the last one', () => {
+    const t = defaultTriggers()
+    const tools = (r: Metrics): string[] => liveDenies(t, r, on).map(d => d.tool)
+    expect(tools(week(85, 3 * 24 * H))).toEqual(['Agent', 'Workflow'])
+    expect(tools(week(92, 30 * H))).toEqual(['Agent', 'Workflow'])
+    expect(tools(week(96, 20 * H))).toEqual(['Agent', 'Workflow', 'WebSearch', 'WebFetch'])
   })
 
   test('the text is about the usage, not the time left', () => {
