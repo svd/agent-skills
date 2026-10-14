@@ -16,7 +16,6 @@ import {
   compactRequest,
   isReadyAnswer,
   isUnder,
-  latestHandoff,
   nextLastCompact,
   parseStamp,
   pendingAction,
@@ -384,16 +383,6 @@ describe('stamps, handoffs, resume', () => {
     expect(parseStamp('12345').kind).toBe('unreadable')
     expect(parseStamp('{"at":"x","owner":"s"}').kind).toBe('unreadable')
     expect(stampPath('.ctx-guard/', 'lead')).toBe('.ctx-guard/lead.restart')
-  })
-
-  test('the newest .md by mtime, name breaking a tie; odd names skipped', () => {
-    const e = (name: string, mtimeMs: number, kind = 'file') => ({ name, kind, mtimeMs })
-    expect(latestHandoff([e('20261013-1000-aaaa.md', 1), e('20261013-1100-bbbb.md', 3), e('notes.txt', 9), e('dir.md', 9, 'dir')])?.name).toBe(
-      '20261013-1100-bbbb.md',
-    )
-    expect(latestHandoff([e('a.md', 5), e('b.md', 5)])?.name).toBe('b.md')
-    expect(latestHandoff([e('with space.md', 9), e('ok.md', 1)])?.name).toBe('ok.md')
-    expect(latestHandoff([])).toBeNull()
   })
 
   test('isUnder needs a separator after the root', () => {

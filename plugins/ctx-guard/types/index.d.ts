@@ -53,7 +53,6 @@ export type Trigger = {
   message: string | null
 }
 
-export type HandoffStyle = 'file' | 'session-handoff'
 export type RestartMode = 'auto' | 'manual' | 'off'
 export type RestartVia = 'clear' | 'compact'
 
@@ -63,8 +62,8 @@ export type RoleSpec = {
   description: string | null
   triggers: Trigger[]
   notes: { suffix: string | null }
-  // `path` is relative to the root and may hold `{role}`.
-  handoff: { path: string; style: HandoffStyle; instructions: string | null }
+  // `path` is relative to the root and may hold `{role}`; so may `instructions`.
+  handoff: { path: string; instructions: string | null }
   restart: {
     mode: RestartMode
     via: RestartVia

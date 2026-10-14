@@ -926,22 +926,8 @@
                     }
                   ]
                 },
-                "style": {
-                  "description": "Default file.",
-                  "anyOf": [
-                    {
-                      "enum": [
-                        "file",
-                        "session-handoff"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
                 "instructions": {
-                  "description": "What the handoff must hold; quoted in the note.",
+                  "description": "What the handoff must hold, and the skill that writes it if any; quoted in the note. {role} is filled in.",
                   "anyOf": [
                     {
                       "$ref": "#/$defs/text"

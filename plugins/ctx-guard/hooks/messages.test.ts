@@ -5,6 +5,7 @@ import {
   collapseNotes,
   denyReason,
   effectiveMode,
+  handoffInstructionsFor,
   handoffPathFor,
   humanDuration,
   humanPercent,
@@ -238,48 +239,54 @@ describe('restart tail', () => {
   const base = (restart: unknown, handoff: unknown = { instructions }) =>
     spec({ restart, handoff, triggers: [{ id: 's', when: { context: '1k' }, do: ['note'], level: 'soft' }] })
 
-  test('auto: rewrite the handoff, then the ready token', () => {
+  test('auto: write the handoff, then the ready token', () => {
     const s = base({ mode: 'auto' })
-    expect(restartTail(s, handoffPathFor(s, 'lead'), 'CTX-READY')).toBe(
-      'At the next safe point — no subagents running, current work recorded — rewrite `.ctx-guard/lead-handoff.md`: ' +
+    expect(restartTail(s, 'lead', 'CTX-READY')).toBe(
+      'At the next safe point — no subagents running, current work recorded — write the handoff to `.ctx-guard/lead-handoff.md`: ' +
         'Rewrite whole. Sections: Goal, State, Next action. Then end your reply with a line holding only `CTX-READY`.',
     )
   })
 
   test('manual: tell the operator', () => {
     const s = base({ mode: 'manual' })
-    const tail = restartTail(s, 'h.md', 'CTX-READY')
+    const tail = restartTail(s, 'lead', 'CTX-READY')
+    expect(tail).toContain('write the handoff to `.ctx-guard/lead-handoff.md`: Rewrite whole.')
     expect(tail).toEndWith("Then tell the operator 'ready for /clear'.")
     expect(tail).not.toContain('CTX-READY')
   })
 
   test('off: no tail', () => {
     const s = base({ mode: 'off' })
-    expect(restartTail(s, 'h.md', 'CTX-READY')).toBe('')
+    expect(restartTail(s, 'lead', 'CTX-READY')).toBe('')
     expect(note(s, fires(s)[0] as Fire)).not.toContain('safe point')
   })
 
-  test('style session-handoff names the skill, not the path', () => {
-    const s = base({ mode: 'auto' }, { style: 'session-handoff', instructions })
-    const tail = restartTail(s, handoffPathFor(s, 'lead'), 'CTX-READY')
-    expect(tail).toContain('write a handoff with the session-handoff skill: Rewrite whole.')
-    expect(tail).not.toContain('lead-handoff.md')
-    expect(tail).toEndWith('`CTX-READY`.')
+  test('instructions naming a skill pass through with {role} filled in', () => {
+    const named = 'Write it with the session-handoff skill (project slug `ctx-guard-{role}`), then copy it here; {role} owns it. Keep {x}'
+    const s = base({ mode: 'auto' }, { instructions: named })
+    expect(handoffInstructionsFor(s, 'lead')).toBe(
+      'Write it with the session-handoff skill (project slug `ctx-guard-lead`), then copy it here; lead owns it. Keep {x}',
+    )
+    const tail = restartTail(s, 'lead', 'CTX-READY')
+    expect(tail).toContain('write the handoff to `.ctx-guard/lead-handoff.md`: Write it with the session-handoff skill (project slug `ctx-guard-lead`)')
+    expect(tail).toContain('lead owns it. Keep {x}. Then end your reply')
+    expect(tail).not.toContain('{role}')
+    expect(handoffInstructionsFor(base({ mode: 'auto' }, {}), 'lead')).toBeNull()
   })
 
-  test('no instructions: a bare rewrite', () => {
-    const s = base({ mode: 'auto' }, {})
-    expect(restartTail(s, 'h.md', 'GO')).toBe(
-      'At the next safe point — no subagents running, current work recorded — rewrite `h.md`. Then end your reply with a line holding only `GO`.',
+  test('no instructions: the bare path', () => {
+    const s = base({ mode: 'auto' }, { path: 'h.md' })
+    expect(restartTail(s, 'lead', 'GO')).toBe(
+      'At the next safe point — no subagents running, current work recorded — write the handoff to `h.md`. Then end your reply with a line holding only `GO`.',
     )
   })
 
   test('via compact needs no handoff, and the note plans for the compaction', () => {
     const s = base({ mode: 'auto', via: 'compact' })
-    expect(restartTail(s, 'h.md', 'GO')).toBe(
+    expect(restartTail(s, 'lead', 'GO')).toBe(
       'At the next safe point — no subagents running, current work recorded — end your reply with a line holding only `GO`; ctx-guard then compacts the session.',
     )
-    expect(restartTail(base({ mode: 'manual', via: 'compact' }), 'h.md', 'GO')).toEndWith("tell the operator 'ready for /compact'.")
+    expect(restartTail(base({ mode: 'manual', via: 'compact' }), 'lead', 'GO')).toEndWith("tell the operator 'ready for /compact'.")
     const text = note(s, fires(s)[0] as Fire)
     expect(text).toContain('Plan for a compaction: finish the item in hand')
     expect(text).not.toContain('handoff')
@@ -310,14 +317,6 @@ describe('restart tail', () => {
     const text = noteText({ trigger: f.trigger, vars: f.vars, role: 'lead', spec: s, readyToken: 'CTX-READY', mode: effectiveMode(s, { ...ok, trusted: false }) })
     expect(text).toContain("tell the operator 'ready for /clear'")
     expect(text).not.toContain('CTX-READY')
-  })
-
-  test('a caller handoff path overrides the configured one', () => {
-    const s = base({ mode: 'auto' })
-    const f = fires(s)[0] as Fire
-    const text = noteText({ trigger: f.trigger, vars: f.vars, role: 'lead', spec: s, readyToken: 'R', handoffPath: '.claude/session-handoffs/x/1.md' })
-    expect(text).toContain('`.claude/session-handoffs/x/1.md`')
-    expect(text).not.toContain('lead-handoff.md')
   })
 
   test('the suffix comes after the tail', () => {

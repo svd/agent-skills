@@ -184,7 +184,7 @@ describe('validation', () => {
             { id: 'spend', when: { cost: '$20' }, do: ['toast'], message: 'Spent {limit}' },
           ],
           notes: { suffix: 'Tell the peer session before you stop.' },
-          handoff: { path: '.ctx-guard/{role}-handoff.md', style: 'file', instructions: 'Rewrite whole.' },
+          handoff: { path: '.ctx-guard/{role}-handoff.md', instructions: 'Rewrite whole.' },
           restart: {
             mode: 'auto',
             via: 'clear',
@@ -408,7 +408,7 @@ describe('validation', () => {
     expect(ok(r({ readyChecks: [{ run: ['make', 'check'] }] })).roles.lead?.restart.readyChecks).toEqual([
       { run: ['make', 'check'], timeout: 30_000 },
     ])
-    expect(errorsOf(role({ handoff: { style: 'email' } }))[0]).toContain('handoff.style: expected one of file, session-handoff')
+    expect(errorsOf(role({ handoff: { style: 'session-handoff' } }))[0]).toContain('handoff.style: unknown key')
     expect(errorsOf(role({ handoff: { path: 'notes/{who}.md' } }))[0]).toContain('unknown placeholder or a stray brace')
     expect(errorsOf(role({ handoff: { path: 'notes/{role.md' } }))[0]).toContain('unknown placeholder or a stray brace')
     for (const bad of ['my handoff.md', 'a/{role} x.md', 'h.md; rm -rf x', 'a\tb.md', 'h$(x).md']) {
@@ -553,7 +553,7 @@ describe('defaults inheritance', () => {
   test('built-in role values, with the handoff under stateDir', () => {
     const c = ok({ stateDir: './state/', roles: { a: {} } })
     expect(c.stateDir).toBe('state')
-    expect(c.roles.a?.handoff).toEqual({ path: 'state/{role}-handoff.md', style: 'file', instructions: null })
+    expect(c.roles.a?.handoff).toEqual({ path: 'state/{role}-handoff.md', instructions: null })
     expect(c.roles.a?.restart).toEqual({
       mode: 'manual',
       via: 'clear',
@@ -831,7 +831,6 @@ describe('trust hash', () => {
       { roles: { lead: { restart: { readyChecks: [{ run: ['make', 'ok'], timeout: '5m' }] } } } },
       { roles: { lead: { compact: { instructions: 'drop everything' } } } },
       { roles: { lead: { handoff: { path: 'elsewhere/{role}.md' } } } },
-      { roles: { lead: { handoff: { style: 'session-handoff' } } } },
       { stateDir: 'state' },
       { readyToken: 'GO' },
       { roles: { lead: { restart: { peers: ['c'] } } } },

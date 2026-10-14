@@ -1,10 +1,10 @@
 // ctx-guard's restart guard: the ready token, the restart stamps, the facts a
 // restart is judged on and the fail-closed verdict over them, the peer race,
-// the handoff a `session-handoff` style points at, and what to do with a
-// pending resume found after a reload. Pure: no `$`, never throws.
+// and what to do with a pending resume found after a reload. Pure: no `$`,
+// never throws.
 import type { LastCompact, PendingCompact, PendingResume, Quantity, RestartVia } from '../types'
 import type { Lease } from './roles'
-import { humanDuration, humanQuantity, humanTokens, sessionHandoffSlug } from './messages'
+import { humanDuration, humanQuantity, humanTokens } from './messages'
 
 // In the order they are checked; the first that holds refuses.
 export const REFUSAL_CODES = [
@@ -89,23 +89,6 @@ export function parseStamp(text: string | null): StampRead {
 }
 
 // ---- the handoff ---------------------------------------------------------------
-
-/** Where the session-handoff skill keeps a role's handoffs, relative to the root. */
-export function sessionHandoffDir(role: string): string {
-  return `.claude/session-handoffs/${sessionHandoffSlug(role)}`
-}
-
-// Only names that are safe on the resume command line.
-const HANDOFF_NAME = /^[A-Za-z0-9._-]+\.md$/
-
-export type DirEntry = { name: string; kind: string; mtimeMs: number }
-
-/** The newest `.md` file among `entries` by mtime (name breaks a tie), or null. */
-export function latestHandoff(entries: readonly DirEntry[]): DirEntry | null {
-  const files = entries.filter(e => e.kind === 'file' && HANDOFF_NAME.test(e.name))
-  files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0))
-  return files[0] ?? null
-}
 
 /** True when `real` is `root` or beneath it; both already resolved. */
 export function isUnder(root: string, real: string): boolean {

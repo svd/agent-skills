@@ -7,7 +7,6 @@ import type {
   ConfigSource,
   ConfigState,
   Display,
-  HandoffStyle,
   Level,
   Quantity,
   QuantityKind,
@@ -348,7 +347,6 @@ const EDGE_ACTIONS = ['note', 'toast', 'notify', 'compact'] as const
 const LEVELS: readonly Level[] = ['soft', 'hard', 'stop']
 const MODES: readonly RestartMode[] = ['auto', 'manual', 'off']
 const VIAS: readonly RestartVia[] = ['clear', 'compact']
-const STYLES: readonly HandoffStyle[] = ['file', 'session-handoff']
 
 type MetricKey = (typeof METRICS)[number]
 
@@ -520,7 +518,7 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
   checkKeys(ctx, join(path, 'notes'), notes, ['suffix'])
   const handoff = objAt(ctx, join(path, 'handoff'), o.handoff)
   const hp = join(path, 'handoff')
-  checkKeys(ctx, hp, handoff, ['path', 'style', 'instructions'])
+  checkKeys(ctx, hp, handoff, ['path', 'instructions'])
   const restart = objAt(ctx, join(path, 'restart'), o.restart)
   const rp = join(path, 'restart')
   checkKeys(ctx, rp, restart, ['mode', 'via', 'command', 'prompt', 'peers', 'peerGap', 'selfGap', 'minContext', 'readyChecks'])
@@ -556,7 +554,6 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
     notes: { suffix: textAt(ctx, join(path, 'notes.suffix'), notes.suffix, null) },
     handoff: {
       path: handoffPathAt(ctx, join(hp, 'path'), handoff.path, `${stateDir}/{role}-handoff.md`),
-      style: enumAt(ctx, join(hp, 'style'), handoff.style, STYLES, 'file'),
       instructions: textAt(ctx, join(hp, 'instructions'), handoff.instructions, null),
     },
     restart: {
@@ -950,8 +947,8 @@ export function trustMaterial(config: Config): unknown {
     const { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext } = spec.restart
     out[name] = {
       restart: { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext },
-      // The handoff path and style land in the resume command line.
-      handoff: { path: spec.handoff.path, style: spec.handoff.style },
+      // The handoff path lands in the resume command line.
+      handoff: { path: spec.handoff.path },
       compact: spec.compact.instructions,
       compactTriggers: spec.triggers.filter(t => t.do.includes('compact')),
     }

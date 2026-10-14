@@ -1579,23 +1579,17 @@ test('a pending resume whose /clear never ran is dropped: nothing was cleared', 
   expect(w.toasts.some(t => t.includes('nothing was cleared'))).toBe(true)
 })
 
-test('session-handoff style: the newest file under the role slug is the handoff', async ($, on) => {
+test('instructions naming a skill: the note keeps the configured path, the restart resumes from it', async ($, on) => {
   const w = restartWorld()
-  const dir = `${ROOT}/.claude/session-handoffs/ctx-guard-lead`
-  const { clock, session } = await armed($, on, w, autoConfig({}, { style: 'session-handoff' }))
-  await ready($, clock)
-  expect(refusals(session)[0]).toContain('(no-handoff): .claude/session-handoffs/ctx-guard-lead/*.md does not exist')
-  w.files[`${dir}/20261013-1100-aaaa.md`] = { text: '#', mtimeMs: clock.now() + 1 }
-  w.files[`${dir}/20261013-1105-bbbb.md`] = { text: '#', mtimeMs: clock.now() + 2 }
-  await clock.advance(1000)
-  // Re-armed, so the next crossing notes again.
+  const instructions = 'Write it with the session-handoff skill (project slug `ctx-guard-{role}`), then copy the result to this path.'
+  const { clock, session } = await armed($, on, w, autoConfig({}, { instructions }))
   await measure($, w, 100_000)
   await measure($, w, 310_000)
   expect(notes(session).at(-1)).toContain(
-    'with the session-handoff skill: Sections: Goal, State, Next action. Use the project slug `ctx-guard-lead` and run its handoff tool from the project root.',
+    'write the handoff to `.ctx-guard/lead-handoff.md`: Write it with the session-handoff skill (project slug `ctx-guard-lead`), then copy the result to this path.',
   )
   await ready($, clock)
-  expect(w.ran).toEqual(['clear', 'ctx-guard:resume role=lead handoff=.claude/session-handoffs/ctx-guard-lead/20261013-1105-bbbb.md Carry on.'])
+  expect(w.ran).toEqual(['clear', 'ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md Carry on.'])
 })
 
 test('/ctx-guard check: each check, a dry run that writes, races and clears nothing', async ($, on) => {
@@ -1819,13 +1813,14 @@ test('trust reads the files again and prints every approved field; a script unde
     'restart: mode auto, via clear, command /ctx-guard:resume, prompt "Go on.", peers ["reviewer"], peerGap 10m',
     'ready check: ["./ready.sh"], timeout 30s (content hashed: ./ready.sh)',
     'ready check: ["git","diff","--quiet"], timeout 30s (no file under the project root: trusted by name only)',
-    'handoff: path ".ctx-guard/{role}-handoff.md", style file',
+    'handoff: path ".ctx-guard/{role}-handoff.md"',
     'Trusting a ready check trusts what its script does',
   ]) {
     expect(text).toContain(want)
   }
   // No compact settings: no line for them.
   expect(text).not.toContain('compact')
+  expect(text).not.toContain('style')
   expect(await ctxGuard($, '')).toContain('trust: approved')
   // Editing the script withdraws the approval at the next restart, the config files untouched.
   w.files[`${ROOT}/ready.sh`] = { text: '#!/bin/sh\nrm -rf /\n', mtimeMs: clock.now() }

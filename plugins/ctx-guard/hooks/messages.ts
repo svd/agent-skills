@@ -78,14 +78,14 @@ function resetsText(limit: LimitInfo | null, now: number): string {
   return ms === null ? UNKNOWN : humanDuration(ms)
 }
 
-/** The session-handoff project slug ctx-guard reads a role's handoffs under. */
-export function sessionHandoffSlug(role: string): string {
-  return `ctx-guard-${role}`
-}
-
 /** The role's handoff path with `{role}` filled in. */
 export function handoffPathFor(spec: RoleSpec, role: string): string {
   return spec.handoff.path.replace(/\{role\}/g, role)
+}
+
+/** The role's handoff instructions with `{role}` filled in; null when none. */
+export function handoffInstructionsFor(spec: RoleSpec, role: string): string | null {
+  return spec.handoff.instructions === null ? null : spec.handoff.instructions.replace(/\{role\}/g, role)
 }
 
 export type NoteContext = { role: string | null; handoffPath: string | null; readyToken: string }
@@ -175,23 +175,11 @@ export function effectiveMode(spec: RoleSpec, gates: RestartGates): RestartMode 
 }
 
 /** What a note ends with by restart mode; empty with mode off. */
-export function restartTail(
-  spec: RoleSpec,
-  handoffPath: string,
-  readyToken: string,
-  mode: RestartMode = spec.restart.mode,
-  // The session-handoff project slug ctx-guard looks under (the role).
-  slug?: string,
-): string {
+export function restartTail(spec: RoleSpec, role: string, readyToken: string, mode: RestartMode = spec.restart.mode): string {
   const { via } = spec.restart
   if (mode === 'off') return ''
-  const instructions = spec.handoff.instructions
-  let write: string
-  if (via === 'compact') write = ''
-  else if (spec.handoff.style === 'session-handoff') {
-    const where = slug ? ` Use the project slug \`${slug}\` and run its handoff tool from the project root.` : ''
-    write = ` write a handoff with the session-handoff skill${instructions ? `: ${sentence(instructions)}` : '.'}${where}`
-  } else write = ` rewrite \`${handoffPath}\`${instructions ? `: ${sentence(instructions)}` : '.'}`
+  const instructions = handoffInstructionsFor(spec, role)
+  const write = via === 'compact' ? '' : ` write the handoff to \`${handoffPathFor(spec, role)}\`${instructions ? `: ${sentence(instructions)}` : '.'}`
   const after = via === 'compact' ? 'ready for /compact' : 'ready for /clear'
   if (mode === 'manual') return write ? `${SAFE_POINT}${write} Then tell the operator '${after}'.` : `${SAFE_POINT} tell the operator '${after}'.`
   if (!write) return `${SAFE_POINT} end your reply with a line holding only \`${readyToken}\`; ctx-guard then compacts the session.`
@@ -204,8 +192,6 @@ export type NoteOptions = {
   readyToken: string
   // From effectiveMode(); the configured mode when absent.
   mode?: RestartMode
-  // Overrides the configured path, e.g. the latest session-handoff file.
-  handoffPath?: string
 }
 
 export type NoteInput = NoteOptions & { trigger: Trigger; vars: FireVars }
@@ -230,7 +216,7 @@ const unprefixed = (t: string): string => (t.startsWith(PREFIX) ? t.slice(PREFIX
 export function collapseNotes(fires: readonly Fire[], opts: NoteOptions): string | null {
   if (fires.length === 0) return null
   const { role, spec, readyToken } = opts
-  const handoffPath = opts.handoffPath ?? handoffPathFor(spec, role)
+  const handoffPath = handoffPathFor(spec, role)
   const tvOf = (f: Fire): Record<string, string> => templateVars(f.vars, { role, handoffPath, readyToken })
 
   const builtIn = fires.filter(f => f.trigger.message === null)
@@ -246,7 +232,7 @@ export function collapseNotes(fires: readonly Fire[], opts: NoteOptions): string
   for (const f of fires) if (f.trigger.message !== null) parts.push(unprefixed(render(f.trigger.message, tvOf(f)).trim()))
   // A restart frees context only: a note on usage, cost or idle alone asks for none, or a /clear would
   // land back on the same figure and the same note.
-  if (fires.some(f => f.trigger.when.context !== null)) parts.push(restartTail(spec, handoffPath, readyToken, opts.mode ?? spec.restart.mode, sessionHandoffSlug(role)))
+  if (fires.some(f => f.trigger.when.context !== null)) parts.push(restartTail(spec, role, readyToken, opts.mode ?? spec.restart.mode))
   const suffixVars = tvOf(top ?? (fires[0] as Fire))
   if (spec.notes.suffix) parts.push(render(spec.notes.suffix, suffixVars).trim())
   return `${PREFIX} ${parts.filter(Boolean).join(' ')}`

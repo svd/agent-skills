@@ -96,7 +96,6 @@ import {
   compactRequest,
   isReadyAnswer,
   isUnder,
-  latestHandoff,
   nextLastCompact,
   parseStamp,
   pendingAction,
@@ -106,7 +105,6 @@ import {
   renoteRisk,
   restartFailedText,
   resumeArgs,
-  sessionHandoffDir,
   stampJson,
   stampPath,
   verdict,
@@ -720,8 +718,7 @@ async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean): Pro
   // Model notes only once a role is assigned: a user-scope install never changes model behaviour unasked.
   if (role !== null && spec && plan.notes.length) {
     const mode = effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: isPaused })
-    const handoffPath = spec.handoff.style === 'session-handoff' ? await notedHandoff($, role, spec) : undefined
-    const text = collapseNotes(plan.notes, { role, spec, readyToken: eff.config.readyToken, mode, ...(handoffPath ? { handoffPath } : {}) })
+    const text = collapseNotes(plan.notes, { role, spec, readyToken: eff.config.readyToken, mode })
     if (text) await quietly(() => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } }))
   }
   for (const text of new Set(plan.toasts.map(f => toastText(f.vars, role)))) $.ui.toast(text)
@@ -1113,18 +1110,7 @@ async function stateDirOf($: EngineInterface, root: string, realRoot: string, re
 }
 
 async function handoffOf($: EngineInterface, root: string, realRoot: string, role: string, spec: RoleSpec): Promise<HandoffFact> {
-  let rel: string
-  if (spec.handoff.style === 'session-handoff') {
-    const dir = sessionHandoffDir(role)
-    const abs = `${root.replace(/[/\\]+$/, '')}/${dir}`
-    const entries = await $.fs.list(abs).catch(async e => {
-      if (await missing($, abs)) return []
-      throw e
-    })
-    const latest = latestHandoff(entries)
-    if (!latest) return { kind: 'absent', path: `${dir}/*.md` }
-    rel = `${dir}/${latest.name}`
-  } else rel = handoffPathFor(spec, role)
+  const rel = handoffPathFor(spec, role)
   const c = confinePath(root, rel)
   if ('error' in c) throw new Error(`handoff path ${rel} ${c.error}`)
   const p = await place($, c.path, realRoot)
@@ -1133,17 +1119,6 @@ async function handoffOf($: EngineInterface, root: string, realRoot: string, rol
   if (p.stat.kind !== 'file') return { kind: 'absent', path: rel, why: 'is not a file' }
   if (p.stat.size <= 0) return { kind: 'absent', path: rel, why: 'is empty' }
   return { kind: 'present', path: rel, mtime: p.stat.mtimeMs }
-}
-
-// The newest session-handoff file for a note's {handoffPath}; undefined when there is none.
-async function notedHandoff($: EngineInterface, role: string, spec: RoleSpec): Promise<string | undefined> {
-  try {
-    const root = await $.session.root()
-    const h = await handoffOf($, root, await realRootOf($, root), role, spec)
-    return h.kind === 'present' ? h.path : undefined
-  } catch {
-    return undefined
-  }
 }
 
 async function readText($: EngineInterface, abs: string, realRoot: string): Promise<string | null> {
@@ -2251,7 +2226,7 @@ async function trustCommand($: EngineInterface): Promise<string> {
       lines.push(`    ready check: ${q(c.run)}, timeout ${humanDuration(c.timeout)} (${how})`)
     }
     if (!r.readyChecks.length) lines.push('    ready checks: none')
-    lines.push(`    handoff: path ${q(spec.handoff.path)}, style ${spec.handoff.style}`)
+    lines.push(`    handoff: path ${q(spec.handoff.path)}`)
     if (spec.compact.instructions !== null) lines.push(`    compact.instructions: ${q(spec.compact.instructions)}`)
     const compactTriggers = spec.triggers.filter(t => t.do.includes('compact')).map(t => t.id)
     if (compactTriggers.length) lines.push(`    compact triggers: ${compactTriggers.join(', ')}`)
