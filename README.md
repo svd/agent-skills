@@ -127,118 +127,14 @@ reference). Type `/ctx-guard trust` to approve the current config; any later cha
 settings, or to a ready-check script under the repo, withdraws the approval. Until you approve, notes, toasts and blocks still work, but ready tokens are refused with
 `untrusted` and no compact or ready check runs.
 
-#### Roles & scenarios
-
-A role selects triggers, handoff and restart settings from `roles`. A session takes the first role
-it finds, in this order: `/ctx-guard role <name|none>` typed by you, the `CTX_GUARD_ROLE`
+**Roles.** A role selects triggers, handoff and restart settings from `roles`. A session takes
+the first role it finds: `/ctx-guard role <name|none>` typed by you, the `CTX_GUARD_ROLE`
 environment variable, the project's `defaultRole`, then the `defaultRole` switch. Only interactive
 sessions get a role; `claude -p` runs with none.
 
-**Solo session.** One long-running session, role `main`. A role without `triggers` gets the
-built-in ladder above. At a safe point the model rewrites `.ctx-guard/main-handoff.md` and ends its
-reply with `CTX-READY`. ctx-guard then checks that no agent is running and the handoff is fresh,
-clears, and resumes from the handoff.
-
-```json
-{
-  "version": 1,
-  "defaultRole": "main",
-  "roles": {
-    "main": {
-      "handoff": { "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Next action." },
-      "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting." }
-    }
-  }
-}
-```
-
-**Coordinator + workers.** One long-lived coordinator dispatches subagents. Per-type budgets keep
-each worker small: a note at `warn`, then at `stop` the worker is told to report and its further
-tool calls are denied. Near the usage limit the coordinator stops dispatching.
-
-```json
-{
-  "version": 1,
-  "defaultRole": "coordinator",
-  "roles": {
-    "coordinator": {
-      "triggers": [
-        { "id": "ctx-soft", "when": { "context": "40%" }, "do": ["note"], "level": "soft" },
-        { "id": "ctx-stop", "when": { "context": "70%", "every": "5%" }, "do": ["note", "toast"], "level": "stop" },
-        { "id": "usage-brake", "when": { "limit.any": 90 }, "do": ["note", "notify", { "deny": ["Agent", "Workflow"] }], "level": "stop" }
-      ],
-      "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting." }
-    }
-  },
-  "subagents": {
-    "*": { "warn": "120k", "stop": "170k" },
-    "Explore": { "stop": "150k", "message": "Budget of {stop} reached: return your findings now." }
-  }
-}
-```
-
-**Peer sessions talking via SendMessage.** Two or more long-lived interactive sessions, say `lead`
-and `reviewer`, message each other by name. Cross-session messaging is on by default, with no
-setting to turn on. Name each session at start with `claude --name <name>`, or later with
-`/rename <name>`. `/peers` (alias of `/list-agents`) lists the sessions this one can reach. If
-messages do not arrive, check that `crossSessionInbound` is not `hold` or `refuse` and that no
-deny rule covers `SendMessage`.
-
-Give each session its role with `CTX_GUARD_ROLE`, or type `/ctx-guard role reviewer` in a running
-session:
-
-```sh
-CTX_GUARD_ROLE=lead claude --name lead
-CTX_GUARD_ROLE=reviewer claude --name reviewer
-```
-
-`restart.peers` with `peerGap` keeps the sessions from clearing within ten minutes of each other.
-`notes.suffix` adds a line to every note, here telling the session to message its peer before it
-stops. Settings shared by both roles go in `defaults`.
-
-```json
-{
-  "version": 1,
-  "defaults": {
-    "handoff": { "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Open questions for the peer, Next action." },
-    "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting.", "peerGap": "10m" }
-  },
-  "roles": {
-    "lead": {
-      "notes": { "suffix": "Before you stop, message the reviewer session: what you finished and what you hand over." },
-      "restart": { "peers": ["reviewer"] }
-    },
-    "reviewer": {
-      "notes": { "suffix": "Before you stop, message the lead session: what you reviewed and what is still open." },
-      "restart": { "peers": ["lead"] }
-    }
-  }
-}
-```
-
-**Compact instead of clear.** The session keeps its context, compacted, instead of starting over
-from a handoff. With `via: "compact"` the ready token runs `/compact` with the role's
-instructions. The `compact` action compacts at 85 % even if the model has not sent the token.
-
-```json
-{
-  "version": 1,
-  "defaultRole": "main",
-  "roles": {
-    "main": {
-      "triggers": [
-        { "id": "ctx-soft", "when": { "context": "50%" }, "do": ["note"], "level": "soft" },
-        { "id": "ctx-stop", "when": { "context": "70%" }, "do": ["note"], "level": "stop" },
-        { "id": "squeeze", "when": { "context": "85%" }, "do": ["compact"] }
-      ],
-      "restart": { "mode": "auto", "via": "compact" },
-      "compact": { "instructions": "Keep open tasks, decisions made, and the file paths in play." }
-    }
-  }
-}
-```
-
-Run `/ctx-guard trust` after writing any of these, since each runs restarts or compacts on its own.
+Setup steps, configs for common scenarios (solo session, coordinator and workers, peer sessions,
+compact instead of clear, usage brakes) and troubleshooting are in the
+[ctx-guard README](plugins/ctx-guard/README.md).
 
 ## Pricing
 

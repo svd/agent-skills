@@ -620,6 +620,26 @@ preset (`/ctx-guard init`), shown here without its usage triggers:
 A `triggers` list replaces the whole built-in ladder, usage brakes included. Keep the preset's
 `limit-*` and `week-*` triggers if you want them.
 
+A role without `triggers` gets the built-in ladder, usage brakes and all, so the shortest
+version is:
+
+```json
+{
+  "version": 1,
+  "defaultRole": "main",
+  "roles": {
+    "main": {
+      "handoff": { "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD. Sections: Goal, State, Next action." },
+      "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting." }
+    }
+  }
+}
+```
+
+At a safe point the model rewrites `.ctx-guard/main-handoff.md` and ends its reply with
+`CTX-READY`. ctx-guard checks that no agent is running and the handoff is fresh, clears, and
+resumes from the handoff.
+
 ### 4. Never clear with uncommitted work
 
 Add a ready check that refuses the restart while `git status` shows changes. Ask Claude to copy
@@ -751,6 +771,11 @@ CTX_GUARD_ROLE=reviewer claude --name reviewer
 Or type `/ctx-guard role reviewer` in a running session. `restart.peers` with `peerGap` keeps the
 two from clearing within ten minutes of each other; if both pass every check at once, the older
 stamp wins and the other refuses with `race-lost`.
+
+Cross-session messaging is on by default, with no setting to turn on; `/rename <name>` names a
+session later, and `/peers` (alias of `/list-agents`) lists the sessions this one can reach. If
+messages do not arrive, see
+[Troubleshooting](#peer-sessions-do-not-receive-each-others-messages).
 
 ### 8. Usage-limit brake
 
