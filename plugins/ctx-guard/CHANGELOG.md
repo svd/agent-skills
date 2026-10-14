@@ -23,7 +23,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
   reset, at least, allowed only beside the same window's percent metric. They express a brake
   that tightens the earlier a window fills (`{ "limit.seven_day": 80,
   "limit.seven_day.resetsIn": "2d" }`); unknown while the window reports no reset time, and a
-  deny on one names when the reset comes close enough to lift it.
+  deny on one names when the reset comes close enough to lift it. The built-in ladder (and the
+  `solo` preset) uses them: `week-80-early` and `week-90-early` note and deny `Agent` while the
+  weekly window is at 80 % with two days or more to its reset, or at 90 % with one day or more.
 - Note, toast, deny-reason, refusal and subagent-budget texts, worded by level and restart mode.
   Only a note with a fired context trigger carries the restart tail: a restart frees context, so
   a note on usage, cost or idle alone asks for none.

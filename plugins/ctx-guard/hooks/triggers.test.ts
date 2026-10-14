@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { roleSpec, validate } from './config'
+import { defaultTriggers, roleSpec, validate } from './config'
 import { CHARS_PER_TOKEN, conditions, crossesGates, deniedBy, evaluate, idleMs, inFlightTokens, limitsFrom, liveDenies, markHeld, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
 import type { Metrics } from './triggers'
 import type { Config, Marks, Trigger } from '../types'
@@ -284,6 +284,17 @@ describe('resetsIn', () => {
     expect(after.fire).toEqual([])
     expect(after.marks.byId.early).toEqual(marked?.byId.early)
     expect(liveDenies(t, week(99, null), on)).toEqual([])
+  })
+
+  test('the built-in ladder blocks Agent sooner the earlier the weekly window fills', () => {
+    const t = defaultTriggers()
+    const ids = (r: Metrics): string[] => liveDenies(t, r, on).map(d => d.triggerId)
+    expect(ids(week(85, 3 * 24 * H))).toEqual(['week-80-early'])
+    expect(ids(week(85, 30 * H))).toEqual([])
+    expect(ids(week(92, 30 * H))).toEqual(['week-90-early'])
+    expect(ids(week(92, 20 * H))).toEqual([])
+    expect(ids(week(96, 20 * H))).toEqual(['limit-stop'])
+    expect(ids(week(92, null))).toEqual([])
   })
 
   test('the text is about the usage, not the time left', () => {

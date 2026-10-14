@@ -690,6 +690,9 @@ export function validate(raw: unknown, label = 'config'): { config: Config | nul
 
 // ---- built-ins ---------------------------------------------------------------
 
+// Says nothing of a block: with `blocking` off there is none.
+const EARLY_WEEK = 'With {resetsIn} still to the weekly reset, start no new subagents so the rest of the window lasts; do small steps in this session.'
+
 // The ladder a role gets when neither it nor `defaults` lists triggers.
 const DEFAULT_TRIGGERS_RAW = [
   { id: 'ctx-soft', when: { context: '40%' }, do: ['note'], level: 'soft' },
@@ -697,6 +700,9 @@ const DEFAULT_TRIGGERS_RAW = [
   { id: 'ctx-stop', when: { context: '75%', every: '5%' }, do: ['note'], level: 'stop' },
   { id: 'limit-soft', when: { 'limit.any': 80 }, do: ['note'], level: 'soft' },
   { id: 'limit-hard', when: { 'limit.any': 90 }, do: ['note', 'toast'], level: 'hard' },
+  // The weekly window filling early: no new subagents while that much time is left, so the week lasts.
+  { id: 'week-80-early', when: { 'limit.seven_day': 80, 'limit.seven_day.resetsIn': '2d' }, do: ['note', { deny: ['Agent'] }], level: 'hard', message: EARLY_WEEK },
+  { id: 'week-90-early', when: { 'limit.seven_day': 90, 'limit.seven_day.resetsIn': '1d' }, do: ['note', { deny: ['Agent'] }], level: 'hard', message: EARLY_WEEK },
   { id: 'limit-stop', when: { 'limit.any': 95 }, do: ['note', 'toast', { deny: ['Agent'] }], level: 'stop' },
 ]
 

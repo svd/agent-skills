@@ -222,7 +222,15 @@ A role with no `triggers` of its own (and none in `defaults`) gets:
 | `ctx-stop` | context ≥ 75 %, every 5 % | note | stop |
 | `limit-soft` | `limit.any` ≥ 80 % | note | soft |
 | `limit-hard` | `limit.any` ≥ 90 % | note, toast | hard |
+| `week-80-early` | `limit.seven_day` ≥ 80 % and its reset ≥ 2 days away | note, deny `Agent` | hard |
+| `week-90-early` | `limit.seven_day` ≥ 90 % and its reset ≥ 1 day away | note, deny `Agent` | hard |
 | `limit-stop` | `limit.any` ≥ 95 % | note, toast, deny `Agent` | stop |
+
+The two `week-*-early` triggers carry their own note: "With {resetsIn} still to the weekly
+reset, start no new subagents so the rest of the window lasts; do small steps in this session."
+They stop subagents sooner the earlier the weekly window fills, and lift by themselves as the
+reset nears (see [Time left to a reset](#metrics)). A window that reports no reset time leaves
+them unknown, so only `limit-stop` blocks then.
 
 ## Notes and template variables
 
@@ -540,8 +548,9 @@ Recipes use generic role names; rename them to fit your project.
 ### Solo session
 
 One long-running session, role `main`. `assets/presets/solo.json` spells out the built-in ladder:
-notes at 40 / 60 / 75 % (then every 5 %), usage notes at 80 / 90 %, and a brake at 95 % that
-denies `Agent`. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume.
+notes at 40 / 60 / 75 % (then every 5 %), usage notes at 80 / 90 %, an early brake that denies
+`Agent` while the weekly window is at 80 % with two days or more to its reset (90 % with one day
+or more), and a brake at 95 % that denies `Agent`. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume.
 `/ctx-guard init` writes it to `.claude/ctx-guard.json`; review it, then run `/ctx-guard trust`.
 
 ### Coordinator and workers
@@ -671,7 +680,7 @@ triggers too.
 }
 ```
 
-The early triggers lift by
+These are the built-in ladder's own early brakes plus a 5-hour one. The early triggers lift by
 themselves once the reset is close enough: at 85 % with 30 hours
 left, `week-80-early` has stopped holding (under two days) and `week-90-early` has not started
 (under 90 %), so subagents run again. A window that reports no reset time leaves the early

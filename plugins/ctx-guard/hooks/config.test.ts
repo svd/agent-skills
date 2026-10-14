@@ -538,7 +538,7 @@ describe('defaults inheritance', () => {
   test('with no triggers anywhere a role gets the built-in ladder', () => {
     const c = ok({ roles: { a: {} } })
     expect(c.roles.a?.triggers).toEqual(defaultTriggers())
-    expect(c.roles.a?.triggers.map(t => t.id)).toEqual(['ctx-soft', 'ctx-hard', 'ctx-stop', 'limit-soft', 'limit-hard', 'limit-stop'])
+    expect(c.roles.a?.triggers.map(t => t.id)).toEqual(['ctx-soft', 'ctx-hard', 'ctx-stop', 'limit-soft', 'limit-hard', 'week-80-early', 'week-90-early', 'limit-stop'])
   })
 
   test('an empty triggers list means none', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { roleSpec, validate } from './config'
+import { defaultTriggers, roleSpec, validate } from './config'
 import {
   collapseNotes,
   denyReason,
@@ -216,6 +216,20 @@ describe('level wording', () => {
     const [a, b] = fires(s).map(f => note(s, f))
     expect(a).toBe('[ctx-guard] lead: 312k > 300k, {mystery}')
     expect(b).toBe('[ctx-guard] already prefixed')
+  })
+})
+
+describe('built-in early weekly brake', () => {
+  test('one note: the usage head, the soft wording and the brake message', () => {
+    const s = spec({ restart: { mode: 'off' } })
+    expect(s.triggers).toEqual(defaultTriggers())
+    const m = metrics({ limits: { five_hour: null, seven_day: { pct: 85, resetsAt: new Date(NOW + 3 * 24 * 3_600_000).toISOString() } } })
+    const f = fires(s, m)
+    expect(f.map(x => x.trigger.id)).toEqual(['limit-soft', 'week-80-early'])
+    expect(collapseNotes(f, { role: 'lead', spec: s, readyToken: 'CTX-READY' })).toBe(
+      `[ctx-guard] Weekly usage is at 85%, past 80%. The window resets in 3d. ${levelText('soft', 'limit.any')} ` +
+        'With 3d still to the weekly reset, start no new subagents so the rest of the window lasts; do small steps in this session.',
+    )
   })
 })
 
