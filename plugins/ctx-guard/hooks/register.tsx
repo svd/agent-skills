@@ -150,6 +150,8 @@ import {
   track,
 } from './subagents'
 import type { Tracked } from './subagents'
+import { scriptEnv } from './scripts'
+import type { ScriptContext, ScriptPurpose } from './scripts'
 
 const BAND = { plugin: 'ctx-guard', key: 'band' } as const
 const MARKS = { plugin: 'ctx-guard', key: 'marks' } as const
@@ -1359,14 +1361,44 @@ async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: st
   return { facts, stamps }
 }
 
+// What a script is told about the session; paths resolved against the root it runs from.
+function scriptContextOf(
+  root: string,
+  purpose: ScriptPurpose,
+  role: string | null,
+  spec: RoleSpec | null,
+  handoff: HandoffFact | null,
+  startedAt: number,
+  lastClearAt: number | null,
+): ScriptContext {
+  const at = (rel: string): string | null => {
+    const c = confinePath(root, rel)
+    return 'error' in c ? null : c.path
+  }
+  const via = spec ? spec.restart.via : null
+  const h = via === 'clear' ? handoff : null
+  return {
+    purpose,
+    role,
+    root,
+    stateDir: (mod.eff && at(mod.eff.config.stateDir)) ?? '',
+    handoff: h ? at(h.path) : null,
+    handoffMtime: h?.kind === 'present' ? h.mtime : null,
+    startedAt,
+    lastClearAt,
+    via,
+  }
+}
+
 // Exit 0 passes; any other exit, a start failure or a timeout fails. No output is kept.
-async function runChecks($: EngineInterface, spec: RoleSpec): Promise<CheckRun[]> {
+async function runChecks($: EngineInterface, spec: RoleSpec, facts: Facts, purpose: 'ready-check' | 'dry-run'): Promise<CheckRun[]> {
   const root = await $.session.root()
+  const env = scriptEnv(scriptContextOf(root, purpose, facts.role, spec, facts.handoff, facts.startedAt, facts.lastClearAt))
   const out: CheckRun[] = []
   for (const c of spec.restart.readyChecks) {
     let run: CheckRun
     try {
-      const r = await $.process.run(c.run, { cwd: root, timeoutMs: c.timeout })
+      const r = await $.process.run(c.run, { cwd: root, timeoutMs: c.timeout, env })
       run = { run: c.run, ok: r.exitCode === 0, detail: r.exitCode === 0 ? 'exited 0' : checkDetail(r.exitCode, r.stderr, r.stdout) }
     } catch (e) {
       run = { run: c.run, ok: false, detail: `did not finish within ${humanDuration(c.timeout)} or could not start (${errorText(e)})` }
@@ -1381,7 +1413,7 @@ async function runChecks($: EngineInterface, spec: RoleSpec): Promise<CheckRun[]
 async function judge($: EngineInterface, g: Gathered, spec: RoleSpec): Promise<Verdict> {
   let v = verdict(g.facts)
   if (v.ok && g.facts.trusted) {
-    g.facts.checks = await runChecks($, spec)
+    g.facts.checks = await runChecks($, spec, g.facts, 'ready-check')
     v = verdict(g.facts)
   }
   return v
@@ -2248,7 +2280,7 @@ async function checkCommand($: EngineInterface): Promise<string> {
   if (!eff || role === null || !spec) return checkText(null, null, null, null)
   const now = await $.clock.now()
   const g = await gather($, role, spec, await busyText($, now))
-  if (g.facts.trusted && g.facts.error === null) g.facts.checks = await runChecks($, spec)
+  if (g.facts.trusted && g.facts.error === null) g.facts.checks = await runChecks($, spec, g.facts, 'dry-run')
   const why: string[] = []
   if (spec.restart.mode !== 'auto') why.push(`restart mode is ${spec.restart.mode}`)
   if (!eff.autoActions) why.push('autoActions is off in /config')

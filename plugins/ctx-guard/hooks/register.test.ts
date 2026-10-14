@@ -46,6 +46,12 @@ type World = {
   // How long the bottom holds a command before answering it, by name.
   hang: Record<string, number>
   processes: string[][]
+  // The `init` of each process run, in the order of `processes`.
+  inits: ({ cwd?: string; env?: Record<string, string>; timeoutMs?: number } | undefined)[]
+  // What a process prints, by its argv joined with spaces; absent prints nothing.
+  stdout: Record<string, string>
+  // How long a process runs before it answers.
+  processHang: number
   exitCode: number | 'timeout'
   // What a ready check prints to stderr.
   stderr: string
@@ -86,6 +92,9 @@ function newWorld(over: Partial<World> = {}): World {
     failCommand: null,
     hang: {},
     processes: [],
+    inits: [],
+    stdout: {},
+    processHang: 0,
     exitCode: 0,
     stderr: '',
     links: {},
@@ -191,11 +200,14 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
     if (w.failCommand === e.command) throw new Error(`${e.command} refused`)
     return { text: '' }
   })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     w.processes.push([...e.argv])
+    w.inits.push(e.init as World['inits'][number])
     w.onProcess?.()
+    if (w.processHang > 0) await clock.sleep(w.processHang)
     if (w.exitCode === 'timeout') throw new Error('timed out')
-    return { value: { exitCode: w.exitCode, stdout: '', stderr: w.stderr, isStdoutTruncated: false, isStderrTruncated: false } }
+    const stdout = w.stdout[e.argv.join(' ')] ?? ''
+    return { value: { exitCode: w.exitCode, stdout, stderr: w.stderr, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.exists', ($, e) => ({ value: e.path in w.files || dirsOf(w).has(e.path) || e.path in w.links }))
   on('classic.Stop', () => ({}))
@@ -3163,4 +3175,36 @@ test('a usage note never loops a restart: no tail, not-needed, its mark survives
   expect(refusals(session).at(-1)).toContain('under selfGap 5m')
   expect(w.ran.length).toBe(2)
   expect(await ctxGuard($, 'check')).toContain('FAIL too-soon')
+})
+
+test('a ready check runs with the restart context; a dry run says so', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['./ready.sh'] }] }))
+  const handoffAt = w.files[HANDOFF]?.mtimeMs
+  expect(await ctxGuard($, 'check')).toContain('ok   ready-check-failed: 1 ready check passed')
+  expect(w.inits[0]?.cwd).toBe(ROOT)
+  expect(w.inits[0]?.env).toEqual({
+    CTX_GUARD_PURPOSE: 'dry-run',
+    CTX_GUARD_SCRIPT_ROLE: 'lead',
+    CTX_GUARD_ROOT: ROOT,
+    CTX_GUARD_STATE_DIR: `${ROOT}/.ctx-guard`,
+    CTX_GUARD_HANDOFF: `${ROOT}/.ctx-guard/lead-handoff.md`,
+    CTX_GUARD_HANDOFF_MTIME_MS: String(handoffAt),
+    CTX_GUARD_SINCE_MS: String(NOW),
+    CTX_GUARD_VIA: 'clear',
+  })
+  await ready($, clock)
+  expect(w.inits[1]?.env?.CTX_GUARD_PURPOSE).toBe('ready-check')
+  expect(w.inits[1]?.env?.CTX_GUARD_HANDOFF_MTIME_MS).toBe(String(handoffAt))
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('a ready check under via compact gets no handoff', async ($, on) => {
+  const w = restartWorld()
+  await armed($, on, w, autoConfig({ via: 'compact', readyChecks: [{ run: ['./ready.sh'] }] }))
+  await ctxGuard($, 'check')
+  const env = w.inits[0]?.env
+  expect(env?.CTX_GUARD_VIA).toBe('compact')
+  expect(env?.CTX_GUARD_HANDOFF).toBe('')
+  expect(env?.CTX_GUARD_HANDOFF_MTIME_MS).toBe('')
 })
