@@ -551,7 +551,8 @@ Recipes use generic role names; rename them to fit your project.
 One long-running session, role `main`. `assets/presets/solo.json` spells out the built-in ladder:
 notes at 40 / 60 / 75 % (then every 5 %), usage notes at 80 / 90 %, an early brake that denies
 `Agent` and `Workflow` while the weekly window is at 80 % with two days or more to its reset (90 %
-with one day or more), and a brake at 95 % that also denies `WebSearch` and `WebFetch`. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume.
+with one day or more), and a brake at 95 % that also denies `WebSearch` and `WebFetch`. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume, and
+`restart.minContext: "40%"` refuses the ready token below the first context note.
 `/ctx-guard init` writes it to `.claude/ctx-guard.json`; review it, then run `/ctx-guard trust`.
 
 ### Coordinator and workers

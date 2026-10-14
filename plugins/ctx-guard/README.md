@@ -133,7 +133,8 @@ The `solo` preset is the built-in ladder written out, plus a handoff and **autom
       },
       "restart": {
         "mode": "auto",
-        "prompt": "Carry out Next action without waiting."
+        "prompt": "Carry out Next action without waiting.",
+        "minContext": "40%"
       }
     }
   }
@@ -610,7 +611,7 @@ preset (`/ctx-guard init`), shown here without its usage triggers:
       "handoff": {
         "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD, if this is a git repo. Sections: Goal, State, Next action."
       },
-      "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting." }
+      "restart": { "mode": "auto", "prompt": "Carry out Next action without waiting.", "minContext": "40%" }
     }
   }
 }

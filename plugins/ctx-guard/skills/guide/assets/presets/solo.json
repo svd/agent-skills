@@ -19,7 +19,8 @@
       },
       "restart": {
         "mode": "auto",
-        "prompt": "Carry out Next action without waiting."
+        "prompt": "Carry out Next action without waiting.",
+        "minContext": "40%"
       }
     }
   }
