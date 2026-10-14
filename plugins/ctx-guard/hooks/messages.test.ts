@@ -341,6 +341,21 @@ describe('deny reason', () => {
     expect(text).toContain('when the context shrinks after a /clear or /compact')
     expect(text).not.toContain('reset')
   })
+
+  test('a time-left condition names it and when the nearing reset lifts it', () => {
+    const DAY = 24 * 3_600_000
+    const s = spec({
+      triggers: [{ id: 'early', when: { 'limit.seven_day': 80, 'limit.seven_day.resetsIn': '2d' }, do: [{ deny: ['Agent'] }] }],
+    })
+    const m = metrics({ limits: { five_hour: null, seven_day: { pct: 85, resetsAt: new Date(NOW + 3 * DAY).toISOString() } } })
+    const text = denyReason('Agent', s.triggers[0] as NonNullable<RoleSpec['triggers'][0]>, m)
+    expect(text).toBe(
+      '[ctx-guard] Agent is blocked by trigger "early": weekly usage 85% ≥ 80% and time to the weekly reset 3d ≥ 2d. ' +
+        'Carry on without Agent; the block lifts when the weekly reset is less than 2d away (in 1d), ' +
+        'when the usage window resets (in 3d), or when the operator runs /ctx-guard pause, changes trigger "early" in the ' +
+        'ctx-guard config, or turns blocking off in /config. If you need Agent now, ask the operator.',
+    )
+  })
 })
 
 describe('refusal and subagent texts', () => {

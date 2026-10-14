@@ -3,7 +3,7 @@
 // Pure: no `$`, never throws. Texts carry numbers, names and paths only.
 import type { Level, Quantity, RestartMode, RestartVia, RoleSpec, Trigger } from '../types'
 import type { Condition, Fire, FireVars, LimitInfo, Metrics } from './triggers'
-import { conditions } from './triggers'
+import { conditions, resetsInMs } from './triggers'
 
 export const PREFIX = '[ctx-guard]'
 
@@ -61,12 +61,7 @@ export function humanQuantity(q: Quantity): string {
   }
 }
 
-/** Time until an ISO reset; null when absent or unparsable. */
-export function resetsInMs(resetsAt: string | null, now: number): number | null {
-  if (!resetsAt) return null
-  const t = Date.parse(resetsAt)
-  return Number.isFinite(t) ? Math.max(0, t - now) : null
-}
+export { resetsInMs }
 
 export function windowName(kind: string): string {
   return kind === 'five_hour' ? '5-hour' : kind === 'seven_day' ? 'weekly' : kind
@@ -279,7 +274,10 @@ export function toastText(vars: FireVars, role: string | null): string {
 
 // ---- denies, refusals, subagents ---------------------------------------------
 
+const isResetsIn = (metric: string): boolean => metric.endsWith('.resetsIn')
+
 function metricName(c: Condition): string {
+  if (isResetsIn(c.metric)) return `time to the ${c.limit ? windowName(c.limit.kind) : 'usage'} reset`
   if (c.limit) return `${windowName(c.limit.kind)} usage`
   if (c.metric.startsWith('limit.')) return 'usage'
   return c.metric
@@ -297,6 +295,11 @@ function conditionText(c: Condition): string {
 export function denyReason(tool: string, trigger: Trigger, metrics: Metrics): string {
   const cs = conditions(trigger, metrics)
   const lifts: string[] = []
+  // A time-left condition stops holding as the reset nears, before the window resets.
+  for (const c of cs.filter(x => isResetsIn(x.metric) && x.value !== null)) {
+    const which = c.limit ? `${windowName(c.limit.kind)} ` : ''
+    lifts.push(`when the ${which}reset is less than ${humanQuantity(c.threshold)} away (in ${humanDuration((c.value as number) - c.threshold.value)})`)
+  }
   const limits = cs.filter(c => c.limit)
   if (limits.length) {
     const ms = limits.map(c => resetsInMs(c.limit?.resetsAt ?? null, metrics.now)).filter((x): x is number => x !== null)

@@ -298,6 +298,22 @@ describe('validation', () => {
     )
   })
 
+  test('resetsIn takes a duration and needs its own window beside it', () => {
+    const c = ok(role({ triggers: [{ id: 'x', when: { 'limit.seven_day': 80, 'limit.seven_day.resetsIn': '2d', every: 5 }, do: ['note'] }] }))
+    const when = c.roles.lead?.triggers[0]?.when
+    expect(when?.['limit.seven_day.resetsIn']).toEqual({ kind: 'duration', value: 2 * 24 * 3_600_000 })
+    expect(when?.everyMetric).toBe('limit.seven_day')
+    expect(errorsOf(role({ triggers: [{ id: 'x', when: { 'limit.seven_day.resetsIn': '2d' }, do: ['note'] }] }))).toEqual([
+      'config: roles.lead.triggers[0].when.limit.seven_day.resetsIn: needs limit.seven_day in the same `when`',
+    ])
+    expect(
+      errorsOf(role({ triggers: [{ id: 'x', when: { 'limit.five_hour': 80, 'limit.seven_day.resetsIn': '2d' }, do: ['note'] }] })),
+    ).toEqual(['config: roles.lead.triggers[0].when.limit.seven_day.resetsIn: needs limit.seven_day in the same `when`'])
+    expect(
+      errorsOf(role({ triggers: [{ id: 'x', when: { 'limit.five_hour': 80, 'limit.five_hour.resetsIn': 60 }, do: ['note'] }] })).join('\n'),
+    ).toContain('when.limit.five_hour.resetsIn: expected a duration')
+  })
+
   test('bad level', () => {
     const errors = errorsOf(role({ triggers: [{ id: 'x', when: { context: '10%' }, do: ['note'], level: 'urgent' }] }))
     expect(errors).toEqual(['config: roles.lead.triggers[0].level: expected one of soft, hard, stop, got "urgent"'])

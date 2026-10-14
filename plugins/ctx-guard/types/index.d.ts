@@ -17,15 +17,27 @@ export type EdgeAction = 'note' | 'toast' | 'notify' | 'compact'
 export type DenyAction = { deny: string[] }
 export type Action = EdgeAction | DenyAction
 
-export type Metric = 'context' | 'limit.five_hour' | 'limit.seven_day' | 'limit.any' | 'cost' | 'idle'
+export type Metric =
+  | 'context'
+  | 'limit.five_hour'
+  | 'limit.seven_day'
+  | 'limit.any'
+  | 'limit.five_hour.resetsIn'
+  | 'limit.seven_day.resetsIn'
+  | 'cost'
+  | 'idle'
 
 // An AND of metrics; a null metric is not part of the trigger. `every` steps
 // the trigger's one context, limit or cost metric past its first threshold.
+// A `.resetsIn` metric (time left to that window's reset, at least) comes
+// only with the same window's percent metric.
 export type TriggerWhen = {
   context: Quantity | null
   'limit.five_hour': Quantity | null
   'limit.seven_day': Quantity | null
   'limit.any': Quantity | null
+  'limit.five_hour.resetsIn': Quantity | null
+  'limit.seven_day.resetsIn': Quantity | null
   cost: Quantity | null
   idle: Quantity | null
   every: Quantity | null

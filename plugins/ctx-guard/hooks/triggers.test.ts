@@ -238,6 +238,60 @@ describe('unknown metrics', () => {
   })
 })
 
+describe('resetsIn', () => {
+  const H = 3_600_000
+  const START = Date.parse('2026-10-13T10:00:00Z')
+  const iso = (ms: number): string => new Date(ms).toISOString()
+  // The weekly window at `pct`, `left` before its reset, read at `now`.
+  const week = (pct: number, left: number | null, now = START): Metrics =>
+    m({ now, limits: { five_hour: null, seven_day: { pct, resetsAt: left === null ? null : iso(now + left) } } })
+  const early = { id: 'early', when: { 'limit.seven_day': 80, 'limit.seven_day.resetsIn': '2d' }, do: ['note', { deny: ['Agent'] }] }
+  const on = { blocking: true, paused: false }
+
+  test('reads the time left to its window reset', () => {
+    const t = trigs(early)
+    const cs = conditions(t[0] as Trigger, week(85, 50 * H))
+    expect(cs.map(c => [c.metric, c.value, c.holds])).toEqual([
+      ['limit.seven_day', 85, true],
+      ['limit.seven_day.resetsIn', 50 * H, true],
+    ])
+  })
+
+  test('holds only while enough time is left; re-arms in the next window', () => {
+    const t = trigs(early)
+    const { fired } = run(t, [
+      week(85, 72 * H),
+      week(86, 60 * H),
+      // Under two days left: stops holding, the mark drops.
+      week(87, 47 * H),
+      // The window reset and filled fast again.
+      week(82, 6 * 24 * H),
+    ])
+    expect(fired).toEqual([['early@0'], [], [], ['early@0']])
+  })
+
+  test('the deny lifts as the reset nears, before the window resets', () => {
+    const t = trigs(early)
+    expect(liveDenies(t, week(85, 49 * H), on)).toEqual([{ tool: 'Agent', triggerId: 'early' }])
+    expect(liveDenies(t, week(85, 47 * H), on)).toEqual([])
+    expect(liveDenies(t, week(79, 6 * 24 * H), on)).toEqual([])
+  })
+
+  test('a window with no reset time is unknown: skipped, keeps its mark, denies nothing', () => {
+    const t = trigs(early)
+    const marked = run(t, [week(85, 72 * H)]).marks
+    const after = evaluate(t, week(90, null), marked, 'lead')
+    expect(after.fire).toEqual([])
+    expect(after.marks.byId.early).toEqual(marked?.byId.early)
+    expect(liveDenies(t, week(99, null), on)).toEqual([])
+  })
+
+  test('the text is about the usage, not the time left', () => {
+    const e = evaluate(trigs(early), week(85, 72 * H), null, 'lead')
+    expect(e.fire[0]?.vars).toMatchObject({ metric: 'limit.seven_day', threshold: { kind: 'percent', value: 80 }, limit: { kind: 'seven_day', pct: 85 } })
+  })
+})
+
 describe('limit.any', () => {
   const any = { id: 'any', when: { 'limit.any': 90 }, do: ['note'] }
 

@@ -60,7 +60,17 @@ export type Evaluation = { fire: Fire[]; marks: Marks }
 
 export type DenyEntry = { tool: string; triggerId: string }
 
-export const METRIC_ORDER: readonly Metric[] = ['context', 'limit.five_hour', 'limit.seven_day', 'limit.any', 'cost', 'idle']
+// A window's percent comes before its `.resetsIn`, so a fired trigger's text is about the usage.
+export const METRIC_ORDER: readonly Metric[] = [
+  'context',
+  'limit.five_hour',
+  'limit.seven_day',
+  'limit.any',
+  'limit.five_hour.resetsIn',
+  'limit.seven_day.resetsIn',
+  'cost',
+  'idle',
+]
 
 // Float slack so 70 + 2 × 5 counts as reaching step 2 at exactly 80.
 const EPS = 1e-9
@@ -125,6 +135,13 @@ export function metricsOf(src: MetricsSource, window: number, idle: number | nul
   }
 }
 
+/** Time until an ISO reset; null when absent or unparsable. */
+export function resetsInMs(resetsAt: string | null, now: number): number | null {
+  if (!resetsAt) return null
+  const t = Date.parse(resetsAt)
+  return Number.isFinite(t) ? Math.max(0, t - now) : null
+}
+
 export function contextPercent(m: Metrics): number | null {
   return m.tokens === null || !(m.window > 0) ? null : (m.tokens / m.window) * 100
 }
@@ -134,8 +151,8 @@ function limitFor(metric: Metric, m: Metrics): LimitInfo | null {
     const r = m.limits[kind]
     return r ? { kind, ...r } : null
   }
-  if (metric === 'limit.five_hour') return of('five_hour')
-  if (metric === 'limit.seven_day') return of('seven_day')
+  if (metric === 'limit.five_hour' || metric === 'limit.five_hour.resetsIn') return of('five_hour')
+  if (metric === 'limit.seven_day' || metric === 'limit.seven_day.resetsIn') return of('seven_day')
   if (metric !== 'limit.any') return null
   const five = of('five_hour')
   const week = of('seven_day')
@@ -151,6 +168,10 @@ function valueOf(metric: Metric, q: Quantity, m: Metrics, limit: LimitInfo | nul
       return m.cost
     case 'idle':
       return m.idleMs
+    case 'limit.five_hour.resetsIn':
+    case 'limit.seven_day.resetsIn':
+      // A window with no reset time is unknown: the trigger waits, a deny lets the call through.
+      return limit ? resetsInMs(limit.resetsAt, m.now) : null
     default:
       return limit ? limit.pct : null
   }

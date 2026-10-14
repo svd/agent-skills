@@ -338,7 +338,10 @@ const TOP_KEYS = ['$schema', 'version', 'enabled', 'stateDir', 'readyToken', 'de
 const ROLE_KEYS = ['description', 'triggers', 'notes', 'handoff', 'restart', 'compact']
 const TRIGGER_KEYS = ['id', 'when', 'do', 'level', 'message']
 const LIMIT_METRICS = ['limit.five_hour', 'limit.seven_day', 'limit.any'] as const
-const METRICS = ['context', ...LIMIT_METRICS, 'cost', 'idle'] as const
+// Time left to a window's reset; each needs its window's percent metric beside it.
+const RESETS_IN = { 'limit.five_hour.resetsIn': 'limit.five_hour', 'limit.seven_day.resetsIn': 'limit.seven_day' } as const
+const RESETS_IN_METRICS = Object.keys(RESETS_IN) as (keyof typeof RESETS_IN)[]
+const METRICS = ['context', ...LIMIT_METRICS, ...RESETS_IN_METRICS, 'cost', 'idle'] as const
 const WHEN_KEYS = [...METRICS, 'every']
 const STEPPABLE = ['context', ...LIMIT_METRICS, 'cost'] as const
 const EDGE_ACTIONS = ['note', 'toast', 'notify', 'compact'] as const
@@ -355,6 +358,8 @@ const METRIC_KINDS: Record<MetricKey, { allowed: readonly QuantityKind[]; bare?:
   'limit.five_hour': { allowed: ['percent'], bare: 'percent' },
   'limit.seven_day': { allowed: ['percent'], bare: 'percent' },
   'limit.any': { allowed: ['percent'], bare: 'percent' },
+  'limit.five_hour.resetsIn': { allowed: ['duration'] },
+  'limit.seven_day.resetsIn': { allowed: ['duration'] },
   cost: { allowed: ['usd'], bare: 'usd' },
   idle: { allowed: ['duration'] },
 }
@@ -365,6 +370,8 @@ function emptyWhen(): TriggerWhen {
     'limit.five_hour': null,
     'limit.seven_day': null,
     'limit.any': null,
+    'limit.five_hour.resetsIn': null,
+    'limit.seven_day.resetsIn': null,
     cost: null,
     idle: null,
     every: null,
@@ -389,6 +396,14 @@ function normalizeWhen(ctx: Ctx, path: string, v: unknown): TriggerWhen | null {
   if (!METRICS.some(m => v[m] !== undefined)) {
     err(ctx, path, `needs at least one metric: ${METRICS.join(', ')}`)
     return null
+  }
+  // Time left alone says nothing about how much of the window is used.
+  for (const metric of RESETS_IN_METRICS) {
+    const window = RESETS_IN[metric]
+    if (v[metric] !== undefined && v[window] === undefined) {
+      err(ctx, join(path, metric), `needs ${window} in the same \`when\``)
+      ok = false
+    }
   }
   if (v.every !== undefined) {
     const stepped = STEPPABLE.filter(m => v[m] !== undefined)

@@ -19,6 +19,11 @@ All notable changes to the `ctx-guard` plugin are documented here.
   re-arm on drop and, for triggers with a `context` condition, on `/clear` (a trigger on usage,
   cost or idle alone keeps its mark across `/clear`), unknown metrics skipped, and the
   level-triggered deny set.
+- `limit.five_hour.resetsIn` and `limit.seven_day.resetsIn` metrics: time left to that window's
+  reset, at least, allowed only beside the same window's percent metric. They express a brake
+  that tightens the earlier a window fills (`{ "limit.seven_day": 80,
+  "limit.seven_day.resetsIn": "2d" }`); unknown while the window reports no reset time, and a
+  deny on one names when the reset comes close enough to lift it.
 - Note, toast, deny-reason, refusal and subagent-budget texts, worded by level and restart mode.
   Only a note with a fired context trigger carries the restart tail: a restart frees context, so
   a note on usage, cost or idle alone asks for none.

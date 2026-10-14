@@ -139,6 +139,8 @@ Text values must hold more than whitespace. Unknown keys are errors at every lev
 | `limit.five_hour` | percent | Percent used of the 5-hour usage window. |
 | `limit.seven_day` | percent | Percent used of the weekly usage window. |
 | `limit.any` | percent | The higher of the two windows. |
+| `limit.five_hour.resetsIn` | duration | Time left until the 5-hour window resets, at least. Needs `limit.five_hour` in the same `when`. |
+| `limit.seven_day.resetsIn` | duration | Time left until the weekly window resets, at least. Needs `limit.seven_day` in the same `when`. |
 | `cost` | usd | Session cost. |
 | `idle` | duration | Time since the last main-loop turn ended. Zero while a turn runs. |
 
@@ -155,8 +157,15 @@ drops.
 Marks survive a hot reload. A role change drops the old role's marks.
 
 **Unknown metrics.** Context is unknown before the first response and right after `/clear`;
-usage windows are unknown until the engine reports them. A trigger with an unknown metric is
-skipped and keeps its mark.
+usage windows are unknown until the engine reports them, and a `.resetsIn` metric while its
+window reports no reset time. A trigger with an unknown metric is skipped and keeps its mark.
+
+**Time left to a reset.** Every metric holds at or above its threshold, so a `.resetsIn`
+threshold means "at least this long until the reset". It pairs a usage level with how early it
+came: `{ "limit.seven_day": 80, "limit.seven_day.resetsIn": "2d" }` holds at 80 % of the weekly
+window only while two days or more remain. As the reset nears the condition stops holding, so a
+deny on it lifts then and an edge action re-arms. See the
+[early-spend brake](#an-early-spend-brake) recipe.
 
 ### `every`
 
@@ -165,7 +174,7 @@ skipped and keeps its mark.
 the highest. The step falls with the metric, so a drop re-arms the lower steps.
 
 - The `when` needs exactly one of `context`, `limit.five_hour`, `limit.seven_day`, `limit.any`,
-  `cost`. `idle` cannot step.
+  `cost`. `idle` and the `.resetsIn` metrics cannot step.
 - `every` takes the stepped threshold's unit: a percent step on a percent threshold, tokens on
   tokens. A bare number means that unit.
 
@@ -182,7 +191,8 @@ the highest. The step falls with the metric, so a drop re-arms the lower steps.
 **Denies** are level-triggered: each main-loop tool call is judged afresh from live usage, so a
 deny lifts as soon as its metrics drop. They match tool names exactly, apply only once the
 session has a role, and fail open: an unknown metric or a failed check denies nothing. The
-reason names the trigger, its figures and what lifts it. `/ctx-guard pause` and the `blocking`
+reason names the trigger, its figures and what lifts it (for a `.resetsIn` condition, also when
+the reset comes close enough). `/ctx-guard pause` and the `blocking`
 switch lift every deny. A deny cannot share a trigger with `idle`. A response's tool calls start
 before its usage arrives, so a call made while the response streams is judged on an estimate of
 that request's context: the previous request's input and output plus the tool results since, at
@@ -636,6 +646,36 @@ again.
 ```
 
 `idle-cache` reminds you that a large context left idle will be re-read at full price.
+
+### An early-spend brake
+
+A weekly window spent fast early on leaves days with little to work with. This brake stops new
+subagents sooner the earlier the window fills: at 80 % with two days or more to the reset, at
+90 % with one day or more, and at 95 % at any time. The 5-hour window gets a plain brake at 95 %.
+Only the `deny` triggers are shown; they replace the built-in ladder, so list your context
+triggers too.
+
+```json
+{
+  "version": 1,
+  "roles": {
+    "main": {
+      "triggers": [
+        { "id": "week-80-early", "when": { "limit.seven_day": 80, "limit.seven_day.resetsIn": "2d" }, "do": ["note", { "deny": ["Agent"] }], "level": "hard" },
+        { "id": "week-90-early", "when": { "limit.seven_day": 90, "limit.seven_day.resetsIn": "1d" }, "do": ["note", { "deny": ["Agent"] }], "level": "hard" },
+        { "id": "week-95", "when": { "limit.seven_day": 95 }, "do": ["note", { "deny": ["Agent"] }], "level": "stop" },
+        { "id": "five-hour-95", "when": { "limit.five_hour": 95 }, "do": ["note", { "deny": ["Agent"] }], "level": "stop" }
+      ]
+    }
+  }
+}
+```
+
+The early triggers lift by
+themselves once the reset is close enough: at 85 % with 30 hours
+left, `week-80-early` has stopped holding (under two days) and `week-90-early` has not started
+(under 90 %), so subagents run again. A window that reports no reset time leaves the early
+triggers unknown, so they deny nothing; `week-95` still applies.
 
 ### A personal override
 

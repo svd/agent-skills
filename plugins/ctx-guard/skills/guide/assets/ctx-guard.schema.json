@@ -303,6 +303,28 @@
             }
           ]
         },
+        "limit.five_hour.resetsIn": {
+          "description": "Time left until the 5-hour usage window resets, at least. Needs limit.five_hour in the same `when`; unknown (the trigger waits, a deny lets calls through) while the window reports no reset time.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit.seven_day.resetsIn": {
+          "description": "Time left until the weekly usage window resets, at least. Needs limit.seven_day in the same `when`; unknown (the trigger waits, a deny lets calls through) while the window reports no reset time.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cost": {
           "description": "Session cost in US dollars.",
           "anyOf": [
@@ -326,7 +348,7 @@
           ]
         },
         "every": {
-          "description": "Repeat step. Needs exactly one of context, limit.*, cost in the same `when`.",
+          "description": "Repeat step. Needs exactly one of context, limit.five_hour, limit.seven_day, limit.any, cost in the same `when`.",
           "anyOf": [
             {
               "description": "Fire again each step past the first threshold. Takes the stepped metric's unit."
@@ -632,6 +654,58 @@
                     "type": "null"
                   }
                 ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "limit.five_hour.resetsIn"
+            ],
+            "properties": {
+              "limit.five_hour.resetsIn": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "limit.five_hour"
+            ],
+            "properties": {
+              "limit.five_hour": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "limit.seven_day.resetsIn"
+            ],
+            "properties": {
+              "limit.seven_day.resetsIn": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "limit.seven_day"
+            ],
+            "properties": {
+              "limit.seven_day": {
+                "not": {
+                  "type": "null"
+                }
               }
             }
           }
