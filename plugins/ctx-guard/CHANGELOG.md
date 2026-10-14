@@ -62,8 +62,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
   emptied `$.state`.
 - Guarded restart on the ready token: when the main loop's answer ends on a line holding only
   `readyToken` and the role's `restart.mode` is `auto`, a fail-closed verdict runs, refusing in
-  order with `untrusted`, `already-busy`, `not-needed` (the context is below the role's lowest
-  context threshold), `too-soon` (this session restarted less than `restart.selfGap`, default
+  order with `untrusted`, `already-busy`, `not-needed` (the context is below the role's
+  `restart.minContext`, a tokens or percent value set apart from the triggers; `"off"`, the
+  default, skips the check), `too-soon` (this session restarted less than `restart.selfGap`, default
   `5m`, ago; `"0"` turns it off), `no-restart-command`, `agents-running` (listed agents,
   or an agent seen stepping with no end, which covers workflow agents), `background-tasks` (the
   last Stop's list; none reported counts as unknown and refuses), `role-shared`, `no-handoff`, `handoff-stale`, `stamp-unreadable`,

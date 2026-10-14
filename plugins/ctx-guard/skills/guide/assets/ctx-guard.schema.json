@@ -1058,6 +1058,20 @@
                     }
                   ]
                 },
+                "minContext": {
+                  "description": "Context fill (tokens, or a percent of contextWindow) below which the ready token is refused with not-needed; \"off\" for no such check. Default off.",
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/tokensOrPercent"
+                    },
+                    {
+                      "const": "off"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "readyChecks": {
                   "anyOf": [
                     {

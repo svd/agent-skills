@@ -122,6 +122,8 @@ export type CheckRun = { run: readonly string[]; ok: boolean; detail: string }
 
 export type AgentRow = { id: string; status: string; description?: string; type?: string }
 
+type Placed = { tokens: number; threshold: Quantity }
+
 export type Facts = {
   via: RestartVia
   role: string
@@ -130,9 +132,10 @@ export type Facts = {
   untrustedWhy: string
   // Why a restart is already in progress; null when none is.
   busy: string | null
-  // The context fill now (null: unknown, as right after a /clear) and the role's lowest context
-  // threshold in tokens (null: the role has no context trigger, or one cannot be placed).
-  context: { tokens: number | null; floor: { tokens: number; threshold: Quantity } | null }
+  // The context fill now (null: unknown, as right after a /clear), the role's lowest context
+  // trigger threshold in tokens (null: the role has no context trigger, or one cannot be placed),
+  // and its restart.minContext in tokens (null: unset or off, or it cannot be placed).
+  context: { tokens: number | null; floor: Placed | null; min: Placed | null }
   // When this session's last restart went through (a /clear or a /compact on the token); null before any.
   lastRestartAt: number | null
   // 0 turns the self gap off.
@@ -195,21 +198,21 @@ function line(code: RefusalCode, fail: string | null, pass: string): CheckLine {
 
 const skip = (code: RefusalCode, text: string): CheckLine => ({ code, status: 'skip', text })
 
-// A restart frees context: below every context threshold there is nothing to free, and a note on
+// A restart frees context: below restart.minContext there is too little to free, and a note on
 // usage alone would only come back after the /clear.
 function neededLine(f: Facts): CheckLine {
-  const { tokens, floor } = f.context
-  if (floor === null) return skip('not-needed', 'no context trigger to judge by')
+  const { tokens, min } = f.context
+  if (min === null) return skip('not-needed', 'restart.minContext is off')
   if (tokens === null) return skip('not-needed', 'context unknown')
-  const at = floorText(floor)
+  const at = floorText(min)
   return line(
     'not-needed',
-    tokens < floor.tokens ? `context is at ${humanTokens(tokens)}, under the lowest context threshold ${at}: a restart frees nothing yet` : null,
-    `context ${humanTokens(tokens)} is past ${at}`,
+    tokens < min.tokens ? `context is at ${humanTokens(tokens)}, under restart.minContext ${at}: a restart frees nothing yet` : null,
+    `context ${humanTokens(tokens)} is past restart.minContext ${at}`,
   )
 }
 
-const floorText = (floor: { tokens: number; threshold: Quantity }): string =>
+const floorText = (floor: Placed): string =>
   floor.threshold.kind === 'tokens' ? humanTokens(floor.tokens) : `${humanQuantity(floor.threshold)} (${humanTokens(floor.tokens)})`
 
 // How long after a restart a context already past the lowest threshold is worth a warning.

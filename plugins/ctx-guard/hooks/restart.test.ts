@@ -45,7 +45,7 @@ function facts(over: Partial<Facts> = {}): Facts {
     trusted: true,
     untrustedWhy: 'never approved',
     busy: null,
-    context: { tokens: 320_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } },
+    context: { tokens: 320_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } }, min: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } },
     lastRestartAt: null,
     selfGap: 5 * MIN,
     command: 'ctx-guard:resume',
@@ -90,17 +90,19 @@ describe('verdict: one refusal per code', () => {
     expect(refusal(facts({ busy: 'a restart of this session is already under way' }))).toBe('already-busy')
   })
 
-  test('not-needed: the context is under the lowest context threshold', () => {
-    const floor = { tokens: 400_000, threshold: { kind: 'percent', value: 40 } } as const
-    expect(verdict(facts({ context: { tokens: 120_000, floor } }))).toEqual({
+  test('not-needed: the context is under restart.minContext, whatever the triggers say', () => {
+    const min = { tokens: 400_000, threshold: { kind: 'percent', value: 40 } } as const
+    const floor = { tokens: 100_000, threshold: { kind: 'tokens', value: 100_000 } } as const
+    expect(verdict(facts({ context: { tokens: 120_000, floor, min } }))).toEqual({
       ok: false,
       code: 'not-needed',
-      text: 'context is at 120k, under the lowest context threshold 40% (400k): a restart frees nothing yet',
+      text: 'context is at 120k, under restart.minContext 40% (400k): a restart frees nothing yet',
     })
-    expect(verdict(facts({ context: { tokens: 400_000, floor } }))).toEqual({ ok: true })
-    // No context trigger, or no figure (right after a /clear): not judged.
-    expect(verdict(facts({ context: { tokens: 120_000, floor: null } }))).toEqual({ ok: true })
-    expect(checkLines(facts({ context: { tokens: null, floor } })).find(l => l.code === 'not-needed')).toEqual({ code: 'not-needed', status: 'skip', text: 'context unknown' })
+    expect(verdict(facts({ context: { tokens: 400_000, floor, min } }))).toEqual({ ok: true })
+    // minContext off, or no figure (right after a /clear): not judged, even under every trigger.
+    expect(verdict(facts({ context: { tokens: 50_000, floor, min: null } }))).toEqual({ ok: true })
+    expect(checkLines(facts({ context: { tokens: 50_000, floor, min: null } })).find(l => l.code === 'not-needed')).toEqual({ code: 'not-needed', status: 'skip', text: 'restart.minContext is off' })
+    expect(checkLines(facts({ context: { tokens: null, floor, min } })).find(l => l.code === 'not-needed')).toEqual({ code: 'not-needed', status: 'skip', text: 'context unknown' })
   })
 
   test('too-soon: this session restarted within selfGap; 0 turns it off', () => {
@@ -120,7 +122,7 @@ describe('verdict: one refusal per code', () => {
     )
     expect(renoteRisk(facts({ lastRestartAt: NOW - 6 * MIN }))).toBeNull()
     expect(renoteRisk(facts({ lastRestartAt: null }))).toBeNull()
-    expect(renoteRisk(facts({ lastRestartAt: NOW - MIN, context: { tokens: 100_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } } }))).toBeNull()
+    expect(renoteRisk(facts({ lastRestartAt: NOW - MIN, context: { tokens: 100_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } }, min: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } } }))).toBeNull()
   })
 
   test('no-restart-command', () => {
@@ -263,7 +265,7 @@ describe('verdict order and the check list', () => {
     const all = facts({
       trusted: false,
       busy: 'busy',
-      context: { tokens: 100_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } },
+      context: { tokens: 100_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } }, min: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } },
       lastRestartAt: NOW - MIN,
       commands: [],
       agents: [{ id: 'x', status: 'running' }],
@@ -279,7 +281,7 @@ describe('verdict order and the check list', () => {
     const fixes: Partial<Facts>[] = [
       { trusted: true },
       { busy: null },
-      { context: { tokens: 320_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } } },
+      { context: { tokens: 320_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } }, min: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } } },
       { lastRestartAt: NOW - 10 * MIN },
       { commands: ['ctx-guard:resume'] },
       { agents: [] },

@@ -1176,7 +1176,7 @@ function autoConfig(restart: Record<string, unknown> = {}, handoff: Record<strin
   }
 }
 
-// Past the 300k trigger of autoConfig, so a restart has context to free (not-needed holds otherwise).
+// Past the 300k trigger of autoConfig, so a context note asks for the restart.
 function restartWorld(over: Partial<World> = {}): World {
   return newWorld({ commands: RESTART_COMMANDS, tokens: 310_000, ...over })
 }
@@ -3124,7 +3124,9 @@ test('the band draws from memory after a wiping /clear and repaints when the wri
 // and the note came straight back after the resume.
 test('a usage note never loops a restart: no tail, not-needed, its mark survives /clear, too-soon', { plugins: [WIPE] }, async ($, on) => {
   const w = restartWorld({ tokens: 100_000, limits: [], hang: { clear: 1000 } })
-  writeConfig(w, PRESET_TEXT.solo)
+  const solo = JSON.parse(PRESET_TEXT.solo)
+  solo.roles.main.restart.minContext = '40%'
+  writeConfig(w, solo)
   const { clock, session } = world(on, w)
   await start($)
   expect(await ctxGuard($, 'trust')).toContain('approved for /repo')
@@ -3138,7 +3140,7 @@ test('a usage note never loops a restart: no tail, not-needed, its mark survives
   expect(weekly()[0]).toContain('Prefer cheaper steps')
   // A token anyway: there is no context to free.
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain('CTX-READY ignored (not-needed): context is at 100k, under the lowest context threshold 40% (400k)')
+  expect(refusals(session).at(-1)).toContain('CTX-READY ignored (not-needed): context is at 100k, under restart.minContext 40% (400k)')
   expect(w.ran).toEqual([])
   // Past the context threshold the restart goes through.
   await measure($, w, 450_000)

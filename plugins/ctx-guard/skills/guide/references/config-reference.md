@@ -112,6 +112,7 @@ The same keys go in `defaults` and in each entry of `roles`.
 | `restart.peers` | list of role names | `[]` | Roles that must not restart within `peerGap` of this one. |
 | `restart.peerGap` | duration | `"10m"` | Minimum gap between a peer's restart and this role's. |
 | `restart.selfGap` | duration, or `"0"` for none | `"5m"` | Minimum gap between this session's own restarts on the ready token (`too-soon`). |
+| `restart.minContext` | tokens or percent, or `"off"` | `"off"` | Context fill below which the ready token is refused (`not-needed`). Set on its own, never read from the triggers. |
 | `restart.readyChecks` | list of [ready checks](#ready-checks) | `[]` | Commands that must pass before a restart. |
 | `compact.instructions` | text | none | Passed to `/compact`. |
 
@@ -301,7 +302,7 @@ With `via: compact` it ends "Nothing was compacted."
 |---|---|---|
 | `untrusted` | The repo's restart settings are not approved, or changed since. | The operator reads `/ctx-guard` and runs `/ctx-guard trust`. |
 | `already-busy` | A restart or compact is under way, a resume is pending (under 5 min old), or a turn started after the token. | Wait for it to finish. Do not repeat the token. |
-| `not-needed` | The context is known and below the lowest `context` threshold of the role's triggers (a percent read against the window): a restart would free nothing. Not judged when the role has no context trigger or the context is unknown. | Go on working; a context note asks for the restart when it is due. |
+| `not-needed` | The context is known and below `restart.minContext` (a percent read against the window): a restart would free too little. Not judged when `restart.minContext` is off (the default) or the context is unknown. | Go on working; a context note asks for the restart when it is due. Lower `restart.minContext`, or set it to `"off"`. |
 | `too-soon` | This session's own last restart on the ready token (a `/clear` or a `/compact`) was less than `restart.selfGap` ago. | Go on working; do not repeat the token. Set `selfGap: "0"` to turn the gap off. |
 | `no-restart-command` | `/<restart.command>` (`/compact` for `via: compact`) is not among the session's commands. | Fix `restart.command`, or install the plugin or project command it names. |
 | `agents-running` | A listed agent is pending, running or waiting, or an agent was seen stepping in the last 15 min with no end (this covers workflow agents). | Let the agents finish or stop them, then send the token again. |
@@ -459,7 +460,7 @@ before ctx-guard acts on them.
 **What needs approval:**
 
 - `readyToken` and `stateDir`;
-- per role: `restart.mode`, `via`, `command`, `prompt`, `peers`, `peerGap`, `selfGap` and `readyChecks`;
+- per role: `restart.mode`, `via`, `command`, `prompt`, `peers`, `peerGap`, `selfGap`, `minContext` and `readyChecks`;
   `handoff.path` and `handoff.style`; `compact.instructions`; every trigger with a `compact`
   action;
 - the content of every ready-check argument that is a file under the project root (SHA-256).

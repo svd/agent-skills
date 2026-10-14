@@ -57,7 +57,7 @@ the cause only if it is yours to fix, then send the token once more. Never loop 
 | `ready-check-failed` | The reason ends with the check's own output. Fix what it reports (for example, commit the work) if that belongs to the task; else tell the operator. |
 | `peer-restarting`, `race-lost` | A peer is restarting. Keep the handoff current and send the token again after the gap the reason names. |
 | `already-busy` | A restart is already under way. Do nothing. |
-| `not-needed`, `too-soon` | No restart is due: the context is below every context threshold, or this session restarted moments ago. Go on with the work; do not send the token again until a context note asks for it. |
+| `not-needed`, `too-soon` | No restart is due: the context is below the role's `restart.minContext`, or this session restarted moments ago. Go on with the work; do not send the token again until a context note asks for it. |
 | `untrusted`, `role-shared`, `no-restart-command`, `stamp-unreadable`, `error` | Not yours to fix. Tell the operator the code and reason, then say 'ready for /clear' (or '/compact'). |
 
 The reference has each code's full meaning and fix.

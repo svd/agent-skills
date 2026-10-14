@@ -74,6 +74,7 @@ import {
   effectiveMode,
   handoffPathFor,
   humanDuration,
+  humanQuantity,
   refusalNote,
   subagentDenyReason,
   subagentStopText,
@@ -123,6 +124,7 @@ import {
   liveDenies,
   markHeld,
   metricsOf,
+  placeContext,
   planActions,
   resetMarks,
   stepTokens,
@@ -1303,15 +1305,17 @@ async function pendingBusy($: EngineInterface, now: number): Promise<string | nu
   return pendingFresh(p, now) ? `a resume of ${p?.role ?? 'this role'} is pending since ${humanDuration(now - (p?.at ?? now))} ago` : null
 }
 
-// The fill now against the role's lowest context threshold; unknown when it cannot be read.
-async function contextFact($: EngineInterface, role: string): Promise<Facts['context']> {
+// The fill now against the role's lowest context trigger threshold and its restart.minContext;
+// unknown when it cannot be read.
+async function contextFact($: EngineInterface, role: string, spec: RoleSpec): Promise<Facts['context']> {
   const eff = mod.eff
   try {
     const reading = await currentReading($)
     const triggers = eff ? triggersFor(eff.config, role) : []
-    return { tokens: num(reading.context.tokens), floor: contextFloor(triggers, windowFor(reading.context.window).tokens) }
+    const window = windowFor(reading.context.window).tokens
+    return { tokens: num(reading.context.tokens), floor: contextFloor(triggers, window), min: placeContext(spec.restart.minContext ?? null, window) }
   } catch {
-    return { tokens: null, floor: null }
+    return { tokens: null, floor: null, min: null }
   }
 }
 
@@ -1331,7 +1335,7 @@ async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: st
     trusted: trusted(),
     untrustedWhy: untrustedWhy(),
     busy,
-    context: await contextFact($, role),
+    context: await contextFact($, role, spec),
     lastRestartAt: mem.lastRestartAt,
     // A config another version stored may lack it.
     selfGap: spec.restart.selfGap ?? DEFAULT_SELF_GAP,
@@ -2235,7 +2239,7 @@ async function trustCommand($: EngineInterface): Promise<string> {
     if (!spec) continue
     const r = spec.restart
     lines.push(`  ${name}:`)
-    lines.push(`    restart: mode ${r.mode}, via ${r.via}, command /${r.command}, prompt ${q(r.prompt)}, peers ${q(r.peers)}, peerGap ${humanDuration(r.peerGap)}, selfGap ${r.selfGap ? humanDuration(r.selfGap) : "0 (off)"}`)
+    lines.push(`    restart: mode ${r.mode}, via ${r.via}, command /${r.command}, prompt ${q(r.prompt)}, peers ${q(r.peers)}, peerGap ${humanDuration(r.peerGap)}, selfGap ${r.selfGap ? humanDuration(r.selfGap) : "0 (off)"}, minContext ${r.minContext ? humanQuantity(r.minContext) : 'off'}`)
     for (const c of r.readyChecks) {
       const hashed = c.run.filter(a => hashes[a])
       const out = c.run.filter(a => outside.includes(a))

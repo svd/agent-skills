@@ -523,7 +523,7 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
   checkKeys(ctx, hp, handoff, ['path', 'style', 'instructions'])
   const restart = objAt(ctx, join(path, 'restart'), o.restart)
   const rp = join(path, 'restart')
-  checkKeys(ctx, rp, restart, ['mode', 'via', 'command', 'prompt', 'peers', 'peerGap', 'selfGap', 'readyChecks'])
+  checkKeys(ctx, rp, restart, ['mode', 'via', 'command', 'prompt', 'peers', 'peerGap', 'selfGap', 'minContext', 'readyChecks'])
   const compact = objAt(ctx, join(path, 'compact'), o.compact)
   checkKeys(ctx, join(path, 'compact'), compact, ['instructions'])
 
@@ -567,6 +567,7 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
       peers,
       peerGap: durationAt(ctx, join(rp, 'peerGap'), restart.peerGap, DEFAULT_PEER_GAP),
       selfGap: gapAt(ctx, join(rp, 'selfGap'), restart.selfGap, DEFAULT_SELF_GAP),
+      minContext: restart.minContext === undefined || restart.minContext === 'off' ? null : qtyAt(ctx, join(rp, 'minContext'), restart.minContext, ['tokens', 'percent'], 'tokens'),
       readyChecks,
     },
     compact: { instructions: textAt(ctx, join(path, 'compact.instructions'), compact.instructions, null) },
@@ -946,9 +947,9 @@ export function trustMaterial(config: Config): unknown {
   for (const name of Object.keys(config.roles).sort()) {
     const spec = roleSpec(config, name)
     if (!spec) continue
-    const { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap } = spec.restart
+    const { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext } = spec.restart
     out[name] = {
-      restart: { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap },
+      restart: { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext },
       // The handoff path and style land in the resume command line.
       handoff: { path: spec.handoff.path, style: spec.handoff.style },
       compact: spec.compact.instructions,

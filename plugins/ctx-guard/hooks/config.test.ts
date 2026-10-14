@@ -392,6 +392,11 @@ describe('validation', () => {
     expect(ok(r({ selfGap: 0 })).roles.lead?.restart.selfGap).toBe(0)
     expect(errorsOf(r({ selfGap: 5 }))[0]).toContain('restart.selfGap: expected a duration')
     expect(errorsOf(r({ selfGap: '-1m' }))[0]).toContain('restart.selfGap: expected a duration')
+    expect(ok(r({ minContext: '40%' })).roles.lead?.restart.minContext).toEqual({ kind: 'percent', value: 40 })
+    expect(ok(r({ minContext: '300k' })).roles.lead?.restart.minContext).toEqual({ kind: 'tokens', value: 300_000 })
+    expect(ok(r({ minContext: 300000 })).roles.lead?.restart.minContext).toEqual({ kind: 'tokens', value: 300_000 })
+    expect(ok(r({ minContext: 'off' })).roles.lead?.restart.minContext).toBeNull()
+    expect(errorsOf(r({ minContext: '$2' }))[0]).toContain('restart.minContext: expected')
     for (const bad of ['two words', 'a;rm -rf', 'x.y', 'cmd\n']) {
       expect(errorsOf(r({ command: bad }))[0]).toContain('is not a command name')
     }
@@ -557,6 +562,7 @@ describe('defaults inheritance', () => {
       peers: [],
       peerGap: 600_000,
       selfGap: 300_000,
+      minContext: null,
       readyChecks: [],
     })
   })
@@ -844,6 +850,7 @@ describe('trust hash', () => {
       { roles: { other: { restart: { mode: 'auto' } } } },
       { defaults: { restart: { via: 'compact' } } },
       { roles: { lead: { restart: { selfGap: '0' } } } },
+      { roles: { lead: { restart: { minContext: '40%' } } } },
     ]) {
       expect(hashOf(over)).not.toBe(h0)
     }

@@ -236,6 +236,7 @@ For editor completion, point `$schema` at the schema (ctx-guard ignores the key)
         "command": "ctx-guard:resume",  // run after /clear
         "prompt": "Carry out Next action without waiting.",
         "selfGap": "5m",                // min gap between this session's own restarts
+        "minContext": "off",            // refuse the ready token below this fill ("40%", "300k")
         "peers": [], "peerGap": "10m",  // roles that must not restart within peerGap
         "readyChecks": []               // commands that must exit 0 before a restart
       },
@@ -461,7 +462,7 @@ turn. The first that fails refuses the restart with a toast and a note to the mo
 
 1. `untrusted`: the repo's restart settings are approved.
 2. `already-busy`: no restart, compact or resume is under way.
-3. `not-needed`: context is at or above the role's lowest context threshold.
+3. `not-needed`: context is at or above `restart.minContext` (default `"off"`: not checked).
 4. `too-soon`: this session's last restart was at least `restart.selfGap` (default `5m`) ago.
 5. `no-restart-command`: the resume command exists in this session.
 6. `agents-running`, `background-tasks`: no subagent, workflow agent or background shell runs.
@@ -931,7 +932,7 @@ the ones below need you.
 | `no-handoff`, `handoff-stale` | The handoff is missing, empty, or older than the session start or last `/clear`. | The model rewrites it and sends the token again. |
 | `agents-running` | A subagent or workflow agent is still running (or was seen in the last 15 min with no end). | Let it finish or stop it. |
 | `background-tasks` | Background shells are running, or no turn end has reported yet. | Stop them; finish one turn. |
-| `not-needed` | Context is below the role's lowest context threshold. | Nothing to do; the model goes on working. |
+| `not-needed` | Context is below `restart.minContext`. | Nothing to do; the model goes on working. Lower `restart.minContext` or set it to `"off"`. |
 | `too-soon` | This session restarted less than `restart.selfGap` (default `5m`) ago. | Wait, or set `"selfGap": "0"`. |
 | `role-shared` | Another live session holds this role's lease. | End the other session or give it another role. A dead session's lease expires after 15 minutes. |
 | `peer-restarting`, `race-lost` | A peer restarted less than `peerGap` ago, or won a simultaneous restart. | Wait out the gap. |

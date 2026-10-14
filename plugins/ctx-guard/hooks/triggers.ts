@@ -313,6 +313,12 @@ export function contextFloor(triggers: readonly Trigger[], window: number): { to
   return floor
 }
 
+/** A context threshold in tokens on `window`; null when there is none, or it cannot be placed. */
+export function placeContext(q: Quantity | null, window: number): { tokens: number; threshold: Quantity } | null {
+  const tokens = q ? asTokens(q, window) : null
+  return q && tokens !== null ? { tokens, threshold: q } : null
+}
+
 // ---- step gates --------------------------------------------------------------
 
 // Between `rise` and `fall` a new context reading cannot change any context

@@ -74,6 +74,8 @@ export type RoleSpec = {
     peerGap: number
     // How soon after its own last restart this session may restart again; 0 is no gap.
     selfGap: number
+    // Below this context fill the ready token is refused (not-needed); null is no such check.
+    minContext: Quantity | null
     readyChecks: ReadyCheck[]
   }
   compact: { instructions: string | null }
