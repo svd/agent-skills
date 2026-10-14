@@ -249,7 +249,9 @@ For editor completion, point `$schema` at the schema (ctx-guard ignores the key)
 
   "subagents": {                        // per-type context budgets
     "*": { "warn": "120k", "stop": "170k" }
-  }
+  },
+
+  "band": { "probes": [] }              // project scripts drawn on the band, shared by every role
 }
 ```
 
@@ -681,6 +683,10 @@ A failing check refuses with `ready-check-failed` and quotes the script's output
 sees what to commit. Checks run without a shell, from the project root, in order; exit 0
 passes. Trust hashes the script, so editing it needs `/ctx-guard trust` again.
 
+Every check also gets `CTX_GUARD_*` environment variables (the role, the handoff path and
+mtime, the bound the handoff must be newer than), so a project check can judge the handoff
+itself; see [What a check is told](skills/guide/references/config-reference.md#what-a-check-is-told).
+
 ### 5. Compact instead of clear
 
 The session keeps its context, summarised, instead of starting over from a handoff (see
@@ -893,7 +899,29 @@ Then point the role at it:
 The copy is needed because the skill saves dated files under `.claude/session-handoffs/<slug>/`,
 while ctx-guard checks and resumes from `handoff.path`.
 
-### 12. A personal override
+### 12. Project status on the band
+
+A band probe puts a project script's output on the band. Ask Claude to copy `git-branch.sh` from
+the `guide` skill's `assets/probes/` folder into `.claude/ctx-guard/`, then:
+
+```json
+{
+  "version": 1,
+  "defaultRole": "main",
+  "band": {
+    "probes": [{ "id": "git", "run": ["sh", ".claude/ctx-guard/git-branch.sh"], "every": "60s" }]
+  }
+}
+```
+
+Run `/ctx-guard trust`: probes run only in a trusted repo, and trust hashes the script. The band
+then reads `main · 312k (31%) · 5h 42% · feat/x`, the branch in warning colour while the
+worktree has changes. A probe prints its segment on the first line and an optional colour on
+the second; printing nothing draws nothing, and a failing probe draws `git ?`. `/ctx-guard`
+reports each probe's last run. See
+[Band probes](skills/guide/references/config-reference.md#band-probes).
+
+### 13. A personal override
 
 `.claude/ctx-guard.local.json` changes the team file for you alone. This one keeps restarts
 manual for `lead` and drops the team's note suffix:
@@ -910,7 +938,7 @@ manual for `lead` and drops the team's note suffix:
 }
 ```
 
-### 13. Turning it down or off
+### 14. Turning it down or off
 
 | You want | Do |
 |---|---|

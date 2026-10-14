@@ -146,3 +146,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - The built-in brakes and both presets block `Workflow` wherever they block `Agent`, since a
   workflow fans out subagents past an `Agent` block. The 95 % brake (`limit-stop`, and
   `limit-brake` in the presets) also blocks `WebSearch` and `WebFetch`.
+- Ready checks run with `CTX_GUARD_*` environment variables: the role
+  (`CTX_GUARD_SCRIPT_ROLE`), the handoff path and mtime, the bound a handoff must be newer than,
+  the state dir and `via`; `CTX_GUARD_PURPOSE` is `dry-run` under `/ctx-guard check`.
+- `band.probes`: up to four project scripts whose output is a band segment, run on their own
+  timers in a trusted repo; `/ctx-guard` reports their last run.

@@ -53,7 +53,7 @@ the cause only if it is yours to fix, then send the token once more. Never loop 
 |---|---|
 | `no-handoff`, `handoff-stale` | Rewrite the handoff now, then send the token again. |
 | `agents-running`, `background-tasks` | Wait for them to finish (or collect their results), then send the token again. |
-| `ready-check-failed` | The reason ends with the check's own output. Fix what it reports (for example, commit the work) if that belongs to the task; else tell the operator. |
+| `ready-check-failed` | The reason ends with the output of a project script. Fix what it names (for example, commit the work, or wait for a step to finish) if that belongs to the task; else tell the operator. Never edit or bypass the script. |
 | `peer-restarting`, `race-lost` | A peer is restarting. Keep the handoff current and send the token again after the gap the reason names. |
 | `already-busy` | A restart is already under way. Do nothing. |
 | `not-needed`, `too-soon` | No restart is due: the context is below the role's `restart.minContext`, or this session restarted moments ago. Go on with the work; do not send the token again until a context note asks for it. |

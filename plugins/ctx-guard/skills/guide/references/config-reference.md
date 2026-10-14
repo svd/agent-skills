@@ -14,6 +14,7 @@ Every key, default and rule of config schema v1, then recipes. The JSON Schema i
 - [Notes and template variables](#notes-and-template-variables)
 - [Restart](#restart)
 - [Ready checks](#ready-checks)
+- [Band probes](#band-probes)
 - [Compact](#compact)
 - [Subagent budgets](#subagent-budgets)
 - [Trust](#trust)
@@ -92,6 +93,7 @@ Every quantity must be above zero.
 | `defaults` | role object | `{}` | Settings every role inherits. Objects deep-merge under each role; arrays (such as `triggers`) replace. |
 | `roles` | object of role name → role object | `{ "main": {} }` | The roles. Names match `^[a-z][a-z0-9-]{0,31}$`. The built-in `main` stays unless a layer sets `"main": null`. |
 | `subagents` | object of subagent type (or `*`, `fork`, `teammate`) → budget | `{}` | [Subagent budgets](#subagent-budgets). |
+| `band` | object | `{ "probes": [] }` | [Band probes](#band-probes): project scripts whose output is a band segment. Shared by every role. |
 
 ## Role keys
 
@@ -367,6 +369,31 @@ once the checks above them in the verdict have passed. A failed check's refusal 
 code and the last 300 characters of its stderr (stdout when stderr is empty), on one line, so
 make a check print why it failed.
 
+### What a check is told
+
+A check runs with these environment variables, taken from the facts the verdict gathered:
+
+| Variable | Value |
+|---|---|
+| `CTX_GUARD_PURPOSE` | `ready-check`; `dry-run` under `/ctx-guard check` |
+| `CTX_GUARD_SCRIPT_ROLE` | the role |
+| `CTX_GUARD_ROOT` | the project root as the session reports it (the script's working directory) |
+| `CTX_GUARD_STATE_DIR` | `stateDir`, absolute |
+| `CTX_GUARD_HANDOFF` | the configured handoff path, absolute, whether or not the file exists |
+| `CTX_GUARD_HANDOFF_MTIME_MS` | the handoff's mtime, epoch ms; empty when the file is absent or unusable |
+| `CTX_GUARD_SINCE_MS` | the later of the session start and the last `/clear`, epoch ms: the bound `handoff-stale` uses |
+| `CTX_GUARD_VIA` | `clear` or `compact` |
+
+Every variable is always set. A value that does not apply (no role, the handoff under
+`via: compact`, an absent handoff's mtime) is the empty string, so test for empty rather than
+for unset. Values are decimal integers or plain strings, never quoted.
+
+`/ctx-guard check` runs the checks with `CTX_GUARD_PURPOSE=dry-run`, so a check with side
+effects can skip them.
+
+The role is in `CTX_GUARD_SCRIPT_ROLE`, not `CTX_GUARD_ROLE`: ctx-guard reads `CTX_GUARD_ROLE`
+to pick a session's role, so a script that starts `claude` would otherwise hand its role on.
+
 `assets/ready-checks/clean-worktree.sh` is an example. It fails while `git status --porcelain`
 lists changes, and prints them; with `--tracked-only` it ignores untracked files. To get it,
 ask Claude to copy `clean-worktree.sh` from the `guide` skill's `assets/ready-checks/` folder
@@ -380,6 +407,59 @@ Files ctx-guard or the handoff writes count as changes unless gitignored:
 - anything else a skill named in `handoff.instructions` writes.
 
 Ignore them, or pass `--tracked-only` if they are never committed.
+
+## Band probes
+
+A probe is a project script whose output is a segment on the band. Probes show status only:
+they never gate a restart, a deny or a note.
+
+```json
+{
+  "version": 1,
+  "band": {
+    "probes": [
+      { "id": "git", "run": ["sh", ".claude/ctx-guard/git-branch.sh"], "every": "60s", "timeout": "5s" }
+    ]
+  }
+}
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `band.probes` | list | `[]` | At most 4 probes, shared by every role. A later layer's list replaces an earlier one. |
+| `id` | string matching `^[a-z][a-z0-9-]{0,31}$` | — | Unique in the list. Names the probe in the report and in its failure segment. |
+| `run` | non-empty list of strings | — | The command, then its arguments. Runs without a shell, from the project root. |
+| `every` | duration | `"60s"` | How often it runs. At least `"15s"`. |
+| `timeout` | duration | `"5s"` | At most `"30s"`. |
+
+**Output.** Exit 0 with no output (or only blank lines) draws no segment. Otherwise the first
+non-blank line is the segment's text: terminal escapes and control characters are removed, and
+text longer than 40 characters is cut to 39 plus `…`. An optional next line picks a colour:
+`inactive`, `green`, `warning`, `error` or `subtle`; any other value keeps the default. A
+non-zero exit, a timeout or a start failure draws `<id> ?` in `warning`; the last 300
+characters of stderr (stdout when stderr is empty) go to the report, never to the band.
+
+**Environment.** The [ready-check variables](#what-a-check-is-told), with
+`CTX_GUARD_PURPOSE=band-probe`. `CTX_GUARD_SCRIPT_ROLE`, `CTX_GUARD_HANDOFF` and
+`CTX_GUARD_HANDOFF_MTIME_MS` are empty when the session has no role.
+
+**When they run.** On their own timers, from the session start and again right after a `/clear`.
+Never from a turn, a tool call or a context measure, so a slow probe holds nothing up. A tick
+while the probe's last run is still going is skipped. Probes do not run when ctx-guard is off,
+when `display` is `off`, or when the repo is not [trusted](#trust); a pause does not stop them.
+After a config reload a removed probe's segment goes, and the last result of the others stays
+drawn until their next run.
+
+**Trust.** `band.probes` is approved with the other settings, and every probe argument that is a
+file under the project root is hashed, so editing the script withdraws the approval. A config
+without probes approves as before they existed.
+
+**Report.** `/ctx-guard` lists each probe: `probe git: "main" (warning), 2m ago`, `no segment`,
+`failed 2m ago: exited 1: …` or `not run (untrusted)`.
+
+`assets/probes/git-branch.sh` is an example: the branch name, in `warning` while the worktree
+has changes. Copy it into `.claude/ctx-guard/` as with the ready-check example, then run
+`/ctx-guard trust`.
 
 ## Compact
 
@@ -458,11 +538,11 @@ before ctx-guard acts on them.
 
 **What needs approval:**
 
-- `readyToken` and `stateDir`;
+- `readyToken` and `stateDir`, and, for all roles, `band.probes`;
 - per role: `restart.mode`, `via`, `command`, `prompt`, `peers`, `peerGap`, `selfGap`, `minContext` and `readyChecks`;
   `handoff.path`; `compact.instructions`; every trigger with a `compact`
   action;
-- the content of every ready-check argument that is a file under the project root (SHA-256).
+- the content of every ready-check or band-probe argument that is a file under the project root (SHA-256).
   Editing such a script withdraws the approval. A command outside the root is trusted by name.
 
 **Approving.** The operator types `/ctx-guard trust`. It re-reads the files and prints every
@@ -475,8 +555,8 @@ script:.claude/ctx-guard/clean-worktree.sh`). There is no untrust command: to st
 actions, set `restart.mode` to `manual` or turn `autoActions` off.
 
 **Untrusted,** notes, toasts and denies still work; they carry no more power than CLAUDE.md text.
-Ready-token restarts refuse with `untrusted`, `compact` actions and ready checks do not run, and
-notes ask the model to tell the operator instead.
+Ready-token restarts refuse with `untrusted`, `compact` actions, ready checks and band probes do
+not run, and notes ask the model to tell the operator instead.
 
 ## Path confinement
 
@@ -527,10 +607,10 @@ The band reads like `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · su
 
 | Subcommand | Typed by | Does |
 |---|---|---|
-| *(none)* | anyone | Report: role and its source, config files and errors, effective config, metrics, marks, live denies, trust, handoff age, lease, last verdict. |
+| *(none)* | anyone | Report: role and its source, config files and errors, effective config, metrics, marks, live denies, band probes, trust, handoff age, lease, last verdict. |
 | `role <name\|none>` | operator | Sets this session's role. |
 | `check` | operator | Dry-runs the restart verdict. |
-| `trust` | operator | Approves the repo's restart, ready-check and compact settings. |
+| `trust` | operator | Approves the repo's restart, ready-check, compact and band-probe settings. |
 | `reload` | anyone | Re-reads the config files. |
 | `pause [30m\|off]` | operator | Lifts denies and automatic actions for a while (default 30 min); notes go on. `off` ends the pause. |
 | `init [solo\|peers]` | operator | Copies the preset `assets/presets/<name>.json` to `configPath` if no file is there (never overwrites), and adds the local file and `stateDir` to `.gitignore`. Default `solo`. When the preset restarts or compacts on its own, the reply says to review it and run `/ctx-guard trust`. |
