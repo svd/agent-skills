@@ -6,9 +6,8 @@
 #   sh clean-worktree.sh --tracked-only   untracked files are ignored
 #
 # ctx-guard runs it from the project root. Gitignore ctx-guard's state folder
-# (/ctx-guard init does this) and, with handoff.style "session-handoff",
-# .claude/session-handoffs/ -- or pass --tracked-only -- else the handoff and
-# ctx-guard's own files count as changes.
+# (/ctx-guard init does this) and any handoff written outside it -- or pass
+# --tracked-only -- else the handoff and ctx-guard's own files count as changes.
 set -u
 
 untracked=normal

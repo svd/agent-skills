@@ -83,9 +83,7 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - `/ctx-guard:resume` command: reads the handoff, checks its claims against the repository, then
   carries out its Next action or reports the mismatch. Typed by the person in a session with no
   role, its `role=` claims that role; a different role already held is refused.
-- `handoff.style: "session-handoff"`: the handoff is the newest non-empty `.md` under
-  `.claude/session-handoffs/ctx-guard-<role>/`, and notes name the skill, that project slug and
-  that its tool runs from the project root.
+- `handoff.instructions` may name any skill that writes the handoff, and takes `{role}`.
 - Role lease `{stateDir}/{role}.owner`: a heartbeat on measure and every 5 minutes, one warning toast when another
   live session holds the role, released when the session ends (not on `/clear`).
 - Per-repo trust: `/ctx-guard trust` (typed by the person) re-reads the config, approves the

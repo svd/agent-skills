@@ -230,7 +230,7 @@ For editor completion, point `$schema` at the schema (ctx-guard ignores the key)
         { "id": "ctx-soft", "when": { "context": "40%" }, "do": ["note"], "level": "soft" }
       ],
       "notes":   { "suffix": "A line appended to every note." },
-      "handoff": { "path": ".ctx-guard/{role}-handoff.md", "style": "file", "instructions": "…" },
+      "handoff": { "path": ".ctx-guard/{role}-handoff.md", "instructions": "…" },
       "restart": {
         "mode": "auto",                 // auto | manual | off
         "via": "clear",                 // clear | compact
@@ -410,7 +410,7 @@ there and fresh, and runs the clear and the resume.
 
 | Mode | The note ends with | The ready token |
 |---|---|---|
-| `auto` | "At the next safe point — no subagents running, current work recorded — rewrite `<handoff>`: *instructions* Then end your reply with a line holding only `CTX-READY`." | Starts a guarded `/clear` and resume. |
+| `auto` | "At the next safe point — no subagents running, current work recorded — write the handoff to `<handoff>`: *instructions* Then end your reply with a line holding only `CTX-READY`." | Starts a guarded `/clear` and resume. |
 | `manual` (default) | The same, but "Then tell the operator 'ready for /clear'." | Ignored. You run `/clear` and the resume yourself. |
 | `off` | Nothing about a handoff. | Ignored. |
 
@@ -425,10 +425,9 @@ A note promises `auto` only when ctx-guard would act on the token. With the repo
 | Key | Default | Meaning |
 |---|---|---|
 | `handoff.path` | `.ctx-guard/{role}-handoff.md` | Where the model writes it. `{role}` is filled in. Relative, under the project root. |
-| `handoff.style` | `file` | `file`: the model rewrites the path with the Write tool. `session-handoff`: it uses the session-handoff skill, and the handoff is the newest `.md` in `.claude/session-handoffs/ctx-guard-<role>/`. |
-| `handoff.instructions` | none | What the handoff must hold. Quoted in the note, so this is where you shape it. |
+| `handoff.instructions` | none | What the handoff must hold, and the skill that writes it if any (recipe 11). Quoted in the note with `{role}` filled in, so this is where you shape it. |
 
-The model rewrites the whole file each time, never appends. Make every claim checkable: the
+Unless the instructions name a skill, the model rewrites the whole file each time, never appends. Make every claim checkable: the
 resume verifies the recorded git `HEAD` and every path named. A handoff written with the
 preset's instructions looks like this:
 
@@ -848,7 +847,15 @@ Or keep percents and set `"contextWindow": "500k"`: then 40 % is 200k on every m
 
 ### 11. Handoffs through the session-handoff skill
 
-If you use the `session-handoff` plugin from this marketplace, let it write the handoff:
+Any skill can write the handoff: name it in `handoff.instructions`. This recipe uses the
+`session-handoff` plugin from this repo (`plugins/session-handoff`). Install it:
+
+```
+/plugin marketplace add svd/agent-skills
+/plugin install session-handoff@svd-agent-skills
+```
+
+Then point the role at it:
 
 ```json
 {
@@ -856,15 +863,18 @@ If you use the `session-handoff` plugin from this marketplace, let it write the 
   "defaultRole": "main",
   "roles": {
     "main": {
-      "handoff": { "style": "session-handoff" },
+      "handoff": {
+        "path": ".ctx-guard/{role}-handoff.md",
+        "instructions": "Write it with the session-handoff skill (project slug `ctx-guard-{role}`, its handoff tool run from the project root), then copy the result to this path. Sections: Goal, State, Next action."
+      },
       "restart": { "mode": "auto" }
     }
   }
 }
 ```
 
-Notes then ask for a handoff with the skill under the project slug `ctx-guard-main`, and the
-restart reads the newest `.md` in `.claude/session-handoffs/ctx-guard-main/`.
+The copy is needed because the skill saves dated files under `.claude/session-handoffs/<slug>/`,
+while ctx-guard checks and resumes from `handoff.path`.
 
 ### 12. A personal override
 
@@ -971,9 +981,9 @@ the ones below need you.
 ### `clean-worktree.sh` always fails
 
 The handoff and ctx-guard's own files count as changes unless gitignored. `/ctx-guard init`
-gitignores `.ctx-guard/`; add `.claude/session-handoffs/` for `handoff.style:
-"session-handoff"`, and any `handoff.path` outside `stateDir`. Or pass `--tracked-only` so
-untracked files are ignored.
+gitignores `.ctx-guard/`; add any `handoff.path` outside `stateDir`, and
+`.claude/session-handoffs/` with [recipe 11](#11-handoffs-through-the-session-handoff-skill).
+Or pass `--tracked-only` so untracked files are ignored.
 
 ### Tools are blocked
 

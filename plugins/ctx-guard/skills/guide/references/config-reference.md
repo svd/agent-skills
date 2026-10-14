@@ -103,8 +103,7 @@ The same keys go in `defaults` and in each entry of `roles`.
 | `triggers` | list of triggers | the [built-in ladder](#built-in-ladder) | Replaces the built-in ladder as a whole. |
 | `notes.suffix` | text | none | Appended to every note for this role. Template variables apply. |
 | `handoff.path` | path; `{role}` is filled in | `"<stateDir>/{role}-handoff.md"` | The handoff file the notes name and the restart checks. |
-| `handoff.style` | `"file"` or `"session-handoff"` | `"file"` | `session-handoff`: notes point to that skill, and the handoff is its newest file (see [Path confinement](#path-confinement)). |
-| `handoff.instructions` | text | none | What the handoff must hold; quoted in the note. |
+| `handoff.instructions` | text; `{role}` is filled in | none | What the handoff must hold, and the skill that writes it if any; quoted in the note. |
 | `restart.mode` | `"auto"`, `"manual"` or `"off"` | `"manual"` | `auto`: the ready token triggers a guarded restart. `manual`: notes ask the model to tell the operator. `off`: notes carry no handoff request. |
 | `restart.via` | `"clear"` or `"compact"` | `"clear"` | `clear` runs `/clear` then the resume command; `compact` runs `/compact`. |
 | `restart.command` | command name, leading `/` optional | `"ctx-guard:resume"` | Run after `/clear` as `/<command> role=<role> handoff=<path> <prompt>`. A project command works too. |
@@ -247,13 +246,13 @@ A note starts with `[ctx-guard]`, then holds:
 
 **Restart tail.** With `mode: auto` and `via: clear`:
 
-> At the next safe point — no subagents running, current work recorded — rewrite
+> At the next safe point — no subagents running, current work recorded — write the handoff to
 > `.ctx-guard/lead-handoff.md`: *instructions* Then end your reply with a line holding only
 > `CTX-READY`.
 
 - `mode: manual` ends with "Then tell the operator 'ready for /clear'."
-- `style: session-handoff` asks for "a handoff with the session-handoff skill", with the project
-  slug `ctx-guard-<role>`, its handoff tool run from the project root.
+- Without instructions it reads "… write the handoff to `.ctx-guard/lead-handoff.md`." When
+  the instructions name a skill, the model writes the handoff with it, to that path.
 - `via: compact` asks for no handoff: it ends on the token ("…; ctx-guard then compacts the
   session."), or in manual mode on "tell the operator 'ready for /compact'".
 - `mode: off` adds no tail.
@@ -377,8 +376,8 @@ into `.claude/ctx-guard/`, or copy it from the plugin's repository by hand. Then
 Files ctx-guard or the handoff writes count as changes unless gitignored:
 
 - `stateDir` (`/ctx-guard init` adds it to `.gitignore`);
-- with `handoff.style: "session-handoff"`, `.claude/session-handoffs/`;
-- a `handoff.path` outside `stateDir`.
+- a `handoff.path` outside `stateDir`;
+- anything else a skill named in `handoff.instructions` writes.
 
 Ignore them, or pass `--tracked-only` if they are never committed.
 
@@ -461,7 +460,7 @@ before ctx-guard acts on them.
 
 - `readyToken` and `stateDir`;
 - per role: `restart.mode`, `via`, `command`, `prompt`, `peers`, `peerGap`, `selfGap`, `minContext` and `readyChecks`;
-  `handoff.path` and `handoff.style`; `compact.instructions`; every trigger with a `compact`
+  `handoff.path`; `compact.instructions`; every trigger with a `compact`
   action;
 - the content of every ready-check argument that is a file under the project root (SHA-256).
   Editing such a script withdraws the approval. A command outside the root is trusted by name.
@@ -488,9 +487,6 @@ notes ask the model to tell the operator instead.
 
 At run time ctx-guard follows links. A state folder, handoff, stamp or lease file that resolves
 outside the root, through a symlink or a linked parent folder, refuses the restart with `error`.
-
-With `handoff.style: "session-handoff"`, the handoff is the newest non-empty `.md` file in
-`.claude/session-handoffs/ctx-guard-<role>/` (names of letters, digits and `. _ -` only).
 
 ## Roles
 

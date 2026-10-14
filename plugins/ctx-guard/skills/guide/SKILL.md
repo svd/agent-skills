@@ -22,11 +22,10 @@ The note states the figure, what to do now (by level), and how to end. Follow it
    - `stop`: dispatch nothing new and start no new work.
 2. **Reach a safe point.** No subagents or background tasks running: wait for them or collect
    their results. Current work recorded: commit it, or write it down in the handoff.
-3. **Write the handoff**, if the note asks for one.
-   - A file path (``rewrite `<path>` ``): rewrite the whole file with the Write tool, never
-     append. Follow the role's instructions quoted in the note.
-   - The session-handoff skill: use it with the project slug the note names (`ctx-guard-<role>`)
-     and run its handoff tool from the project root.
+3. **Write the handoff**, if the note asks for one. The note names the file (``write the
+   handoff to `<path>` ``) and quotes the role's instructions; follow them.
+   - The instructions name a skill: use it, and make sure the result ends up at that path.
+   - They name none: rewrite the whole file with the Write tool, never append.
    - Make every claim checkable: the resume checks the recorded git `HEAD` (in a git repo) and
      the paths you name against the repository. Record `HEAD` after your last commit.
 4. **End the reply.**
