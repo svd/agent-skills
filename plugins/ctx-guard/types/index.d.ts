@@ -119,6 +119,9 @@ export type ConfigSource = 'files' | 'last-good' | 'built-in'
 
 export type BandLimit = { kind: string; percentUsed: number; resetsAt: string | null }
 
+// A band probe's segment as last drawn; `color` is a theme key, null for the default.
+export type BandProbe = { id: string; text: string; color: string | null }
+
 export type Band = {
   role: string | null
   tokens: number | null
