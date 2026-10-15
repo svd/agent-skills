@@ -134,8 +134,11 @@ fetches nothing. Every figure comes from Claude Code itself or from files in you
 - **Runs commands.** `/clear` followed by `/ctx-guard:resume` (or the restart command a role
   names in your config), or `/compact`. Only with `autoActions` on, after `/ctx-guard trust` and
   when every check of the verdict passes. It adds the `/ctx-guard` command.
-- **Runs programs.** Only the ready checks and band probes you list under `run` in your project
-  config, from the project root, with a timeout, and only after `/ctx-guard trust`. ctx-guard
+- **Runs programs.** Only the commands you write in your project config: each ready check in a
+  role's `restart.readyChecks` and each probe in `band.probes`, given as an argument list in its
+  `run` field (`["sh", ".claude/ctx-guard/clean-worktree.sh"]`) and started as written, with no
+  shell. They run from the project root, with a timeout, and only after `/ctx-guard trust`;
+  ctx-guard has no command of its own to start. ctx-guard
   hands them no file contents, only `CTX_GUARD_*` environment variables: the role, the project
   root, the state folder, the handoff path and its modification time, the restart mode, why the
   script runs and when the session started. It reads back the exit code and the output: a
