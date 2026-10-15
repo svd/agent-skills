@@ -124,5 +124,7 @@ refuses them unless typed in the prompt box. When one is needed, ask the operato
 | `/ctx-guard pause [30m\|off]` | Lift blocks and automatic actions for a while; notes go on. |
 | `/ctx-guard init [solo\|peers]` | Copy a preset to the config path if no file is there. |
 
-A ready-check example, `assets/ready-checks/clean-worktree.sh`, refuses a restart while the work
-tree has uncommitted changes. The reference shows how to wire it in.
+Example scripts live in `assets/ready-checks/` (`clean-worktree.sh`, `handoff-committed.sh`,
+`worktrees-committed.sh`, `handoff-after-worktrees.sh`, `jobs-quiet.py`) and `assets/probes/`
+(`git-branch.sh`, `worktrees.sh`, `superpowers-plan.py`). When asked for one, copy it into
+`.claude/ctx-guard/` and wire it in; the reference's "Example scripts" table says what each does.

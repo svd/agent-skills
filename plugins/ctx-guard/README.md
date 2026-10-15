@@ -926,7 +926,96 @@ the second; printing nothing draws nothing, and a failing probe draws `git ?`. `
 reports each probe's last run. See
 [Band probes](skills/guide/references/config-reference.md#band-probes).
 
-### 13. A personal override
+### 13. Builders in git worktrees
+
+A lead session hands items to builder agents, each in its own `git worktree add` checkout, and
+keeps its handoff in git so a peer can read it. Three ready checks keep a `/clear` from losing
+that work: the handoff is committed (`handoff-committed.sh`), no worktree has uncommitted work
+(`worktrees-committed.sh`), and the handoff was committed after the newest worktree commit
+(`handoff-after-worktrees.sh`), so what it says about the builders is current. The `worktrees.sh`
+probe puts each worktree's head on the band. Ask Claude to copy the four scripts from the `guide`
+skill's `assets/ready-checks/` and `assets/probes/` folders into `.claude/ctx-guard/`, then:
+
+```json
+{
+  "version": 1,
+  "defaultRole": "lead",
+  "defaults": {
+    "handoff": { "path": "docs/handoff/{role}.md" },
+    "restart": {
+      "mode": "auto",
+      "readyChecks": [{ "run": ["sh", ".claude/ctx-guard/handoff-committed.sh"], "timeout": "10s" }]
+    }
+  },
+  "roles": {
+    "lead": {
+      "restart": {
+        "readyChecks": [
+          { "run": ["sh", ".claude/ctx-guard/handoff-committed.sh"], "timeout": "10s" },
+          { "run": ["sh", ".claude/ctx-guard/worktrees-committed.sh"], "timeout": "20s" },
+          { "run": ["sh", ".claude/ctx-guard/handoff-after-worktrees.sh"], "timeout": "10s" }
+        ]
+      }
+    },
+    "design": {}
+  },
+  "band": {
+    "probes": [{ "id": "worktrees", "run": ["sh", ".claude/ctx-guard/worktrees.sh"], "every": "60s", "timeout": "10s" }]
+  }
+}
+```
+
+Arrays replace, so `lead` repeats `handoff-committed.sh`; `design` keeps the one from
+`defaults`. The band reads `lead · 312k (31%) · wt-a 1d57fff +3`, in warning colour while a
+worktree has uncommitted files or the role's handoff has uncommitted changes. ctx-guard already
+waits for running subagents (`agents-running`), so a builder still at work refuses on its own.
+
+### 14. Jobs that run outside the session
+
+When a launcher runs work as separate processes, ctx-guard cannot see it the way it sees
+subagents. `jobs-quiet.py` refuses a restart while a job is running, and while the handoff is
+not newer than the newest job. Its contract: a job writes `<name>.pid` into a job folder when it
+starts and `<name>.rc` when it exits. Copy it from `assets/ready-checks/`, then:
+
+```json
+{
+  "version": 1,
+  "defaultRole": "main",
+  "roles": {
+    "main": {
+      "restart": {
+        "mode": "auto",
+        "readyChecks": [{ "run": ["python3", "-I", ".claude/ctx-guard/jobs-quiet.py", ".runs/*/jobs"], "timeout": "20s" }]
+      }
+    }
+  }
+}
+```
+
+The arguments are folder globs under the project root; with none it reads `.jobs`.
+
+### 15. A superpowers plan's progress on the band
+
+The superpowers plugin's subagent-driven-development and executing-plans skills keep a ledger
+per plan at `.superpowers/sdd/<plan>/progress.md`. The `superpowers-plan.py` probe reads the
+newest one and shows how many of the plan's tasks are complete. Copy it from `assets/probes/`,
+then:
+
+```json
+{
+  "version": 1,
+  "band": {
+    "probes": [{ "id": "plan", "run": ["python3", "-I", ".claude/ctx-guard/superpowers-plan.py"], "every": "60s" }]
+  }
+}
+```
+
+The band reads `plan 6/7 releasing-a-version-v2`, or `plan 8 done <name>` when the plan file is
+gone. Nothing shows before the first task is complete or after the last. The ledger is the
+superpowers plugin's own format, checked against 6.4.1; if it changes, the probe draws nothing
+rather than a wrong count.
+
+### 16. A personal override
 
 `.claude/ctx-guard.local.json` changes the team file for you alone. This one keeps restarts
 manual for `lead` and drops the team's note suffix:
@@ -943,7 +1032,7 @@ manual for `lead` and drops the team's note suffix:
 }
 ```
 
-### 14. Turning it down or off
+### 17. Turning it down or off
 
 | You want | Do |
 |---|---|
@@ -1091,6 +1180,7 @@ in the repo.
 - [JSON Schema](skills/guide/assets/ctx-guard.schema.json) for config v1.
 - Presets: [solo](skills/guide/assets/presets/solo.json),
   [peers](skills/guide/assets/presets/peers.json).
-- [Ready-check example](skills/guide/assets/ready-checks/clean-worktree.sh).
+- Ready-check and band-probe examples: [assets/ready-checks](skills/guide/assets/ready-checks/),
+  [assets/probes](skills/guide/assets/probes/); the [config reference](skills/guide/references/config-reference.md#example-scripts) lists them.
 - [The guide skill](skills/guide/SKILL.md): how the model answers notes, refusals and budgets.
 - [CHANGELOG](CHANGELOG.md).

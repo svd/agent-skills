@@ -394,11 +394,7 @@ effects can skip them.
 The role is in `CTX_GUARD_SCRIPT_ROLE`, not `CTX_GUARD_ROLE`: ctx-guard reads `CTX_GUARD_ROLE`
 to pick a session's role, so a script that starts `claude` would otherwise hand its role on.
 
-`assets/ready-checks/clean-worktree.sh` is an example. It fails while `git status --porcelain`
-lists changes, and prints them; with `--tracked-only` it ignores untracked files. To get it,
-ask Claude to copy `clean-worktree.sh` from the `guide` skill's `assets/ready-checks/` folder
-into `.claude/ctx-guard/`, or copy it from the plugin's repository by hand. Then run
-`/ctx-guard trust`, since trust hashes the script.
+The `guide` skill ships example checks; see [Example scripts](#example-scripts).
 
 Files ctx-guard or the handoff writes count as changes unless gitignored:
 
@@ -460,6 +456,27 @@ without probes approves as before they existed.
 `assets/probes/git-branch.sh` is an example: the branch name, in `warning` while the worktree
 has changes. Copy it into `.claude/ctx-guard/` as with the ready-check example, then run
 `/ctx-guard trust`.
+
+### Example scripts
+
+The `guide` skill ships these under `assets/`. To use one, ask Claude to copy it into
+`.claude/ctx-guard/` (or copy it from the plugin's repository by hand), wire it in, then run
+`/ctx-guard trust`, since trust hashes the script. Each file is self-contained: trust hashes
+only the files named in `run`, so a helper a script imports would go unchecked.
+
+| File | Kind | What it does |
+|---|---|---|
+| `ready-checks/clean-worktree.sh` | ready check | Fails while `git status --porcelain` lists changes, and prints them. `--tracked-only` ignores untracked files. |
+| `ready-checks/handoff-committed.sh` | ready check | Fails until the handoff is tracked by git and committed, so a peer or the next session reads it from git. Passes for a compact. |
+| `ready-checks/worktrees-committed.sh` | ready check | Fails while a linked git worktree (`git worktree add`, where a builder or parallel task works) has uncommitted changes; the main checkout is not checked. `--tracked-only` as above. |
+| `ready-checks/handoff-after-worktrees.sh` | ready check | Fails while the handoff was committed before the newest commit in any linked worktree, so what it says about that work is current. Passes for a compact. |
+| `ready-checks/jobs-quiet.py` | ready check | For jobs a launcher runs as separate processes: fails while a job is running (`<name>.pid` with no `<name>.rc`) and while the handoff is not newer than the newest job. Arguments are job-folder globs, default `.jobs`. |
+| `probes/git-branch.sh` | band probe | The branch name, in `warning` while the worktree has changes. |
+| `probes/worktrees.sh` | band probe | Each linked worktree as `<folder> <head>`, `+N` for uncommitted files, then `handoff uncommitted` while the role's handoff has changes; `warning` on either, else `inactive`. |
+| `probes/superpowers-plan.py` | band probe | `plan 6/7 <name>`: tasks complete in the newest superpowers ledger (`.superpowers/sdd/<plan>/progress.md`) against the plan's `### Task` headings. Nothing before the first task is complete or after the last; checked against superpowers 6.4.1. |
+
+Run `.sh` files as `["sh", "<path>"]` and `.py` files as `["python3", "-I", "<path>"]`. README
+use cases 4, 12, 13, 14 and 15 show them wired in.
 
 ## Compact
 
