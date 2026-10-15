@@ -1419,14 +1419,14 @@ function scriptContextOf(
     return 'error' in c ? null : c.path
   }
   const via = spec ? spec.restart.via : null
-  const h = via === 'clear' ? handoff : null
+  const held = via === 'clear' ? handoff : null
   return {
     purpose,
     role,
     root,
     stateDir: (mod.eff && at(mod.eff.config.stateDir)) ?? '',
-    handoff: h ? at(h.path) : null,
-    handoffMtime: h?.kind === 'present' ? h.mtime : null,
+    handoff: held ? at(held.path) : null,
+    handoffMtime: held?.kind === 'present' ? held.mtime : null,
     startedAt,
     lastClearAt,
     via,
@@ -2258,8 +2258,8 @@ async function restartReport($: EngineInterface, role: string | null, spec: Role
   out.selfGap = { gap: spec.restart.selfGap ?? DEFAULT_SELF_GAP, lastRestartAt: mem.lastRestartAt }
   try {
     const root = await $.session.root()
-    const h = await handoffOf($, root, await realRootOf($, root), role, spec)
-    out.handoff = { path: h.path, mtime: h.kind === 'present' ? h.mtime : null }
+    const found = await handoffOf($, root, await realRootOf($, root), role, spec)
+    out.handoff = { path: found.path, mtime: found.kind === 'present' ? found.mtime : null }
   } catch (e) {
     out.handoff = { path: `${handoffPathFor(spec, role)} (${errorText(e)})`, mtime: null }
   }
