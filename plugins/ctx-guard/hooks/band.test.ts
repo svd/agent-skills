@@ -41,9 +41,12 @@ describe('band text', () => {
 
   test('colours by level', () => {
     const color = (b: Band, text: string): string | undefined => bandSegments(b).find(s => s.text.startsWith(text))?.color
-    expect(color({ ...base, tokens: 400_000, percent: 40 }, '400k')).toBeUndefined()
+    expect(color({ ...base, tokens: 400_000, percent: 40 }, '400k')).toBe('green')
     expect(color({ ...base, tokens: 600_000, percent: 60 }, '600k')).toBe('warning')
     expect(color({ ...base, tokens: 800_000, percent: 80 }, '800k')).toBe('error')
+    // A fill with no window to measure against has no level to colour by.
+    expect(color({ ...base, tokens: 400_000 }, '400k')).toBeUndefined()
+    expect(color({ ...base, limits: [{ kind: 'five_hour', percentUsed: 42, resetsAt: null }] }, '5h')).toBe('green')
     expect(color({ ...base, limits: [{ kind: 'five_hour', percentUsed: 85, resetsAt: null }] }, '5h')).toBe('warning')
     expect(color({ ...base, limits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: null }] }, '5h')).toBe('error')
     expect(color({ ...base, denies: ['Agent'] }, 'deny')).toBe('error')

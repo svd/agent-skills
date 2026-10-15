@@ -13,9 +13,9 @@ export type Segment = { text: string; color?: string; dim?: boolean }
 
 const SEP = ' · '
 
-// Theme keys, so the band follows the person's theme.
-const level = (pct: number, warn: number, high: number): string | undefined =>
-  pct >= high ? 'error' : pct >= warn ? 'warning' : undefined
+// Theme keys, so the band follows the person's theme: green below `warn`, so a figure that is fine reads as fine.
+const level = (pct: number, warn: number, high: number): string =>
+  pct >= high ? 'error' : pct >= warn ? 'warning' : 'green'
 
 const SHORT: Record<string, string> = { five_hour: '5h', seven_day: 'wk' }
 
@@ -23,8 +23,7 @@ function limitSegment(l: BandLimit, now: number): Segment {
   const left = resetsInMs(l.resetsAt, now)
   const name = SHORT[l.kind] ?? l.kind
   const text = `${name} ${humanPercent(l.percentUsed)}${left === null ? '' : ` (${humanDuration(left)})`}`
-  const color = level(l.percentUsed, 80, 90)
-  return color ? { text, color } : { text }
+  return { text, color: level(l.percentUsed, 80, 90) }
 }
 
 /**

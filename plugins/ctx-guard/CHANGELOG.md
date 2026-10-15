@@ -43,7 +43,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
   `contextWindow: "auto"` uses the engine's own compaction window when it reports one.
 - The band above the prompt (`lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · deny Agent`),
   or the same text on the status line on other surfaces or with `display: status`. It draws the
-  band last written, never waiting on a busy session start.
+  band last written, never waiting on a busy session start. Context is green below 50 %, warning
+  below 75 % and error from there; each usage window green below 80 %, warning below 90 %.
 - `/ctx-guard` command: report (role and its source, with a claimed role's age — a claim lasts the
   whole session, through `/clear` and a reinstall of the plugin — config files and errors, effective config
   and where its window came from, metrics, marks, live blocks), `reload`, and, typed by the
