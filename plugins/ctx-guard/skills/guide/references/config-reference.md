@@ -544,6 +544,8 @@ before ctx-guard acts on them.
   action;
 - the content of every ready-check or band-probe argument that is a file under the project root (SHA-256).
   Editing such a script withdraws the approval. A command outside the root is trusted by name.
+  Only files named in `run` are hashed: a module the script imports or a file it reads is not, so
+  editing one keeps the approval. Keep a check or probe in one file, or name its helpers in `run`.
 
 **Approving.** The operator types `/ctx-guard trust`. It re-reads the files and prints every
 approved value. ctx-guard keeps the approval in its own store on this machine, keyed by the
