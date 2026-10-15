@@ -440,6 +440,13 @@ test('noteToasts off: no note toast, the trigger toast as before', { options: { 
   expect(w.toasts).toContain('ctx-guard: lead: context 310k (31% of 1M)')
 })
 
+test('the report shows the noteToasts switch', { options: { noteToasts: false } }, async ($, on) => {
+  const w = newWorld()
+  world(on, w)
+  await start($)
+  expect(await ctxGuard($, '')).toContain('switches: blocking on; autoActions on; noteToasts off; display band')
+})
+
 test('zero-config, no role: no note, so no note toast', async ($, on) => {
   const w = newWorld()
   world(on, w)

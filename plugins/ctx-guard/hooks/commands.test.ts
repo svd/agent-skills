@@ -145,7 +145,7 @@ describe('report', () => {
       role: { role: 'lead', source: 'env', problem: null },
       configState: null,
       config: builtInConfig(),
-      switches: { blocking: true, autoActions: true, display: 'band' },
+      switches: { blocking: true, autoActions: true, noteToasts: true, display: 'band' },
       windowSource: 'model window',
       mode: null,
       metrics: metricsOf({}, 1_000_000, null, 0),
@@ -171,7 +171,7 @@ describe('report', () => {
       role: { role: 'lead', source: 'env', problem: null },
       configState: null,
       config: merged,
-      switches: { blocking: true, autoActions: true, display: 'band' },
+      switches: { blocking: true, autoActions: true, noteToasts: true, display: 'band' },
       windowSource: 'model window',
       mode: null,
       metrics: metricsOf({}, 1_000_000, null, 0),
@@ -215,7 +215,7 @@ describe('report', () => {
         loadedAt: 0,
       },
       config,
-      switches: { blocking: true, autoActions: true, display: 'band' },
+      switches: { blocking: true, autoActions: true, noteToasts: true, display: 'band' },
       windowSource: 'engine: settings',
       mode: 'manual',
       metrics: metricsOf({ tokens: 750_000, rateLimits: [{ kind: 'five_hour', percentUsed: 42 }], cost: { usd: 1.5 } }, 1_000_000, 0, 10_000_000),
@@ -255,7 +255,7 @@ describe('report', () => {
       role: { role: null, source: null, problem: null },
       configState: null,
       config: builtInConfig(),
-      switches: { blocking: false, autoActions: false, display: 'off' },
+      switches: { blocking: false, autoActions: false, noteToasts: false, display: 'off' },
       windowSource: 'model window',
       mode: null,
       metrics: metricsOf({}, 1_000_000, null, 0),
@@ -269,6 +269,7 @@ describe('report', () => {
     expect(off).toContain('role: none (non-interactive session: no role)')
     expect(off).toContain('context: unknown')
     expect(off).toContain('blocks: none')
+    expect(off).toContain('switches: blocking off; autoActions off; noteToasts off; display off')
     expect(reportText({ ...base, off: null, pause: { until: 600_000 } })).toContain('ctx-guard: paused for 10m more')
   })
 
@@ -282,7 +283,7 @@ describe('report', () => {
       claimAt: 0,
       configState: null,
       config: builtInConfig(),
-      switches: { blocking: true, autoActions: false, display: 'band' },
+      switches: { blocking: true, autoActions: false, noteToasts: true, display: 'band' },
       windowSource: 'model window',
       mode: null,
       metrics: metricsOf({}, 1_000_000, null, 7_200_000),
@@ -316,7 +317,7 @@ describe('report', () => {
       role: { role: 'main', source: 'user-default', problem: null },
       configState: null,
       config: builtInConfig(),
-      switches: { blocking: true, autoActions: true, display: 'band' },
+      switches: { blocking: true, autoActions: true, noteToasts: true, display: 'band' },
       windowSource: 'model window',
       mode: 'auto',
       metrics: metricsOf({}, 1_000_000, null, now),

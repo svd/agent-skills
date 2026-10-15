@@ -2217,7 +2217,7 @@ async function report($: EngineInterface): Promise<string> {
     claimAt: mem.roleClaim?.at ?? null,
     configState: mem.config,
     config,
-    switches: { blocking: eff?.blocking ?? true, autoActions: eff?.autoActions ?? false, display: eff?.display ?? 'band' },
+    switches: { blocking: eff?.blocking ?? true, autoActions: eff?.autoActions ?? false, noteToasts: eff?.noteToasts ?? true, display: eff?.display ?? 'band' },
     windowSource: windowFor(reading.context.window).source,
     mode: spec && eff ? effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: isPausedNow }) : null,
     metrics,

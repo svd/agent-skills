@@ -222,7 +222,7 @@ export type ReportInput = {
   claimAt?: number | null
   configState: ConfigState | null
   config: Config
-  switches: { blocking: boolean; autoActions: boolean; display: Display }
+  switches: { blocking: boolean; autoActions: boolean; noteToasts: boolean; display: Display }
   // Where the window came from (resolveWindow's source).
   windowSource: string
   // The restart mode a note promises now (auto drops to manual while untrusted).
@@ -352,7 +352,7 @@ export function reportText(r: ReportInput): string {
       `stateDir ${c.stateDir}; readyToken ${c.readyToken}`,
   )
   lines.push(
-    `switches: blocking ${r.switches.blocking ? 'on' : 'off'}; autoActions ${r.switches.autoActions ? 'on' : 'off'}; display ${r.switches.display}`,
+    `switches: blocking ${r.switches.blocking ? 'on' : 'off'}; autoActions ${r.switches.autoActions ? 'on' : 'off'}; noteToasts ${r.switches.noteToasts ? 'on' : 'off'}; display ${r.switches.display}`,
   )
   lines.push(`triggers${role ? ` of ${role}` : ' (no role: toasts only)'}:`)
   for (const t of r.triggers) lines.push(`  ${triggerLine(t)}`)
