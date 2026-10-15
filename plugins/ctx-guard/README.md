@@ -134,9 +134,16 @@ fetches nothing. Every figure comes from Claude Code itself or from files in you
   ctx-guard.
 - **Sends to the model.** Notes that start with `[ctx-guard]`, added to the conversation as
   user messages: to the main session when a trigger fires, or to a subagent nearing its budget.
-- **Runs commands.** `/clear` followed by `/ctx-guard:resume` (or the restart command a role
-  names in your config), or `/compact`. Only with `autoActions` on, after `/ctx-guard trust` and
-  when every check of the verdict passes. It adds the `/ctx-guard` command.
+- **Runs commands.** Three, and only with `autoActions` on and after `/ctx-guard trust`:
+  - `/clear`, when the model ends a reply with the ready token after a context note asked for a
+    restart, the role restarts by clear, and every check of the verdict passes;
+  - right after that `/clear`, once: `/ctx-guard:resume role=… handoff=…`, or the restart
+    command the role names in your config, so the fresh session picks up from the handoff;
+  - `/compact`, with the instructions from your config, when a trigger with the `compact` action
+    fires or a role that restarts by compact sends the ready token. It waits for the turn to end.
+
+  It also adds the `/ctx-guard` command; its `role`, `check`, `trust`, `pause` and `init` work
+  only when you type them.
 - **Runs programs.** Only the commands you write in your project config: each ready check in a
   role's `restart.readyChecks` and each probe in `band.probes`, given as an argument list in its
   `run` field (`["sh", ".claude/ctx-guard/clean-worktree.sh"]`) and started as written, with no
