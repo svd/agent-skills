@@ -160,9 +160,10 @@ function isObj(v: unknown): v is Obj {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
-// Names that collide with Object.prototype, refused as role or subagent keys
-// and never copied by a merge.
-const RESERVED_KEYS = new Set([...Object.getOwnPropertyNames(Object.prototype), '__proto__', 'prototype'])
+// Names that collide with Object.prototype (its own names include the
+// prototype accessor), refused as role or subagent keys and never copied by a
+// merge, so a config file cannot reach the prototype.
+const RESERVED_KEYS = new Set([...Object.getOwnPropertyNames(Object.prototype), 'prototype'])
 
 export function isReservedKey(k: string): boolean {
   return RESERVED_KEYS.has(k)

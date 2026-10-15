@@ -2,7 +2,7 @@
 // the step its budget calls for, what is kept across a reload, and when an
 // entry is stale. Pure: no `$`, never throws.
 import type { AgentKind, Budget, Config, SpawnedAgent, SubagentMark } from '../types'
-import { subagentBudget } from './config'
+import { isReservedKey, subagentBudget } from './config'
 
 // An agent not seen stepping this long is dropped, so a lost turn.complete cannot grow the map for good.
 export const PRUNE_AFTER_MS = 2 * 60 * 60 * 1000
@@ -150,7 +150,7 @@ const isKind = (v: unknown): v is AgentKind => typeof v === 'string' && KINDS.in
 function entries(v: unknown): [string, Record<string, unknown>][] {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return []
   return Object.entries(v as Record<string, unknown>).filter(
-    (e): e is [string, Record<string, unknown>] => e[0] !== '__proto__' && typeof e[1] === 'object' && e[1] !== null,
+    (e): e is [string, Record<string, unknown>] => !isReservedKey(e[0]) && typeof e[1] === 'object' && e[1] !== null,
   )
 }
 
