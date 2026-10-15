@@ -137,15 +137,17 @@ fetches nothing. Every figure comes from Claude Code itself or from files in you
 - **Runs programs.** Only the commands you write in your project config: each ready check in a
   role's `restart.readyChecks` and each probe in `band.probes`, given as an argument list in its
   `run` field (`["sh", ".claude/ctx-guard/clean-worktree.sh"]`) and started as written, with no
-  shell. They run from the project root, with a timeout, and only after `/ctx-guard trust`;
-  ctx-guard has no command of its own to start. ctx-guard
-  hands them no file contents, only `CTX_GUARD_*` environment variables: the role, the project
-  root, the state folder, the handoff path and its modification time, the restart mode, why the
-  script runs and when the session started. It reads back the exit code and the output: a
-  probe's output becomes band text, a failed check's output explains the refusal. These scripts
-  are the only way anything leaves ctx-guard, and what they do is yours to write. The scripts
-  in `skills/guide/assets/` are examples to copy; none runs unless your config names it. The
-  `superpowers-plan.py` probe reads plan files written by the
+  shell. Why: a ready check is your own test that the work is safe to restart (say, the worktree
+  is committed), and a restart waits until every check exits 0; a probe adds a figure of your
+  project (branch, worktrees, plan progress) to the band. They run from the project root, with a
+  timeout, and only after `/ctx-guard trust`; ctx-guard has no command of its own to start.
+  ctx-guard hands them no file contents, only `CTX_GUARD_*` environment variables: the role, the
+  project root, the state folder, the handoff path and its modification time, the restart mode,
+  why the script runs and when the session started. It reads back the exit code and the output:
+  a probe's output becomes band text, a failed check's output explains the refusal. These
+  scripts are the only way anything leaves ctx-guard, and what they do is yours to write. The
+  scripts in `skills/guide/assets/` are examples to copy; none runs unless your config names it.
+  The `superpowers-plan.py` probe reads plan files written by the
   [superpowers](https://github.com/obra/superpowers) plugin.
 - **Shows.** The band above the prompt (or status-line text), toasts and OS notifications
   through Claude Code.
