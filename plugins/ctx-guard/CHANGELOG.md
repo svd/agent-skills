@@ -175,3 +175,7 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - The band follows the main loop mid-turn: a step whose context fill would read differently on
   the band (`150k` → `152k`) redraws it off the turn's path, without an evaluation. Before, a long
   turn showed its starting figure until a trigger's threshold was crossed or the turn ended.
+- Documentation: the README is now a short overview (why, what it does, how a restart works,
+  quick start, safety, setups, comparison, limitations, FAQ), and the detail moved verbatim to
+  `docs/`: getting started, configuration, handoff and restart, use cases and troubleshooting,
+  plus `docs/comparison.md`, a dated feature matrix against related tools.

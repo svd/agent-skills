@@ -475,8 +475,8 @@ only the files named in `run`, so a helper a script imports would go unchecked.
 | `probes/worktrees.sh` | band probe | Each linked worktree as `<folder> <head>`, `+N` for uncommitted files, then `handoff uncommitted` while the role's handoff has changes; `warning` on either, else `inactive`. |
 | `probes/superpowers-plan.py` | band probe | `plan 6/7 <name>`: tasks complete in the newest superpowers ledger (`.superpowers/sdd/<plan>/progress.md`) against the plan's `### Task` headings. Nothing before the first task is complete or after the last; checked against superpowers 6.4.1. |
 
-Run `.sh` files as `["sh", "<path>"]` and `.py` files as `["python3", "-I", "<path>"]`. README
-use cases 4, 12, 13, 14 and 15 show them wired in.
+Run `.sh` files as `["sh", "<path>"]` and `.py` files as `["python3", "-I", "<path>"]`. [Use cases](../../../docs/use-cases.md)
+4, 12, 13, 14 and 15 show them wired in.
 
 ## Compact
 
