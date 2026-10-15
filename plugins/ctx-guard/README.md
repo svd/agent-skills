@@ -135,7 +135,12 @@ fetches nothing. Every figure comes from Claude Code itself or from files in you
   names in your config), or `/compact`. Only with `autoActions` on, after `/ctx-guard trust` and
   when every check of the verdict passes. It adds the `/ctx-guard` command.
 - **Runs programs.** Only the ready checks and band probes you list under `run` in your project
-  config, from the project root, with a timeout, and only after `/ctx-guard trust`. The scripts
+  config, from the project root, with a timeout, and only after `/ctx-guard trust`. ctx-guard
+  hands them no file contents, only `CTX_GUARD_*` environment variables: the role, the project
+  root, the state folder, the handoff path and its modification time, the restart mode, why the
+  script runs and when the session started. It reads back the exit code and the output: a
+  probe's output becomes band text, a failed check's output explains the refusal. These scripts
+  are the only way anything leaves ctx-guard, and what they do is yours to write. The scripts
   in `skills/guide/assets/` are examples to copy; none runs unless your config names it. The
   `superpowers-plan.py` probe reads plan files written by the
   [superpowers](https://github.com/obra/superpowers) plugin.
