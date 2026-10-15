@@ -16,8 +16,9 @@ only when 11 checks say your work is safe. One JSON file, no code.
 main · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h)
 ```
 
-<!-- TODO: docs/assets/demo.gif — 15 s: the band turns amber, a note arrives, the model writes
-the handoff and ends with CTX-READY, ctx-guard clears and the fresh session carries on. -->
+![ctx-guard demo: a note toast at the soft threshold, the model writes the handoff and ends with CTX-READY, ctx-guard clears the session and the fresh session finishes the spec](docs/assets/demo.gif)
+
+<sub>Demo config: thresholds lowered so the cycle fits in about two minutes; sped up 5×.</sub>
 
 ```text
 /plugin marketplace add svd/agent-skills
