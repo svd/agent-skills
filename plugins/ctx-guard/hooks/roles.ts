@@ -43,8 +43,25 @@ export function envRole(raw: string | null | undefined): EnvRole {
   return isNone(v) ? { kind: 'none' } : { kind: 'role', name: v }
 }
 
-function knownRoles(config: Config): string {
+/**
+ * The role names to show, sorted. The built-in `main` is left out once the project names roles of
+ * its own and gives `main` nothing (no settings, not its defaultRole), unless `keep` (the session's
+ * role) is `main`. It still resolves, so a userConfig defaultRole of `main` works in every repo.
+ */
+export function listedRoles(config: Config, keep: string | null = null): string[] {
   const names = Object.keys(config.roles).sort()
+  const main = config.roles.main
+  const bare =
+    main !== undefined &&
+    names.length > 1 &&
+    keep !== 'main' &&
+    config.defaultRole !== 'main' &&
+    JSON.stringify(main) === JSON.stringify(config.defaults)
+  return bare ? names.filter(n => n !== 'main') : names
+}
+
+function knownRoles(config: Config): string {
+  const names = listedRoles(config)
   return names.length ? names.join(', ') : 'none configured'
 }
 

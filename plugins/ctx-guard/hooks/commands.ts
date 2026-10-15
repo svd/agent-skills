@@ -4,6 +4,7 @@
 import type { Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger } from '../types'
 import { parseQuantity, roleSpec, validate } from './config'
 import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
+import { listedRoles } from './roles'
 import type { RoleResolution } from './roles'
 import { METRIC_ORDER, contextPercent } from './triggers'
 import type { DenyEntry, Metrics } from './triggers'
@@ -326,7 +327,7 @@ export function reportText(r: ReportInput): string {
   for (const e of cs?.errors ?? []) lines.push(`  error: ${e}`)
 
   const c = r.config
-  const roles = Object.keys(c.roles).sort()
+  const roles = listedRoles(c, role)
   lines.push(
     `effective: roles ${roles.length ? roles.join(', ') : 'none'}; defaultRole ${c.defaultRole ?? 'none'}; ` +
       `contextWindow ${c.contextWindow === 'auto' ? 'auto' : humanTokens(c.contextWindow)} = ${humanTokens(r.metrics.window)} (${r.windowSource}); ` +

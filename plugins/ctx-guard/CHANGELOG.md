@@ -15,6 +15,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - Role resolution (command > `CTX_GUARD_ROLE` > project `defaultRole` > userConfig `defaultRole`,
   interactive sessions only), `/ctx-guard role` and `/ctx-guard:resume` argument parsing, and the
   role lease decision.
+- Role lists (`/ctx-guard`, an unknown-role error) leave out the built-in `main` once the
+  project names roles of its own and gives `main` nothing: no settings, not the `defaultRole`,
+  not the session's role. It still resolves, so a userConfig `defaultRole` of `main` keeps working.
 - Trigger evaluation: rising edges per trigger id with JSON marks, `every` steps, AND metrics,
   re-arm on drop and, for triggers with a `context` condition, on `/clear` (a trigger on usage,
   cost or idle alone keeps its mark across `/clear`), unknown metrics skipped, and the

@@ -9,6 +9,7 @@ import {
   heartbeatDue,
   leasePath,
   leaseState,
+  listedRoles,
   ownerJson,
   parseOwner,
   parseResumeArgs,
@@ -98,6 +99,34 @@ describe('env values', () => {
   })
 })
 
+describe('listedRoles', () => {
+  const cfg = (raw: object): Config => validate({ version: 1, ...raw }).config as Config
+  const withMain = (raw: { roles?: object; [k: string]: unknown }): Config => cfg({ ...raw, roles: { main: {}, ...raw.roles } })
+
+  test('the bare built-in main is left out once the project names roles of its own', () => {
+    expect(listedRoles(withMain({ roles: { lead: {}, design: {} } }))).toEqual(['design', 'lead'])
+    // Project defaults reach main too; it still has nothing of its own.
+    expect(listedRoles(withMain({ defaults: { restart: { mode: 'auto' } }, roles: { lead: {} } }))).toEqual(['lead'])
+  })
+
+  test('main stays when it is the only role, has settings, is the defaultRole or the session runs it', () => {
+    expect(listedRoles(cfg({ roles: { main: {} } }))).toEqual(['main'])
+    expect(listedRoles(withMain({ roles: { main: { restart: { mode: 'off' } }, lead: {} } }))).toEqual(['lead', 'main'])
+    expect(listedRoles(withMain({ defaultRole: 'main', roles: { lead: {} } }))).toEqual(['lead', 'main'])
+    expect(listedRoles(withMain({ roles: { lead: {} } }), 'main')).toEqual(['lead', 'main'])
+    expect(listedRoles(cfg({ roles: { lead: {}, design: {} } }))).toEqual(['design', 'lead'])
+  })
+
+  test('a hidden main still resolves', () => {
+    const c = withMain({ roles: { lead: {} } })
+    expect(resolveRole({ claim: null, env: undefined, repoDefault: null, switchDefault: 'main', interactive: true, config: c })).toEqual({
+      role: 'main',
+      source: 'user-default',
+      problem: null,
+    })
+  })
+})
+
 describe('bad roles', () => {
   test('an unknown role gives no role and names the source and the known roles', () => {
     const r = resolve({ env: 'ghost', switchDefault: 'lead' })
@@ -105,7 +134,8 @@ describe('bad roles', () => {
     expect(r.source).toBeNull()
     expect(r.problem).toMatch(/"ghost"/)
     expect(r.problem).toMatch(/CTX_GUARD_ROLE/)
-    expect(r.problem).toMatch(/lead, main, reviewer/)
+    // The bare built-in main is left out of the list.
+    expect(r.problem).toMatch(/roles: lead, reviewer\)/)
   })
 
   test('an invalid name is a problem, not a fall-through', () => {

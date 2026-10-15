@@ -91,7 +91,7 @@ Every quantity must be above zero.
 | `defaultRole` | role name, `""` or `null` | none | Role for an interactive session that no command or `CTX_GUARD_ROLE` sets. |
 | `contextWindow` | `"auto"` or tokens | `"auto"` | What context percents count against. `auto` uses the engine's own compaction window when it reports one (never above the model window), else the model window lowered to the `autoCompactWindow` setting. |
 | `defaults` | role object | `{}` | Settings every role inherits. Objects deep-merge under each role; arrays (such as `triggers`) replace. |
-| `roles` | object of role name → role object | `{ "main": {} }` | The roles. Names match `^[a-z][a-z0-9-]{0,31}$`. The built-in `main` stays unless a layer sets `"main": null`. |
+| `roles` | object of role name → role object | `{ "main": {} }` | The roles. Names match `^[a-z][a-z0-9-]{0,31}$`. The built-in `main` stays unless a layer sets `"main": null`, so a userConfig `defaultRole` of `main` works in every repo. Once the project names roles of its own, `/ctx-guard` and role errors leave out a `main` that has no settings of its own and is neither the `defaultRole` nor the session's role. |
 | `subagents` | object of subagent type (or `*`, `fork`, `teammate`) → budget | `{}` | [Subagent budgets](#subagent-budgets). |
 | `band` | object | `{ "probes": [] }` | [Band probes](#band-probes): project scripts whose output is a band segment. Shared by every role. |
 

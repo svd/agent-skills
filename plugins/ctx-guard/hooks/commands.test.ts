@@ -17,7 +17,7 @@ import {
   wantsTrust,
 } from './commands'
 import type { ReportInput } from './commands'
-import { builtInConfig, roleSpec, validate } from './config'
+import { BUILTIN_LAYER, builtInConfig, mergeLayers, roleSpec, validate } from './config'
 import { metricsOf } from './triggers'
 
 describe('parseCommand', () => {
@@ -159,6 +159,29 @@ describe('report', () => {
     expect(text).toContain('probe git: not run (untrusted)')
     expect(reportText({ ...base, probes: [] })).toContain('band probes: none')
     expect(reportText(base)).not.toContain('band probes')
+  })
+
+  test('the bare built-in main is left out of the roles, unless the session runs it', () => {
+    const merged = validate(mergeLayers(BUILTIN_LAYER, { version: 1, roles: { lead: {}, design: {} } })).config ?? builtInConfig()
+    const base: ReportInput = {
+      now: 0,
+      interactive: true,
+      off: null,
+      pause: null,
+      role: { role: 'lead', source: 'env', problem: null },
+      configState: null,
+      config: merged,
+      switches: { blocking: true, autoActions: true, display: 'band' },
+      windowSource: 'model window',
+      mode: null,
+      metrics: metricsOf({}, 1_000_000, null, 0),
+      marks: null,
+      triggers: [],
+      denies: [],
+      lastClearAt: null,
+    }
+    expect(reportText(base)).toContain('effective: roles design, lead;')
+    expect(reportText({ ...base, role: { role: 'main', source: 'user-default', problem: null } })).toContain('effective: roles design, lead, main;')
   })
 
   const config = (() => {
