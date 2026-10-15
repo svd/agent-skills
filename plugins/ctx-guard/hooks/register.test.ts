@@ -1684,6 +1684,35 @@ test('a typed resume with only role= gets its role\'s handoff path and restart p
   ])
 })
 
+test('a typed resume with no role= takes the session\'s role; with none it is refused', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig({ prompt: 'Check ListAgents first.' }, { path: 'docs/handoff/{role}-now.md' }))
+  world(on, w)
+  await start($)
+  const run = (args: string) =>
+    $.command.run({ command: 'ctx-guard:resume', args, origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  expect((await run('')).text).toContain('/ctx-guard:resume refused: name a role with role=<role>: this session has none. Nothing ran.')
+  expect(w.ran).toEqual([])
+  expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
+  await run('')
+  await run('Go on.')
+  await run('handoff=x.md')
+  expect(w.ran).toEqual([
+    'ctx-guard:resume role=lead handoff=docs/handoff/lead-now.md Check ListAgents first.',
+    'ctx-guard:resume role=lead handoff=docs/handoff/lead-now.md Go on.',
+    'ctx-guard:resume role=lead handoff=x.md Check ListAgents first.',
+  ])
+})
+
+test('a typed resume with no role= takes a role from CTX_GUARD_ROLE too', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig())
+  world(on, w, { CTX_GUARD_ROLE: 'reviewer' })
+  await start($)
+  await $.command.run({ command: 'ctx-guard:resume', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  expect(w.ran).toEqual(['ctx-guard:resume role=reviewer handoff=.ctx-guard/reviewer-handoff.md'])
+})
+
 test('a typed restart command claims its role; another role refuses and the command does not run', async ($, on) => {
   const w = restartWorld()
   writeConfig(w, { version: 1, roles: { lead: { restart: { command: 'restart-lead' } }, design: { restart: { command: 'restart-design' } } } })

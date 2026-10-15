@@ -2318,20 +2318,27 @@ async function initCommand($: EngineInterface, preset: Preset): Promise<string> 
 async function resumeClaim($: EngineInterface, args: string): Promise<string | null> {
   const eff = mod.eff
   if (!eff) return null
-  return applyClaim($, 'ctx-guard:resume', claimFromResume(mod.role.role, parseResumeArgs(args), eff.config))
+  const typed = parseResumeArgs(args)
+  // With no role= the session's own role is resumed; with none there is nothing to resume.
+  if (!typed.errors.length && typed.role === null && mod.role.role === null) {
+    return applyClaim($, 'ctx-guard:resume', { kind: 'refuse', reason: 'name a role with role=<role>: this session has none' })
+  }
+  return applyClaim($, 'ctx-guard:resume', claimFromResume(mod.role.role, typed, eff.config))
 }
 
 /**
- * A typed resume's arguments with its role's handoff path and restart prompt
- * filled in where it left them out, so `role=lead` alone runs as the automatic
- * restart would; null to pass it on as typed.
+ * A typed resume's arguments with what it left out filled in: the session's
+ * own role when it names none, then that role's handoff path and restart
+ * prompt, so `role=lead` (or nothing at all) runs as the automatic restart
+ * would; null to pass it on as typed.
  */
 function filledArgs(typed: string): string | null {
   const eff = mod.eff
   const a = parseResumeArgs(typed)
-  if (!eff || a.role === null || a.errors.length || (a.handoff !== null && a.prompt !== '')) return null
-  const spec = roleSpec(eff.config, a.role)
-  return spec ? filledResumeArgs(a, a.role, handoffPathFor(spec, a.role), spec.restart.prompt) : null
+  const role = a.role ?? mod.role.role
+  if (!eff || role === null || a.errors.length || (a.role !== null && a.handoff !== null && a.prompt !== '')) return null
+  const spec = roleSpec(eff.config, role)
+  return spec ? filledResumeArgs(a, role, handoffPathFor(spec, role), spec.restart.prompt) : null
 }
 
 /**

@@ -577,7 +577,8 @@ name there gives no role and a toast; it never falls through to another source.
 
 1. `/ctx-guard role <name|none>` typed by the operator. Typing `/ctx-guard:resume role=<name> …`
    in a session with no role claims that role too; a different role already held refuses the
-   resume. A typed resume that leaves out `handoff=` or the prompt gets the role's
+   resume. A typed resume that leaves out `role=` resumes the session's own role
+   (refused when it has none); one that leaves out `handoff=` or the prompt gets the role's
    `handoff.path` and `restart.prompt`. So does typing a role's own `restart.command` (`/restart-lead`), when exactly one role
    with `via: "clear"` names that command. A claim survives a hot reload.
 2. The `CTX_GUARD_ROLE` environment variable, the only one ctx-guard reads. It is trimmed and
