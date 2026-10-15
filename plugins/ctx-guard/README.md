@@ -120,7 +120,10 @@ fetches nothing. Every figure comes from Claude Code itself or from files in you
 
 - **Reads.** Claude Code's own figures for the session through the mod API: context fill, token
   usage, the 5-hour and weekly limit status, running agents and background tasks. Your Claude
-  Code settings, for `autoCompactWindow` only. The `CTX_GUARD_ROLE` environment variable. Its
+  Code settings, for `autoCompactWindow` only. The `CTX_GUARD_ROLE` environment variable. From
+  the conversation it takes only figures: each model request's token usage, the length of each
+  tool result (to estimate the fill before the usage arrives) and whether the model's last reply
+  ends with the ready token. It keeps no conversation text and hands none to any script. Its
   config, `.claude/ctx-guard.json` and `.claude/ctx-guard.local.json`. A role's handoff file
   when it resumes. The ready-check and probe scripts your config names, to hash them for trust.
 - **Writes.** Role leases (`<role>.owner`) and restart stamps in the project's state folder,
