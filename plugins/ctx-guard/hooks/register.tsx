@@ -29,7 +29,7 @@ import type {
   Trigger,
   Work,
 } from '../types'
-import { bandOf, bandText, registerBand, sameBand, untrustedText } from './band'
+import { bandLags, bandOf, bandText, registerBand, sameBand, untrustedText } from './band'
 import {
   ARGUMENT_HINT,
   INIT_TRUST_HINT,
@@ -788,10 +788,12 @@ async function evaluateCurrent($: EngineInterface, write: BandWrite): Promise<vo
   await evaluateNow($, await currentReading($), write)
 }
 
-async function refreshBand($: EngineInterface): Promise<void> {
+// The band from the current reading, with no evaluation: timers and commands redraw it
+// whole; a main step whose fill moved the shown figure redraws it only if it changed.
+async function refreshBand($: EngineInterface, write: BandWrite = 'always'): Promise<void> {
   if (!active()) return
   const now = await $.clock.now()
-  await setBand($, await metricsFor($, await currentReading($), now), paused(now), 'always')
+  await setBand($, await metricsFor($, await currentReading($), now), paused(now), write)
 }
 
 // A main-loop step's evaluation, run off the step's critical path.
@@ -2569,7 +2571,8 @@ export const register: Register = (on, options) => {
 
   // Mid-turn checks for the main loop, from each request's own usage. The
   // result goes back first; only a step whose fill crosses a gate schedules
-  // an evaluation, off the turn's path.
+  // an evaluation, off the turn's path. A step that crosses none but moves the
+  // band's shown figure schedules a redraw only.
   on('turn.step', async function* ($, e, next) {
     if (needsReady()) await quietly(() => ready($))
     const main = e.agentId === undefined
@@ -2593,6 +2596,10 @@ export const register: Register = (on, options) => {
         const model = r.usage?.model ?? null
         if (model !== mod.gatesModel || crossesGates(tokens, mod.gates)) {
           $.clock.after(0, () => void serial(() => timed($, () => onMainStep($, tokens, model))))
+        } else if (bandLags(mem.band, tokens)) {
+          // No gate crossed, but the band would read another figure: one long turn
+          // ends no turn and fires no measure, so without this the band holds its start.
+          $.clock.after(0, () => void serial(() => timed($, () => refreshBand($, 'changed'))))
         }
       }
     }

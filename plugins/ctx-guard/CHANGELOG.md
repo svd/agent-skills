@@ -170,3 +170,6 @@ All notable changes to the `ctx-guard` plugin are documented here.
   role it is refused and does not run. A command several roles share claims nothing.
 - `band.probes`: up to four project scripts whose output is a band segment, run on their own
   timers in a trusted repo; `/ctx-guard` reports their last run.
+- The band follows the main loop mid-turn: a step whose context fill would read differently on
+  the band (`150k` → `152k`) redraws it off the turn's path, without an evaluation. Before, a long
+  turn showed its starting figure until a trigger's threshold was crossed or the turn ended.

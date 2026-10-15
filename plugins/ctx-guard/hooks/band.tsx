@@ -90,6 +90,14 @@ export function untrustedText(t: TrustState | null, wanted: boolean): string | n
   return t.record ? 'untrusted (changed)' : 'untrusted'
 }
 
+/**
+ * A main-loop step's fill reads differently from the band's context figure, so the
+ * band should be redrawn mid-turn; a step that leaves `150k` as `150k` need not write.
+ */
+export function bandLags(b: Band | null, tokens: number): boolean {
+  return !b || b.tokens === null || humanTokens(b.tokens) !== humanTokens(tokens)
+}
+
 /** Same figures, ignoring when they were read; a step need not rewrite an unchanged band. */
 export function sameBand(a: Band | null, b: Band | null): boolean {
   if (!a || !b) return a === b

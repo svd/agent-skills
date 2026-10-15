@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { bandOf, bandSegments, bandText, sameBand, untrustedText } from './band'
+import { bandLags, bandOf, bandSegments, bandText, sameBand, untrustedText } from './band'
 import { metricsOf } from './triggers'
 import type { Band } from '../types'
 
@@ -136,5 +136,16 @@ describe('probe segments', () => {
     const prev: Band = { ...base, probes: [{ id: 'run', text: 'x', color: null }] }
     expect(bandOf('lead', m, [], prev).probes).toEqual(prev.probes)
     expect(bandOf('lead', m, [], null).probes).toEqual([])
+  })
+})
+
+describe('band lag', () => {
+  test('a main step lags the band only when its figure would read differently', () => {
+    expect(bandLags(null, 120_000)).toBe(true)
+    expect(bandLags({ ...base, tokens: null }, 120_000)).toBe(true)
+    expect(bandLags({ ...base, tokens: 100_000 }, 120_000)).toBe(true)
+    expect(bandLags({ ...base, tokens: 150_000 }, 150_200)).toBe(false)
+    expect(bandLags({ ...base, tokens: 9_400 }, 9_420)).toBe(false)
+    expect(bandLags({ ...base, tokens: 9_400 }, 9_600)).toBe(true)
   })
 })

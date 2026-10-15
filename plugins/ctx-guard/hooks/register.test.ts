@@ -1239,6 +1239,37 @@ async function peekRestart($: Engine): Promise<{ pendingResume: { step: string }
   return JSON.parse(r.text ?? 'null')
 }
 
+// The band's context figure, as ctx-guard last drew it.
+async function bandTokens($: Engine): Promise<number | null> {
+  return ((await peekRestart($)).band as { tokens: number | null } | null)?.tokens ?? null
+}
+
+test('the band follows main-loop steps mid-turn, not only gate crossings', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  let stepTokens = 120_000
+  stepBottom(on, () => stepTokens)
+  const { session, clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await measure($, w, 100_000)
+  expect(await bandTokens($)).toBe(100_000)
+  await step($, clock)
+  expect(await bandTokens($)).toBe(120_000)
+  // No gate between 120k and 150k (the soft note is at 300k): the band moves all the same.
+  stepTokens = 150_000
+  await step($, clock)
+  expect(await bandTokens($)).toBe(150_000)
+  // A step that leaves the shown figure as it reads ("150k") does not redraw.
+  stepTokens = 150_200
+  await step($, clock)
+  expect(await bandTokens($)).toBe(150_000)
+  // A subagent's step never moves the main band.
+  stepTokens = 200_000
+  await step($, clock, 'sub-1')
+  expect(await bandTokens($)).toBe(150_000)
+  expect(notes(session)).toEqual([])
+})
+
 test('a trusted ready token: pendingResume, then /clear, then the resume, then cleared', { plugins: [PEEK_RESTART] }, async ($, on) => {
   const w = restartWorld({ hang: { clear: 1000, 'ctx-guard:resume': 1000 } })
   const { clock, session } = await armed($, on, w)
