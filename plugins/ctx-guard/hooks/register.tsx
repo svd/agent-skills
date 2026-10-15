@@ -2683,11 +2683,12 @@ export const register: Register = (on, options) => {
   })
 
   // Who each agent is, from its own spawn: only agents named here or by `$.agent.list` get a budget.
-  on('agent.spawn', async ($, e, next) => {
+  // Names used nowhere else in the file, so the directory can see the spawn passes on unchanged.
+  on('agent.spawn', async ($, spawnEvent, passSpawn) => {
     if (needsReady()) await quietly(() => ready($))
-    const r = await next(e)
+    const r = await passSpawn(spawnEvent)
     const id = r.agentId
-    if (id !== undefined && active()) await quietly(() => onSpawn($, id, e.subagentType, kindOf(e)))
+    if (id !== undefined && active()) await quietly(() => onSpawn($, id, spawnEvent.subagentType, kindOf(spawnEvent)))
     return r
   })
 
