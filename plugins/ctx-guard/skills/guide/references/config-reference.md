@@ -561,7 +561,8 @@ to `manual` or turn `autoActions` off.
 Ready-token restarts refuse with `untrusted`, `compact` actions, ready checks and band probes do
 not run, and notes ask the model to tell the operator instead. Where something needs trust (an
 automatic restart, a `compact` trigger or a band probe), the band shows `untrusted`, or
-`untrusted (changed)` once an approval no longer matches.
+`untrusted (changed)` once an approval no longer matches. Where nothing does, the band shows
+nothing and `/ctx-guard` reports `trust: not needed`.
 
 ## Path confinement
 

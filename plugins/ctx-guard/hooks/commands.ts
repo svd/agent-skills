@@ -261,6 +261,8 @@ export type SubagentReport = {
 
 export type RestartReport = {
   trusted: boolean
+  // False when an approval would turn nothing on; absent counts as true.
+  wanted?: boolean
   // Fields that need approval while untrusted.
   changed: readonly string[]
   approvedAt: number | null
@@ -277,6 +279,7 @@ export type RestartReport = {
 
 function trustLine(t: RestartReport, now: number): string {
   if (t.trusted) return `trust: approved${t.approvedAt === null ? '' : ` ${ago(now - t.approvedAt)}`}`
+  if (t.wanted === false) return 'trust: not needed (nothing automatic: no auto restart, compact trigger or probe)'
   const what = t.changed.length ? ` (needs approval: ${t.changed.join(', ')})` : ''
   return `trust: not approved${what}; automatic clear and compact and ready checks stay off until the operator runs /ctx-guard trust`
 }

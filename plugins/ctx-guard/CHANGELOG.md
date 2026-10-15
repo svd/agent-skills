@@ -15,6 +15,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - Role resolution (command > `CTX_GUARD_ROLE` > project `defaultRole` > userConfig `defaultRole`,
   interactive sessions only), `/ctx-guard role` and `/ctx-guard:resume` argument parsing, and the
   role lease decision.
+- `/ctx-guard` reports `trust: not needed` when an approval would turn nothing on (no automatic
+  restart, `compact` trigger or band probe), instead of an untrusted line the band does not show.
 - Role lists (`/ctx-guard`, an unknown-role error) leave out the built-in `main` once the
   project names roles of its own and gives `main` nothing: no settings, not the `defaultRole`,
   not the session's role. It still resolves, so a userConfig `defaultRole` of `main` keeps working.

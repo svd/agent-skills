@@ -1069,9 +1069,14 @@ async function readTrust($: EngineInterface, root: string): Promise<TrustState |
 const trusted = (): boolean => mod.trust?.trusted === true
 
 // The band's trust segment: only a repo with something trust gates (an automatic restart, a compact trigger, a probe) shows one.
-function bandUntrusted(): string | null {
+// True when an approval would turn something on: an automatic restart, a compact trigger, a probe.
+function trustWanted(): boolean {
   const eff = mod.eff
-  return eff ? untrustedText(mod.trust, wantsTrust(eff.config) || configuredProbes().length > 0) : null
+  return eff !== null && (wantsTrust(eff.config) || configuredProbes().length > 0)
+}
+
+function bandUntrusted(): string | null {
+  return mod.eff ? untrustedText(mod.trust, trustWanted()) : null
 }
 
 function untrustedWhy(): string {
@@ -2214,6 +2219,7 @@ async function restartReport($: EngineInterface, role: string | null, spec: Role
   const pending = mem.pendingResume
   const out: RestartReport = {
     trusted: t?.trusted === true,
+    wanted: trustWanted(),
     changed: t?.changed ?? [],
     approvedAt: t?.record?.at ?? null,
     lastVerdict: mem.lastVerdict,

@@ -1342,6 +1342,14 @@ test('trust is the operator\'s, and any change to a trusted field withdraws it',
   expect(await ctxGuard($, '')).toContain('trust: approved')
 })
 
+test('a role with nothing automatic needs no trust: the report says so and the band shows none', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld()
+  world(on, w, { CTX_GUARD_ROLE: 'main' })
+  await start($)
+  expect(await ctxGuard($, '')).toContain('trust: not needed (nothing automatic: no auto restart, compact trigger or probe)')
+  expect((await peekRestart($)).band?.untrusted ?? null).toBeNull()
+})
+
 test('trust off withdraws the approval, and the band says so until the next trust', { plugins: [PEEK_RESTART] }, async ($, on) => {
   const w = restartWorld()
   const { clock, session } = await armed($, on, w)
