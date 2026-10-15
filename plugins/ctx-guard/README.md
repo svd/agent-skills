@@ -159,8 +159,8 @@ fetches nothing. Every figure comes from Claude Code itself or from files in you
   scripts in `skills/guide/assets/` are examples to copy; none runs unless your config names it.
   The `superpowers-plan.py` probe reads plan files written by the
   [superpowers](https://github.com/obra/superpowers) plugin.
-- **Shows.** The band above the prompt (or status-line text), toasts and OS notifications
-  through Claude Code.
+- **Shows.** The band above the prompt (or status-line text), toasts, and OS notifications
+  through `$.ui.notify`, Claude Code's own notification call; no other plugin is involved.
 
 What each hook does, and what it may change:
 
