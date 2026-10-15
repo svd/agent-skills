@@ -16,6 +16,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ### Changed
 
+- The demo GIF lives outside the plugin, in the repo's `docs/assets/ctx-guard/`, so installing
+  ctx-guard no longer downloads 2.7 MB of image; the README links it by URL.
 - The band's render hook is registered in `register.tsx` itself, where the plugin directory's
   checks can read it.
 

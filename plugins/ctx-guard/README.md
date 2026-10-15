@@ -16,7 +16,7 @@ only when 11 checks say your work is safe. One JSON file, no code.
 main · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h)
 ```
 
-![ctx-guard demo: a note toast at the soft threshold, the model writes the handoff and ends with CTX-READY, ctx-guard clears the session and the fresh session finishes the spec](docs/assets/demo.gif)
+![ctx-guard demo: a note toast at the soft threshold, the model writes the handoff and ends with CTX-READY, ctx-guard clears the session and the fresh session finishes the spec](https://raw.githubusercontent.com/svd/agent-skills/main/docs/assets/ctx-guard/demo.gif)
 
 <sub>Demo config: thresholds lowered so the cycle fits in about two minutes; sped up 5×.</sub>
 
