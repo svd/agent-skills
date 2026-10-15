@@ -392,6 +392,7 @@ time (a lease in `.ctx-guard/<role>.owner`); a second one gets a warning and can
 | `/ctx-guard role <name\|none>` | you | Set this session's role. |
 | `/ctx-guard check` | you | Dry-run the restart verdict. |
 | `/ctx-guard trust` | you | Approve the repo's restart, ready-check and compact settings. |
+| `/ctx-guard trust off` | you | Withdraw that approval. |
 | `/ctx-guard reload` | anyone | Re-read the config files now. |
 | `/ctx-guard pause [30m\|off]` | you | Lift blocks and automatic actions for a while (default 30 min); notes go on. |
 | `/ctx-guard init [solo\|peers]` | you | Write a starter config if there is none, plus `.gitignore` lines. |
@@ -1013,7 +1014,7 @@ the ones below need you.
 
 | Code | Meaning | Fix |
 |---|---|---|
-| `untrusted` | Restart settings not approved, or changed since. | Read `/ctx-guard`, then `/ctx-guard trust`. |
+| `untrusted` | Restart settings not approved, or changed since. The band shows `untrusted`. | Read `/ctx-guard`, then `/ctx-guard trust`. |
 | `no-handoff`, `handoff-stale` | The handoff is missing, empty, or older than the session start or last `/clear`. | The model rewrites it and sends the token again. |
 | `agents-running` | A subagent or workflow agent is still running (or was seen in the last 15 min with no end). | Let it finish or stop it. |
 | `background-tasks` | Background shells are running, or no turn end has reported yet. | Stop them; finish one turn. |

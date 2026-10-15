@@ -4,6 +4,7 @@
 import type { On, RenderSurface } from 'claude-code'
 import type { Band, BandLimit } from '../types'
 import { humanDuration, humanPercent, humanTokens, resetsInMs } from './messages'
+import type { TrustState } from './config'
 import type { DenyEntry, Metrics } from './triggers'
 import { contextPercent } from './triggers'
 
@@ -27,7 +28,7 @@ function limitSegment(l: BandLimit, now: number): Segment {
 }
 
 /**
- * `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · step 03 · sub 1! · deny Agent`;
+ * `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · step 03 · untrusted · sub 1! · deny Agent`;
  * figures that are unknown are left out, so a fresh session shows little.
  */
 export function bandSegments(b: Band): Segment[] {
@@ -42,6 +43,7 @@ export function bandSegments(b: Band): Segment[] {
   for (const l of b.limits) out.push(limitSegment(l, b.now))
   // A band another version stored may have none.
   for (const p of b.probes ?? []) out.push(p.color ? { text: p.text, color: p.color } : { text: p.text })
+  if (b.untrusted) out.push({ text: b.untrusted, color: 'warning' })
   if (b.subagentsOver > 0) out.push({ text: `sub ${b.subagentsOver}!`, color: 'warning' })
   if (b.denies.length) out.push({ text: `deny ${b.denies.join(', ')}`, color: 'error' })
   if (b.restartFailed) out.push({ text: b.restartFailed, color: 'error' })
@@ -74,8 +76,18 @@ export function bandOf(role: string | null, m: Metrics, denies: readonly DenyEnt
     subagentsOver: prev?.subagentsOver ?? 0,
     denies: [...new Set(denies.map(d => d.tool))],
     restartFailed: prev?.restartFailed ?? null,
+    untrusted: prev?.untrusted ?? null,
     now: m.now,
   }
+}
+
+/**
+ * The band's trust segment: `untrusted` while a repo that wants trust (an automatic
+ * restart, a compact trigger, a probe) has none, `untrusted (changed)` once an approval no longer matches.
+ */
+export function untrustedText(t: TrustState | null, wanted: boolean): string | null {
+  if (!wanted || !t || t.trusted) return null
+  return t.record ? 'untrusted (changed)' : 'untrusted'
 }
 
 /** Same figures, ignoring when they were read; a step need not rewrite an unchanged band. */

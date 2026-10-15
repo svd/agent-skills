@@ -29,7 +29,7 @@ import type {
   Trigger,
   Work,
 } from '../types'
-import { bandOf, bandText, registerBand, sameBand } from './band'
+import { bandOf, bandText, registerBand, sameBand, untrustedText } from './band'
 import {
   ARGUMENT_HINT,
   INIT_TRUST_HINT,
@@ -749,7 +749,7 @@ async function setBand($: EngineInterface, metrics: Metrics, isPaused: boolean, 
   const denies =
     eff && mod.role.role !== null ? liveDenies(roleTriggers(), metrics, { blocking: eff.blocking, paused: isPaused }) : []
   const prev = mem.band
-  const band: Band = { ...bandOf(mod.role.role, metrics, denies, prev), subagentsOver: subagentsOver(), probes: probeSegments() }
+  const band: Band = { ...bandOf(mod.role.role, metrics, denies, prev), subagentsOver: subagentsOver(), probes: probeSegments(), untrusted: bandUntrusted() }
   if (write === 'changed' && sameBand(prev, band)) return
   await drawBand($, band)
 }
@@ -1068,6 +1068,12 @@ async function readTrust($: EngineInterface, root: string): Promise<TrustState |
 
 const trusted = (): boolean => mod.trust?.trusted === true
 
+// The band's trust segment: only a repo with something trust gates (an automatic restart, a compact trigger, a probe) shows one.
+function bandUntrusted(): string | null {
+  const eff = mod.eff
+  return eff ? untrustedText(mod.trust, wantsTrust(eff.config) || configuredProbes().length > 0) : null
+}
+
 function untrustedWhy(): string {
   const changed = mod.trust?.changed ?? []
   if (!mod.trust?.record) return 'never approved'
@@ -1246,7 +1252,7 @@ async function patchBand<K extends 'restartFailed' | 'subagentsOver'>($: EngineI
   const now = await $.clock.now()
   // Read after the await: a band written meanwhile is the base.
   const prev = mem.band
-  const base: Band = prev ?? { role: mod.role.role, tokens: null, percent: null, window: null, limits: [], probes: [], subagentsOver: 0, denies: [], restartFailed: null, now }
+  const base: Band = prev ?? { role: mod.role.role, tokens: null, percent: null, window: null, limits: [], probes: [], subagentsOver: 0, denies: [], restartFailed: null, untrusted: null, now }
   const band: Band = { ...base, [key]: value }
   await drawBand($, band)
 }
@@ -2424,6 +2430,19 @@ async function trustCommand($: EngineInterface): Promise<string> {
   return lines.join('\n')
 }
 
+/** `/ctx-guard trust off`: the approval is dropped, so automatic actions, ready checks and probes stop until the next `trust`. */
+async function trustOffCommand($: EngineInterface): Promise<string> {
+  const root = await $.session.root()
+  const had = asTrustRecord(await $.store.get(trustKey(root)).catch(() => undefined)) !== null
+  if (had) await $.store.delete(trustKey(root))
+  await readTrust($, root)
+  armProbes($)
+  await serial(() => evaluateCurrent($, 'always'))
+  return had
+    ? `${PREFIX} trust withdrawn for ${root}; automatic clear and compact, ready checks and probes are off until you run /ctx-guard trust.`
+    : `${PREFIX} ${root} has no approval to withdraw.`
+}
+
 /** `/ctx-guard check`: every check of a restart, nothing written, raced or cleared. */
 async function checkCommand($: EngineInterface): Promise<string> {
   const eff = mod.eff
@@ -2442,12 +2461,12 @@ async function checkCommand($: EngineInterface): Promise<string> {
 }
 
 // Changing what ctx-guard does is the person's alone, never the model's or another plugin's.
-const OPERATOR_ONLY = new Set(['role', 'pause', 'init', 'trust', 'check'])
+const OPERATOR_ONLY = new Set(['role', 'pause', 'init', 'trust', 'trust-off', 'check'])
 
 async function runCommand($: EngineInterface, e: CommandRunInput): Promise<CommandRunResult> {
   const sub = parseCommand(e.args)
   if (OPERATOR_ONLY.has(sub.kind) && e.origin.kind !== 'composer') {
-    return { text: `${PREFIX} only the operator can run /ctx-guard ${sub.kind}; ask the operator to type it. Nothing changed.` }
+    return { text: `${PREFIX} only the operator can run /ctx-guard ${sub.kind.replace('-', ' ')}; ask the operator to type it. Nothing changed.` }
   }
   switch (sub.kind) {
     case 'report':
@@ -2465,6 +2484,8 @@ async function runCommand($: EngineInterface, e: CommandRunInput): Promise<Comma
       return { text: await checkCommand($) }
     case 'trust':
       return { text: await trustCommand($) }
+    case 'trust-off':
+      return { text: await trustOffCommand($) }
     case 'pause':
       return { text: await pauseCommand($, sub.arg) }
     case 'init':

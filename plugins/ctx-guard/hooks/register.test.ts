@@ -1234,7 +1234,7 @@ const PEEK_RESTART: Plugin = {
   },
 }
 
-async function peekRestart($: Engine): Promise<{ pendingResume: { step: string } | null; lastVerdict: { code: string } | null; band: { restartFailed: string | null } | null }> {
+async function peekRestart($: Engine): Promise<{ pendingResume: { step: string } | null; lastVerdict: { code: string } | null; band: { restartFailed: string | null; untrusted?: string | null } | null }> {
   const r = await $.command.run({ command: 'peek-restart', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
   return JSON.parse(r.text ?? 'null')
 }
@@ -1340,6 +1340,23 @@ test('trust is the operator\'s, and any change to a trusted field withdraws it',
   writeConfig(w, { ...autoConfig({ readyChecks: [{ run: ['./other.sh'] }] }), readyToken: 'CTX-READY' })
   await measure($, w, 100_000)
   expect(await ctxGuard($, '')).toContain('trust: approved')
+})
+
+test('trust off withdraws the approval, and the band says so until the next trust', { plugins: [PEEK_RESTART] }, async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  expect((await peekRestart($)).band?.untrusted).toBeNull()
+  expect(await ctxGuard($, 'trust off', 'plugin')).toContain('only the operator can run /ctx-guard trust off')
+  expect(await ctxGuard($, '')).toContain('trust: approved')
+  expect(await ctxGuard($, 'trust off')).toContain('trust withdrawn for /repo')
+  expect(await ctxGuard($, '')).toContain('trust: not approved')
+  expect((await peekRestart($)).band?.untrusted).toBe('untrusted')
+  await ready($, clock)
+  expect(w.ran).toEqual([])
+  expect(refusals(session)[0]).toContain('(untrusted)')
+  expect(await ctxGuard($, 'trust off')).toContain('/repo has no approval to withdraw')
+  await ctxGuard($, 'trust')
+  expect((await peekRestart($)).band?.untrusted).toBeNull()
 })
 
 test('already-busy: a second token while the restart runs', async ($, on) => {
@@ -3345,6 +3362,7 @@ test('untrusted: a probe never runs', async ($, on) => {
   await clock.settle()
   expect(probeRuns(w)).toBe(0)
   expect(status(w)).not.toContain('step 03')
+  expect(status(w)).toBe('lead · 100k (10%) · untrusted')
 })
 
 test('a hanging probe holds nothing up; its ticks are skipped', async ($, on) => {
@@ -3381,5 +3399,6 @@ test('a probe removed from the config, or its script edited, stops drawing', asy
   await clock.settle()
   expect(probeRuns(w)).toBe(runs)
   expect(status(w)).not.toContain('step 03')
+  expect(status(w)).toContain('untrusted (changed)')
   expect(await ctxGuard($, '')).toContain('probe run: not run (untrusted)')
 })

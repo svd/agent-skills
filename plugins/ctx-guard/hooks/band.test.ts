@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { bandOf, bandSegments, bandText, sameBand } from './band'
+import { bandOf, bandSegments, bandText, sameBand, untrustedText } from './band'
 import { metricsOf } from './triggers'
 import type { Band } from '../types'
 
@@ -8,7 +8,7 @@ const NOW = Date.parse('2026-10-13T12:00:00Z')
 const HOUR = 60 * 60 * 1000
 const at = (ms: number): string => new Date(NOW + ms).toISOString()
 
-const base: Band = { role: null, tokens: null, percent: null, window: null, limits: [], probes: [], subagentsOver: 0, denies: [], restartFailed: null, now: NOW }
+const base: Band = { role: null, tokens: null, percent: null, window: null, limits: [], probes: [], subagentsOver: 0, denies: [], restartFailed: null, untrusted: null, now: NOW }
 
 describe('band text', () => {
   test('the full line', () => {
@@ -56,7 +56,7 @@ describe('band text', () => {
 describe('bandOf', () => {
   test('from a reading, keeping the subagent count and restart failure', () => {
     const m = metricsOf({ tokens: 250_000, rateLimits: [{ kind: 'seven_day', percentUsed: 61, resetsAt: at(HOUR) }] }, 500_000, null, NOW)
-    const prev: Band = { ...base, subagentsOver: 2, restartFailed: 'x' }
+    const prev: Band = { ...base, subagentsOver: 2, restartFailed: 'x', untrusted: 'untrusted' }
     const b = bandOf('lead', m, [{ tool: 'Agent', triggerId: 'a' }, { tool: 'Agent', triggerId: 'b' }], prev)
     expect(b).toEqual({
       role: 'lead',
@@ -68,8 +68,32 @@ describe('bandOf', () => {
       subagentsOver: 2,
       denies: ['Agent'],
       restartFailed: 'x',
+      untrusted: 'untrusted',
       now: NOW,
     })
+  })
+})
+
+describe('untrusted segment', () => {
+  const record = { hash: 'h', fields: {}, at: NOW }
+  test('only where trust is wanted and missing; changed once an approval no longer matches', () => {
+    expect(untrustedText(null, true)).toBeNull()
+    expect(untrustedText({ trusted: false, changed: ['lead.restart'], record: null }, false)).toBeNull()
+    expect(untrustedText({ trusted: true, changed: [], record }, true)).toBeNull()
+    expect(untrustedText({ trusted: false, changed: ['lead.restart'], record: null }, true)).toBe('untrusted')
+    expect(untrustedText({ trusted: false, changed: ['lead.restart'], record }, true)).toBe('untrusted (changed)')
+  })
+
+  test('after the probes, before sub and deny, in warning colour', () => {
+    const b: Band = { ...base, role: 'lead', probes: [{ id: 'run', text: 'step 03', color: null }], untrusted: 'untrusted', subagentsOver: 1, denies: ['Agent'] }
+    expect(bandText(b)).toBe('lead · step 03 · untrusted · sub 1! · deny Agent')
+    expect(bandSegments(b).find(s => s.text === 'untrusted')?.color).toBe('warning')
+  })
+
+  test('a band stored before the field existed draws without it', () => {
+    const old = { ...base, role: 'lead' } as Record<string, unknown>
+    delete old.untrusted
+    expect(bandText(old as unknown as Band)).toBe('lead')
   })
 })
 

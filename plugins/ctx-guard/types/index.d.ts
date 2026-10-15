@@ -138,6 +138,8 @@ export type Band = {
   subagentsOver: number
   denies: string[]
   restartFailed: string | null
+  // `untrusted` while settings that need /ctx-guard trust wait for it; null otherwise.
+  untrusted: string | null
   now: number
 }
 

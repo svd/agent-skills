@@ -119,6 +119,7 @@ refuses them unless typed in the prompt box. When one is needed, ask the operato
 | `/ctx-guard role <name\|none>` | Set this session's role. |
 | `/ctx-guard check` | Dry-run the restart verdict. |
 | `/ctx-guard trust` | Approve the repo's restart, ready-check and compact settings. |
+| `/ctx-guard trust off` | Withdraw that approval. |
 | `/ctx-guard reload` | Re-read the config files. |
 | `/ctx-guard pause [30m\|off]` | Lift blocks and automatic actions for a while; notes go on. |
 | `/ctx-guard init [solo\|peers]` | Copy a preset to the config path if no file is there. |

@@ -42,7 +42,8 @@ describe('parseCommand', () => {
     expect(parseCommand('frobnicate')).toEqual({ kind: 'usage', error: 'unknown subcommand "frobnicate"' })
     expect(parseCommand('check')).toEqual({ kind: 'check' })
     expect(parseCommand('TRUST')).toEqual({ kind: 'trust' })
-    expect(parseCommand('trust me')).toEqual({ kind: 'usage', error: 'trust takes no arguments' })
+    expect(parseCommand('trust me')).toEqual({ kind: 'usage', error: 'trust takes no arguments but off' })
+    expect(parseCommand('trust OFF')).toEqual({ kind: 'trust-off' })
   })
 })
 

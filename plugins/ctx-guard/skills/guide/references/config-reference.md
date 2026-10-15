@@ -553,12 +553,15 @@ project root. A config with errors cannot be approved.
 
 **Revoking.** Any change to an approved field or script withdraws the approval until the operator
 runs `/ctx-guard trust` again. The report lists what changed (`needs approval: lead.restart,
-script:.claude/ctx-guard/clean-worktree.sh`). There is no untrust command: to stop automatic
-actions, set `restart.mode` to `manual` or turn `autoActions` off.
+script:.claude/ctx-guard/clean-worktree.sh`). `/ctx-guard trust off`, typed by the operator,
+drops the approval outright. To stop automatic actions but keep the approval, set `restart.mode`
+to `manual` or turn `autoActions` off.
 
 **Untrusted,** notes, toasts and denies still work; they carry no more power than CLAUDE.md text.
 Ready-token restarts refuse with `untrusted`, `compact` actions, ready checks and band probes do
-not run, and notes ask the model to tell the operator instead.
+not run, and notes ask the model to tell the operator instead. Where something needs trust (an
+automatic restart, a `compact` trigger or a band probe), the band shows `untrusted`, or
+`untrusted (changed)` once an approval no longer matches.
 
 ## Path confinement
 
@@ -607,6 +610,7 @@ Set in `/config`, machine-wide.
 | `display` | `band`, `status` or `off` | `band` | `band`: a line above the prompt where the surface has one, else status-line text. `status`: status-line text only. `off`: nothing drawn. |
 
 The band reads like `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · sub 1! · deny Agent`.
+Band probes follow the usage windows, then `untrusted` while settings that need trust wait for it.
 
 ## The `/ctx-guard` command
 
@@ -616,6 +620,7 @@ The band reads like `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · su
 | `role <name\|none>` | operator | Sets this session's role. |
 | `check` | operator | Dry-runs the restart verdict. |
 | `trust` | operator | Approves the repo's restart, ready-check, compact and band-probe settings. |
+| `trust off` | operator | Withdraws that approval. |
 | `reload` | anyone | Re-reads the config files. |
 | `pause [30m\|off]` | operator | Lifts denies and automatic actions for a while (default 30 min); notes go on. `off` ends the pause. |
 | `init [solo\|peers]` | operator | Copies the preset `assets/presets/<name>.json` to `configPath` if no file is there (never overwrites), and adds the local file and `stateDir` to `.gitignore`. Default `solo`. When the preset restarts or compacts on its own, the reply says to review it and run `/ctx-guard trust`. |

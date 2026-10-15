@@ -93,6 +93,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
   argument that is a file under the project root is hashed by content and checked again before
   each restart. Any change to them withdraws the approval. Untrusted, notes and blocks still work, but
   nothing clears, compacts or runs a ready check, and notes ask for the operator instead.
+  `/ctx-guard trust off` (typed by the person) withdraws the approval. While a repo that restarts
+  on its own, compacts or runs band probes is untrusted, the band shows `untrusted`, or
+  `untrusted (changed)` once an approval no longer matches.
 - Path confinement through the file system: a state folder, handoff, stamp or owner file that
   resolves outside the project root (a symlink, or a missing file under a linked folder) refuses
   the restart with `error`.

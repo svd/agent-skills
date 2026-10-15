@@ -15,7 +15,7 @@ export const COMMAND = 'ctx-guard'
 export const MIN_VERSION = '2.1.293'
 export const DEFAULT_PAUSE_MS = 30 * 60 * 1000
 
-export const ARGUMENT_HINT = '[role <name|none> | check | trust | reload | pause [30m|off] | init [solo|peers]]'
+export const ARGUMENT_HINT = '[role <name|none> | check | trust [off] | reload | pause [30m|off] | init [solo|peers]]'
 
 export const USAGE = [
   'Usage:',
@@ -23,6 +23,7 @@ export const USAGE = [
   '  /ctx-guard role <name|none>  set this session\'s role (typed by you only)',
   '  /ctx-guard check             dry-run the restart guard: each check and its verdict',
   '  /ctx-guard trust             approve this repo\'s restart, ready-check and compact settings (typed by you only)',
+  '  /ctx-guard trust off         withdraw that approval (typed by you only)',
   '  /ctx-guard reload            re-read the config files',
   '  /ctx-guard pause [30m|off]   lift tool blocks and automatic actions for a while; notes go on',
   '  /ctx-guard init [solo|peers] write a starter config if there is none, and .gitignore lines',
@@ -39,6 +40,7 @@ export type Subcommand =
   | { kind: 'reload' }
   | { kind: 'check' }
   | { kind: 'trust' }
+  | { kind: 'trust-off' }
   | { kind: 'pause'; arg: string }
   | { kind: 'init'; preset: Preset }
   | { kind: 'usage'; error: string | null }
@@ -51,10 +53,12 @@ export function parseCommand(args: string): Subcommand {
   switch (head.toLowerCase()) {
     case 'role':
       return { kind: 'role', arg }
+    case 'trust':
+      if (arg.toLowerCase() === 'off') return { kind: 'trust-off' }
+      return arg ? { kind: 'usage', error: 'trust takes no arguments but off' } : { kind: 'trust' }
     case 'reload':
-    case 'check':
-    case 'trust': {
-      const kind = head.toLowerCase() as 'reload' | 'check' | 'trust'
+    case 'check': {
+      const kind = head.toLowerCase() as 'reload' | 'check'
       return arg ? { kind: 'usage', error: `${kind} takes no arguments` } : { kind }
     }
     case 'pause':
