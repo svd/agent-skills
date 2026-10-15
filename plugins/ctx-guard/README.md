@@ -395,7 +395,7 @@ time (a lease in `.ctx-guard/<role>.owner`); a second one gets a warning and can
 | `/ctx-guard reload` | anyone | Re-read the config files now. |
 | `/ctx-guard pause [30m\|off]` | you | Lift blocks and automatic actions for a while (default 30 min); notes go on. |
 | `/ctx-guard init [solo\|peers]` | you | Write a starter config if there is none, plus `.gitignore` lines. |
-| `/ctx-guard:resume role=<r> handoff=<path> [prompt]` | ctx-guard or you | Resume from a handoff after `/clear`. |
+| `/ctx-guard:resume role=<r> [handoff=<path>] [prompt]` | ctx-guard or you | Resume from a handoff after `/clear`. Typed with only `role=`, it takes the role's handoff path and restart prompt from the config. |
 | `/ctx-guard:guide` | anyone | The skill: how the model answers notes, and how to configure ctx-guard. |
 
 "You" means typed in the prompt box. ctx-guard refuses these subcommands when the model or
@@ -511,8 +511,9 @@ does not run.
 
 With `mode: "manual"`, do by hand what ctx-guard would do: when the model says
 "ready for /clear", type `/clear`, then
-`/ctx-guard:resume role=<role> handoff=<path>`. Typed in a session with no role, the resume
-also claims that role.
+`/ctx-guard:resume role=<role>`. ctx-guard fills in the role's `handoff.path` and
+`restart.prompt`, so it runs as the automatic restart would; a `handoff=` or prompt you type
+yourself wins. Typed in a session with no role, the resume also claims that role.
 
 ## Compact
 

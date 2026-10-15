@@ -388,6 +388,15 @@ export function resumeArgs(role: string, handoff: string, prompt: string | null)
   return `role=${role} handoff=${handoff}${p ? ` ${p}` : ''}`
 }
 
+/**
+ * A typed resume's arguments with what it left out taken from its role: the
+ * handoff path and the restart prompt. What it gave stays as given, so a
+ * typed `role=lead` runs as the automatic restart would.
+ */
+export function filledResumeArgs(typed: { handoff: string | null; prompt: string }, role: string, handoff: string, prompt: string | null): string {
+  return resumeArgs(role, typed.handoff ?? handoff, typed.prompt || prompt)
+}
+
 /** The band's line after a resume that did not run. */
 export function restartFailedText(command: string, role: string, handoff: string): string {
   return `restart failed — type /${command} role=${role} handoff=${handoff}`

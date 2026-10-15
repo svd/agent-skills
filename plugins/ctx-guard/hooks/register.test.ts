@@ -1662,6 +1662,28 @@ test('a typed resume claims its role for a session with none; a different held r
   expect((await run('role=ghost')).text).toContain('refused')
 })
 
+test('a typed resume with only role= gets its role\'s handoff path and restart prompt', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig({ prompt: 'Check ListAgents first.' }, { path: 'docs/handoff/{role}-now.md' }))
+  world(on, w)
+  await start($)
+  const run = (args: string, kind: 'composer' | 'plugin' = 'composer') =>
+    $.command.run({ command: 'ctx-guard:resume', args, origin: { kind } as never, presentation: { isFullscreen: false, columns: 120 } })
+  await run('role=lead')
+  await run('role=lead handoff=x.md')
+  await run('role=lead Go on.')
+  await run('role=lead handoff=x.md Go on.')
+  // Not typed by the person: passed on as it came.
+  await run('role=lead', 'plugin')
+  expect(w.ran).toEqual([
+    'ctx-guard:resume role=lead handoff=docs/handoff/lead-now.md Check ListAgents first.',
+    'ctx-guard:resume role=lead handoff=x.md Check ListAgents first.',
+    'ctx-guard:resume role=lead handoff=docs/handoff/lead-now.md Go on.',
+    'ctx-guard:resume role=lead handoff=x.md Go on.',
+    'ctx-guard:resume role=lead',
+  ])
+})
+
 test('a typed restart command claims its role; another role refuses and the command does not run', async ($, on) => {
   const w = restartWorld()
   writeConfig(w, { version: 1, roles: { lead: { restart: { command: 'restart-lead' } }, design: { restart: { command: 'restart-design' } } } })

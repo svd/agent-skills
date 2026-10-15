@@ -150,6 +150,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - Ready checks run with `CTX_GUARD_*` environment variables: the role
   (`CTX_GUARD_SCRIPT_ROLE`), the handoff path and mtime, the bound a handoff must be newer than,
   the state dir and `via`; `CTX_GUARD_PURPOSE` is `dry-run` under `/ctx-guard check`.
+- `/ctx-guard:resume role=<r>` typed with no `handoff=` or prompt takes the role's
+  `handoff.path` and `restart.prompt` from the config, so it runs as the automatic restart would.
 - A role's own `restart.command` typed by the operator (`/restart-lead`) claims that role in a
   session with none, by the same rules as `/ctx-guard:resume role=`; in a session holding another
   role it is refused and does not run. A command several roles share claims nothing.

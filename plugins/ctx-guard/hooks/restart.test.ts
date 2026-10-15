@@ -23,6 +23,7 @@ import {
   quietVerdict,
   raceVerdict,
   restartFailedText,
+  filledResumeArgs,
   resumeArgs,
   stampJson,
   stampPath,
@@ -395,6 +396,15 @@ describe('stamps, handoffs, resume', () => {
   test('resume arguments and the failed-restart line', () => {
     expect(resumeArgs('lead', '.ctx-guard/lead-handoff.md', ' Carry on. ')).toBe('role=lead handoff=.ctx-guard/lead-handoff.md Carry on.')
     expect(resumeArgs('lead', 'h.md', null)).toBe('role=lead handoff=h.md')
+  })
+
+  test('a typed resume gets what it left out from its role; what it gave stays', () => {
+    const fill = (handoff: string | null, prompt: string) => filledResumeArgs({ handoff, prompt }, 'lead', 'docs/lead-now.md', 'Check ListAgents.')
+    expect(fill(null, '')).toBe('role=lead handoff=docs/lead-now.md Check ListAgents.')
+    expect(fill('x.md', '')).toBe('role=lead handoff=x.md Check ListAgents.')
+    expect(fill(null, 'Go on.')).toBe('role=lead handoff=docs/lead-now.md Go on.')
+    expect(fill('x.md', 'Go on.')).toBe('role=lead handoff=x.md Go on.')
+    expect(filledResumeArgs({ handoff: null, prompt: '' }, 'lead', 'docs/lead-now.md', null)).toBe('role=lead handoff=docs/lead-now.md')
     expect(restartFailedText('ctx-guard:resume', 'lead', 'h.md')).toBe('restart failed — type /ctx-guard:resume role=lead handoff=h.md')
   })
 })

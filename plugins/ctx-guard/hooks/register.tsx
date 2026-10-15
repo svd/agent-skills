@@ -107,6 +107,7 @@ import {
   raceVerdict,
   renoteRisk,
   restartFailedText,
+  filledResumeArgs,
   resumeArgs,
   stampJson,
   stampPath,
@@ -2321,6 +2322,19 @@ async function resumeClaim($: EngineInterface, args: string): Promise<string | n
 }
 
 /**
+ * A typed resume's arguments with its role's handoff path and restart prompt
+ * filled in where it left them out, so `role=lead` alone runs as the automatic
+ * restart would; null to pass it on as typed.
+ */
+function filledArgs(typed: string): string | null {
+  const eff = mod.eff
+  const a = parseResumeArgs(typed)
+  if (!eff || a.role === null || a.errors.length || (a.handoff !== null && a.prompt !== '')) return null
+  const spec = roleSpec(eff.config, a.role)
+  return spec ? filledResumeArgs(a, a.role, handoffPathFor(spec, a.role), spec.restart.prompt) : null
+}
+
+/**
  * A role's own restart command typed by the person (`/restart-lead`) claims
  * that role, by the same rules as `/ctx-guard:resume role=`. Answers the
  * refusal text, or null to let the command run; a command that is no single
@@ -2624,7 +2638,9 @@ export const register: Register = (on, options) => {
     if (needsReady()) await quietly(() => ready($))
     if (!mod.commandOwned || !active() || e.origin.kind !== 'composer') return next(e)
     const refusal = await resumeClaim($, e.args)
-    return refusal === null ? next(e) : { text: refusal }
+    if (refusal !== null) return { text: refusal }
+    const args = filledArgs(e.args)
+    return next(args === null ? e : { ...e, args })
   }).catch(($, e, next) =>
     // A claim that could not be judged never lets the resume through unchecked.
     next.called ? next(e) : { text: `${PREFIX} /ctx-guard:resume could not check its role= claim; nothing ran. Try again, or set the role with /ctx-guard role first.` },

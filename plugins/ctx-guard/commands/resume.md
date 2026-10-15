@@ -1,13 +1,14 @@
 ---
 description: Resume a role's work from its ctx-guard handoff after a /clear
-argument-hint: role=<role> handoff=<path> [prompt]
+argument-hint: role=<role> [handoff=<path>] [prompt]
 ---
 
 Resume from a handoff. The arguments are: `$ARGUMENTS`
 
 They read `role=<role> handoff=<path>`, then an optional prompt. `role` is the role this session
 works as. `handoff` is the handoff file, relative to the project root. The prompt, if any, is
-the operator's instruction for this resume.
+the operator's instruction for this resume. When the operator typed only `role=`, ctx-guard has
+already filled in the role's configured handoff path and restart prompt.
 
 1. Read the handoff file whole. If it is missing or empty, stop and say so.
 2. Check its claims against the repository before you act on any of them:
