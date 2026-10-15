@@ -115,8 +115,11 @@ bumping versions by hand — it encodes the exact convention:
 - One commit per plugin on `main` (`chore(<plugin>): release vX.Y.Z`), then an **annotated** tag
   `<plugin>-vX.Y.Z` (never a bare `vX.Y.Z` — plugins version independently) pushed after the
   commit.
-- `marketplace.json` and `README.md` are **not** touched by a release (no version field to sync;
-  README only changes when a plugin is added/removed).
+- A GitHub release per tag (`gh release create <plugin>-vX.Y.Z --verify-tag --notes-file …`),
+  its notes built from the CHANGELOG section with absolute links pinned to the tag.
+- `marketplace.json` and the root `README.md` are **not** touched by a release (no version field
+  to sync; README only changes when a plugin is added/removed); a plugin README's version badge,
+  where there is one (`ctx-guard`), is bumped with `plugin.json`.
 - Run a plugin's `smoke_test.py` (if it has one — currently `session-analyzer` and
   `session-handoff`) before releasing it; for a mod (`hooks/hooks.json`, currently `ctx-guard`),
   run `claude plugin validate` and `claude plugin test` on it instead.
