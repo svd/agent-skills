@@ -51,6 +51,8 @@ A note, as the model sees it:
 > recorded — write the handoff to `.ctx-guard/main-handoff.md`: Rewrite the whole file.
 > Sections: Goal, State, Next action. Then tell the operator 'ready for /clear'.
 
+Each note also shows a toast, so you see what the model was told (`noteToasts`).
+
 ## How a restart works
 
 ```mermaid

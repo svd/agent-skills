@@ -6,6 +6,11 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ### Added
 
+- A toast each time a note goes to the model, naming its level, the figure and threshold that
+  crossed, and what the model was asked (`ctx-guard → model (hard): context 52k past 50k — wrap
+  up; write the handoff, then end with CTX-READY`). It follows the effective restart mode and
+  `via`, gives one toast for a collapsed note and stands in for a `"toast"` on the same trigger.
+  New `userConfig` switch `noteToasts` (default `true`) turns it off.
 - Plugin scaffold: manifest with `userConfig` switches (`enabled`, `configPath`, `defaultRole`,
   `blocking`, `autoActions`, `display`), the `$.state` type contract, and a config loader that
   merges built-in defaults, the switches, the project file and its `.local.json` override,

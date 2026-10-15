@@ -174,13 +174,15 @@ export function effectiveMode(spec: RoleSpec, gates: RestartGates): RestartMode 
   return mode === 'auto' && (!gates.autoActions || !gates.trusted || gates.paused) ? 'manual' : mode
 }
 
+const readyFor = (via: RestartVia): string => (via === 'compact' ? 'ready for /compact' : 'ready for /clear')
+
 /** What a note ends with by restart mode; empty with mode off. */
 export function restartTail(spec: RoleSpec, role: string, readyToken: string, mode: RestartMode = spec.restart.mode): string {
   const { via } = spec.restart
   if (mode === 'off') return ''
   const instructions = handoffInstructionsFor(spec, role)
   const write = via === 'compact' ? '' : ` write the handoff to \`${handoffPathFor(spec, role)}\`${instructions ? `: ${sentence(instructions)}` : '.'}`
-  const after = via === 'compact' ? 'ready for /compact' : 'ready for /clear'
+  const after = readyFor(via)
   if (mode === 'manual') return write ? `${SAFE_POINT}${write} Then tell the operator '${after}'.` : `${SAFE_POINT} tell the operator '${after}'.`
   if (!write) return `${SAFE_POINT} end your reply with a line holding only \`${readyToken}\`; ctx-guard then compacts the session.`
   return `${SAFE_POINT}${write} Then end your reply with a line holding only \`${readyToken}\`.`
@@ -256,6 +258,57 @@ export function toastText(vars: FireVars, role: string | null): string {
   else if (vars.metric === 'idle') what = `idle ${vars.idleMs === null ? UNKNOWN : humanDuration(vars.idleMs)} with context at ${v.tokens}`
   else what = `context ${v.tokens} (${v.percent} of ${v.window})`
   return `ctx-guard: ${who}${what}`
+}
+
+// restartTail in a few words, for the operator: the model "tells you".
+function restartAsk(spec: RoleSpec, readyToken: string, mode: RestartMode): string {
+  const { via } = spec.restart
+  if (mode === 'off') return ''
+  if (mode === 'manual') return via === 'compact' ? `tell you '${readyFor(via)}'` : `write the handoff, then tell you '${readyFor(via)}'`
+  return via === 'compact' ? `end with ${readyToken} to compact` : `write the handoff, then end with ${readyToken}`
+}
+
+// The figure a fire crossed and its threshold: "context 48k past 43k".
+function crossedText(vars: FireVars): string {
+  const v = templateVars(vars, { role: null, handoffPath: null, readyToken: '' })
+  let what: string
+  if (isLimit(vars.metric)) what = vars.limit ? `${windowName(vars.limit.kind)} usage ${humanPercent(vars.limit.pct)}` : `usage ${UNKNOWN}`
+  else if (vars.metric === 'cost') what = `session cost ${vars.cost === null ? UNKNOWN : humanUsd(vars.cost)}`
+  else if (vars.metric === 'idle') what = `idle ${vars.idleMs === null ? UNKNOWN : humanDuration(vars.idleMs)}`
+  else what = `context ${v.tokens}`
+  return `${what} past ${v.threshold}`
+}
+
+// A sentence as a clause: "Reread the plan." → "reread the plan".
+function clause(s: string): string {
+  const t = s.trim().replace(/[.!?]$/, '')
+  return `${t.charAt(0).toLowerCase()}${t.slice(1)}`
+}
+
+/**
+ * The toast that tells the operator a note went to the model: the level and
+ * figure of the top-ranked fire, then what collapseNotes asks for (its level
+ * wording, or the first custom message, and its restart tail) in a few words.
+ * Null for no fires.
+ */
+export function noteToastText(fires: readonly Fire[], opts: NoteOptions): string | null {
+  const top = [...fires].sort((a, b) => rank(b) - rank(a))[0]
+  if (!top) return null
+  const { role, spec, readyToken } = opts
+  const builtInTop = [...fires].filter(f => f.trigger.message === null).sort((a, b) => rank(b) - rank(a))[0]
+  const custom = fires.find(f => f.trigger.message !== null)
+  const asks: string[] = []
+  if (builtInTop) {
+    // The level wording up to its colon: "Wrap up: start no new item…" → "wrap up".
+    asks.push(clause(levelText(builtInTop.trigger.level, builtInTop.vars.metric, spec.restart.via).split(':')[0] ?? ''))
+  } else if (custom) {
+    const tv = templateVars(custom.vars, { role, handoffPath: handoffPathFor(spec, role), readyToken })
+    asks.push(clause(unprefixed(render(custom.trigger.message as string, tv))))
+  }
+  if (fires.some(f => f.trigger.when.context !== null)) asks.push(restartAsk(spec, readyToken, opts.mode ?? spec.restart.mode))
+  const level = top.trigger.level ? ` (${top.trigger.level})` : ''
+  const ask = asks.filter(Boolean).join('; ')
+  return `ctx-guard → model${level}: ${crossedText(top.vars)}${ask ? ` — ${ask}` : ''}`
 }
 
 // ---- denies, refusals, subagents ---------------------------------------------

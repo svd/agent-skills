@@ -13,6 +13,7 @@ import {
   humanUsd,
   levelText,
   noteText,
+  noteToastText,
   refusalNote,
   render,
   restartTail,
@@ -409,5 +410,76 @@ describe('toasts', () => {
       'ctx-guard: idle 55m with context at 520k',
     ])
     expect(toastText((f[0] as Fire).vars, 'lead')).toBe('ctx-guard: lead: context 520k (52% of 1M)')
+  })
+})
+
+describe('note toasts', () => {
+  const ladder = [
+    { id: 'soft', when: { context: '43k' }, do: ['note'], level: 'soft' },
+    { id: 'hard', when: { context: '50k' }, do: ['note'], level: 'hard' },
+    { id: 'stop', when: { context: '55k' }, do: ['note'], level: 'stop' },
+  ]
+  const toast = (s: RoleSpec, tokens: number, mode?: 'auto' | 'manual' | 'off'): string | null =>
+    noteToastText(fires(s, metrics({ tokens })), { role: 'lead', spec: s, readyToken: 'CTX-READY', ...(mode ? { mode } : {}) })
+
+  test('soft, hard and stop on context in auto mode', () => {
+    const s = spec({ restart: { mode: 'auto' }, triggers: ladder })
+    expect(toast(s, 48_000)).toBe('ctx-guard → model (soft): context 48k past 43k — plan for a handoff; write the handoff, then end with CTX-READY')
+    expect(toast(s, 52_000)).toBe('ctx-guard → model (hard): context 52k past 50k — wrap up; write the handoff, then end with CTX-READY')
+    expect(toast(s, 56_000)).toBe('ctx-guard → model (stop): context 56k past 55k — stop; write the handoff, then end with CTX-READY')
+  })
+
+  test('the ask follows the effective mode: manual tells the operator, off asks for nothing', () => {
+    const s = spec({ restart: { mode: 'auto' }, triggers: ladder })
+    expect(toast(s, 52_000, 'manual')).toBe("ctx-guard → model (hard): context 52k past 50k — wrap up; write the handoff, then tell you 'ready for /clear'")
+    expect(toast(spec({ restart: { mode: 'off' }, triggers: ladder }), 52_000)).toBe('ctx-guard → model (hard): context 52k past 50k — wrap up')
+  })
+
+  test('via compact: no handoff, the token compacts', () => {
+    const s = spec({ restart: { mode: 'auto', via: 'compact' }, triggers: ladder })
+    expect(toast(s, 48_000)).toBe('ctx-guard → model (soft): context 48k past 43k — plan for a compaction; end with CTX-READY to compact')
+    expect(toast(s, 52_000, 'manual')).toBe("ctx-guard → model (hard): context 52k past 50k — wrap up; tell you 'ready for /compact'")
+  })
+
+  test('a limit note asks for no handoff', () => {
+    const s = spec({ restart: { mode: 'auto' }, triggers: [{ id: 'week', when: { 'limit.seven_day': 90 }, do: ['note'], level: 'hard' }] })
+    const m = metrics({ limits: { five_hour: null, seven_day: { pct: 91, resetsAt: null } } })
+    const text = noteToastText(fires(s, m), { role: 'lead', spec: s, readyToken: 'CTX-READY' })
+    expect(text).toBe('ctx-guard → model (hard): weekly usage 91% past 90% — wrap up')
+  })
+
+  test('several fires collapse into one toast: the top level, its figure and threshold', () => {
+    const s = spec({
+      restart: { mode: 'auto' },
+      triggers: [
+        { id: 'c', when: { context: '300k' }, do: ['note'], level: 'soft' },
+        { id: 'l', when: { 'limit.five_hour': 80 }, do: ['note'], level: 'hard' },
+        { id: 'd', when: { cost: 1 }, do: ['note'] },
+      ],
+    })
+    const f = fires(s)
+    expect(f).toHaveLength(3)
+    const text = noteToastText(f, { role: 'lead', spec: s, readyToken: 'CTX-READY' })
+    // The note's level wording comes from the hard limit fire; its tail from the context fire.
+    expect(text).toBe('ctx-guard → model (hard): 5-hour usage 82% past 80% — wrap up; write the handoff, then end with CTX-READY')
+    expect(collapseNotes(f, { role: 'lead', spec: s, readyToken: 'CTX-READY' })).toContain(levelText('hard', 'limit.any'))
+  })
+
+  test('cost, idle, no level and a custom message', () => {
+    const s = spec({
+      restart: { mode: 'auto' },
+      triggers: [
+        { id: 'd', when: { cost: 1 }, do: ['note'] },
+        { id: 'i', when: { idle: '50m' }, do: ['note'], message: 'Back from a break: {tokens} in context; reread the plan.' },
+      ],
+    })
+    const [cost, idle] = fires(s, metrics({ idleMs: 55 * 60_000 }))
+    expect(noteToastText([cost as Fire], { role: 'lead', spec: s, readyToken: 'R' })).toBe(
+      'ctx-guard → model: session cost $1.50 past $1.00 — keep this in mind as you plan the next steps',
+    )
+    expect(noteToastText([idle as Fire], { role: 'lead', spec: s, readyToken: 'R' })).toBe(
+      'ctx-guard → model: idle 55m past 50m — back from a break: 312k in context; reread the plan',
+    )
+    expect(noteToastText([], { role: 'lead', spec: s, readyToken: 'R' })).toBeNull()
   })
 })

@@ -41,6 +41,12 @@
       "description": "Let ctx-guard run /clear with a resume, or /compact, when every guard holds. false keeps the notes and leaves restarts to you.",
       "default": true
     },
+    "noteToasts": {
+      "type": "boolean",
+      "title": "Toast on notes",
+      "description": "Show a toast each time ctx-guard sends the model a note: its level, the figure and what the model was asked. false leaves notes unseen.",
+      "default": true
+    },
     "display": {
       "type": "string",
       "title": "Display",

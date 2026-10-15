@@ -184,7 +184,7 @@ the highest. The step falls with the metric, so a drop re-arms the lower steps.
 
 | Action | Fires | Does |
 |---|---|---|
-| `"note"` | rising edge | Sends the model a note (only when the session has a role). Several notes in one evaluation collapse into one. |
+| `"note"` | rising edge | Sends the model a note (only when the session has a role). Several notes in one evaluation collapse into one. Each note also shows a toast, so the operator sees what the model was told (`noteToasts`); it stands in for a `"toast"` on the same trigger. |
 | `"toast"` | rising edge | A toast in the session. |
 | `"notify"` | rising edge | An OS-level notification. |
 | `"compact"` | rising edge | Runs `/compact <compact.instructions>` at the next main-loop turn end, under the busy-work guard. Needs trust, `autoActions` on and no pause. |
@@ -245,6 +245,12 @@ A note starts with `[ctx-guard]`, then holds:
 4. the restart tail for the role's mode, only when a fired trigger has a `context` condition: a
    restart frees context, so a note on usage, cost or idle alone asks for none;
 5. `notes.suffix`, rendered.
+
+Each note also shows a toast, so the operator sees what the model was told (`noteToasts`). It
+names the level, the figure of the highest-level trigger and its threshold, and the ask in a few
+words: `ctx-guard → model (hard): context 52k past 50k — wrap up; write the handoff, then end with
+CTX-READY`. A trigger that also has `"toast"` shows this toast alone, not two. Subagent budget
+notes, deny reasons and refusals show no such toast.
 
 **Restart tail.** With `mode: auto` and `via: clear`:
 
@@ -625,6 +631,7 @@ Set in `/config`, machine-wide.
 | `defaultRole` | string | `""` | Role when nothing else sets one. Empty for none. |
 | `blocking` | boolean | `true` | `false` lifts every deny; notes and toasts go on. |
 | `autoActions` | boolean | `true` | `false` stops automatic clear and compact; notes then ask the model to tell the operator. |
+| `noteToasts` | boolean | `true` | `false` stops the toast that shows each note sent to the model. |
 | `display` | `band`, `status` or `off` | `band` | `band`: a line above the prompt where the surface has one, else status-line text. `status`: status-line text only. `off`: nothing drawn. |
 
 The band reads like `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · sub 1! · deny Agent`.

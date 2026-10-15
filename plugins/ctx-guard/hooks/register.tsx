@@ -78,6 +78,7 @@ import {
   handoffPathFor,
   humanDuration,
   humanQuantity,
+  noteToastText,
   refusalNote,
   subagentDenyReason,
   subagentStopText,
@@ -732,13 +733,27 @@ async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean): Pro
   const role = mod.role.role
   if (!eff) return
   const spec = role === null ? null : roleSpec(eff.config, role)
+  // Fires whose toast the note toast stands for.
+  let shown = new Set<Fire>()
   // Model notes only once a role is assigned: a user-scope install never changes model behaviour unasked.
   if (role !== null && spec && plan.notes.length) {
-    const mode = effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: isPaused })
-    const text = collapseNotes(plan.notes, { role, spec, readyToken: eff.config.readyToken, mode })
-    if (text) await quietly(() => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } }))
+    const opts = { role, spec, readyToken: eff.config.readyToken, mode: effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: isPaused }) }
+    const text = collapseNotes(plan.notes, opts)
+    let sent = false
+    if (text) {
+      await quietly(async () => {
+        await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+        sent = true
+      })
+    }
+    // The operator sees what the model was told: one toast for the note, in place of its fires' own.
+    const toast = sent && eff.noteToasts ? noteToastText(plan.notes, opts) : null
+    if (toast) {
+      $.ui.toast(toast)
+      shown = new Set(plan.notes)
+    }
   }
-  for (const text of new Set(plan.toasts.map(f => toastText(f.vars, role)))) $.ui.toast(text)
+  for (const text of new Set(plan.toasts.filter(f => !shown.has(f)).map(f => toastText(f.vars, role)))) $.ui.toast(text)
   for (const text of new Set(plan.notifies.map(f => toastText(f.vars, role)))) await quietly(() => $.ui.notify(text))
   if (plan.compact && role !== null && spec) await quietly(() => requestCompact($, plan.compact as Fire, role, isPaused))
 }

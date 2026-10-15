@@ -54,6 +54,7 @@ export const DEFAULT_SWITCHES: Switches = {
   defaultRole: null,
   blocking: true,
   autoActions: true,
+  noteToasts: true,
   display: 'band',
 }
 
@@ -818,6 +819,7 @@ export function readSwitches(options: Readonly<Record<string, unknown>>): { swit
       defaultRole,
       blocking: boolAt(ctx, 'blocking', options.blocking, d.blocking),
       autoActions: boolAt(ctx, 'autoActions', options.autoActions, d.autoActions),
+      noteToasts: boolAt(ctx, 'noteToasts', options.noteToasts, d.noteToasts),
       display: enumAt(ctx, 'display', options.display, DISPLAYS, d.display),
     },
     errors: ctx.errors,
@@ -853,6 +855,7 @@ export type Effective = {
   enabled: boolean
   blocking: boolean
   autoActions: boolean
+  noteToasts: boolean
   display: Display
   // userConfig.defaultRole, kept out of the merge so a repo `defaultRole: null`
   // cannot erase it; roles resolve repo → this and report which one won.
@@ -889,6 +892,7 @@ export function effectiveConfig(input: {
     enabled: switches.enabled && config.enabled,
     blocking: switches.blocking,
     autoActions,
+    noteToasts: switches.noteToasts,
     display: switches.display,
     switchDefaultRole: switches.defaultRole,
   })

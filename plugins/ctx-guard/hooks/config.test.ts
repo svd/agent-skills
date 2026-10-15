@@ -718,8 +718,9 @@ describe('layers and fallback', () => {
     const off = file(TEAM, { enabled: false })
     expect(effectiveConfig({ switches: sw, files: [off], lastGood: null }).enabled).toBe(false)
     expect(effectiveConfig({ switches: { ...sw, enabled: false }, files: [], lastGood: null }).enabled).toBe(false)
-    const e = effectiveConfig({ switches: { ...sw, blocking: false, autoActions: false, display: 'status' }, files: [], lastGood: null })
-    expect(e).toMatchObject({ enabled: true, blocking: false, autoActions: false, display: 'status' })
+    const e = effectiveConfig({ switches: { ...sw, blocking: false, autoActions: false, noteToasts: false, display: 'status' }, files: [], lastGood: null })
+    expect(e).toMatchObject({ enabled: true, blocking: false, autoActions: false, noteToasts: false, display: 'status' })
+    expect(effectiveConfig({ switches: sw, files: [], lastGood: null }).noteToasts).toBe(true)
   })
 
   test('parseLayer: absent, bad JSON, non-object', () => {
@@ -732,9 +733,10 @@ describe('layers and fallback', () => {
     expect(readSwitches({})).toEqual({ switches: DEFAULT_SWITCHES, errors: [] })
     const r = readSwitches({ defaultRole: ' main ', display: 'status', configPath: 'cfg/guard.json' })
     expect(r.switches).toMatchObject({ defaultRole: 'main', display: 'status', configPath: 'cfg/guard.json' })
-    const bad = readSwitches({ defaultRole: 'Main', display: 'loud', configPath: '/etc/x.json', blocking: 'no' })
+    expect(readSwitches({ noteToasts: false }).switches.noteToasts).toBe(false)
+    const bad = readSwitches({ defaultRole: 'Main', display: 'loud', configPath: '/etc/x.json', blocking: 'no', noteToasts: 'yes' })
     expect(bad.switches).toEqual(DEFAULT_SWITCHES)
-    expect(bad.errors).toHaveLength(4)
+    expect(bad.errors).toHaveLength(5)
   })
 
   test('local override path', () => {

@@ -39,6 +39,7 @@ For editor completion, point `$schema` at the schema (ctx-guard ignores the key)
 | `defaultRole` | `""` | Role when nothing else sets one. Empty for none. |
 | `blocking` | `true` | `false` lifts every deny; notes and toasts go on. |
 | `autoActions` | `true` | `false` stops automatic clear and compact; notes then ask the model to tell you. |
+| `noteToasts` | `true` | `false` stops the toast that shows each note sent to the model. |
 | `display` | `band` | `band`, `status` (status-line text only) or `off`. |
 
 ## Anatomy of a config file
@@ -127,7 +128,7 @@ on one of `context`, `limit.*` percents or `cost`.
 
 | Action | Fires | Does |
 |---|---|---|
-| `"note"` | once, on the rising edge | Sends the model a note (needs a role). |
+| `"note"` | once, on the rising edge | Sends the model a note (needs a role). Each note also shows a toast, so you see what the model was told (`noteToasts`). |
 | `"toast"` | once | A toast in the session. |
 | `"notify"` | once | An OS notification. |
 | `"compact"` | once | Runs `/compact` at the next safe turn end. Needs trust. |

@@ -115,6 +115,7 @@ export type Switches = {
   defaultRole: string | null
   blocking: boolean
   autoActions: boolean
+  noteToasts: boolean
   display: Display
 }
 

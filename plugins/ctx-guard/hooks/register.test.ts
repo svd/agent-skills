@@ -397,6 +397,70 @@ test('/clear re-arms every trigger', async ($, on) => {
   expect(await ctxGuard($, '')).toContain('last /clear: 0s ago')
 })
 
+const noteToasts = (w: World): string[] => w.toasts.filter(t => t.startsWith('ctx-guard → model'))
+
+const LEAD_SOFT_TOAST = {
+  version: 1,
+  roles: { lead: { triggers: [{ id: 'soft', when: { context: '300k' }, do: ['note', 'toast'], level: 'soft' }] } },
+}
+
+test('a note shows exactly one toast saying what the model was told', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  const { session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(1)
+  expect(w.toasts.filter(t => t.includes('310k'))).toEqual(noteToasts(w))
+  expect(noteToasts(w)).toHaveLength(1)
+  // The repo is untrusted, so the note asks for a manual restart and so does the toast.
+  expect(notes(session)[0]).toContain("Then tell the operator 'ready for /clear'")
+  expect(noteToasts(w)[0]).toBe("ctx-guard → model (soft): context 310k past 300k — plan for a handoff; write the handoff, then tell you 'ready for /clear'")
+})
+
+test('a trigger with note and toast still shows one toast', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT_TOAST)
+  const { session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(1)
+  expect(w.toasts.filter(t => t.includes('310k'))).toHaveLength(1)
+  expect(noteToasts(w)).toHaveLength(1)
+})
+
+test('noteToasts off: no note toast, the trigger toast as before', { options: { noteToasts: false } }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT_TOAST)
+  const { session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await measure($, w, 310_000)
+  expect(notes(session).length).toBe(1)
+  expect(noteToasts(w)).toEqual([])
+  expect(w.toasts).toContain('ctx-guard: lead: context 310k (31% of 1M)')
+})
+
+test('zero-config, no role: no note, so no note toast', async ($, on) => {
+  const w = newWorld()
+  world(on, w)
+  await start($)
+  await measure($, w, 600_000)
+  expect(w.toasts.some(t => t.includes('context 600k (60% of 1M)'))).toBe(true)
+  expect(noteToasts(w)).toEqual([])
+})
+
+test('a rising edge held across measures toasts once', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT_TOAST)
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await measure($, w, 310_000)
+  await measure($, w, 320_000)
+  await measure($, w, 330_000)
+  expect(noteToasts(w)).toHaveLength(1)
+  expect(w.toasts.filter(t => /context 3[123]0k/.test(t))).toHaveLength(1)
+})
+
 const run = ($: Engine, command: string) => $.command.run({ command, args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
 
 const STATE_KEYS = ['band', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity']

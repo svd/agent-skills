@@ -93,7 +93,7 @@ refuses them unless typed in the prompt box. When one is needed, ask the operato
 
 | Layer | Where | Holds |
 |---|---|---|
-| userConfig | `/config` | Machine-wide switches: `enabled`, `configPath`, `defaultRole`, `blocking`, `autoActions`, `display`. |
+| userConfig | `/config` | Machine-wide switches: `enabled`, `configPath`, `defaultRole`, `blocking`, `autoActions`, `noteToasts`, `display`. |
 | Team file | `.claude/ctx-guard.json` | Roles, triggers, handoff, restart, subagent budgets. Committed. |
 | Local file | `.claude/ctx-guard.local.json` | Personal overrides. Gitignored. |
 
