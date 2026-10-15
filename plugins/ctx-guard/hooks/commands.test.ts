@@ -268,7 +268,7 @@ describe('report', () => {
       lastClearAt: null,
     }
     expect(reportText(base)).toContain('role: main (from /ctx-guard role, set 2h ago)')
-    expect(reportText({ ...base, role: { role: 'main', source: 'resume', problem: null } })).toContain('role: main (from /ctx-guard:resume, set 2h ago)')
+    expect(reportText({ ...base, role: { role: 'main', source: 'resume', problem: null } })).toContain('role: main (from /ctx-guard:resume or a restart command, set 2h ago)')
     expect(reportText({ ...base, role: { role: 'main', source: 'repo-default', problem: null } })).toContain('role: main (from project defaultRole)\n')
     expect(reportText({ ...base, claimAt: null })).toContain('role: main (from /ctx-guard role)\n')
   })

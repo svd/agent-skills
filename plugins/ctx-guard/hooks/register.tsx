@@ -113,8 +113,8 @@ import {
   verdict,
 } from './restart'
 import type { CheckRun, Facts, HandoffFact, RefusalCode, StampRead, Verdict } from './restart'
-import { claimFromResume, heartbeatDue, leasePath, leaseState, ownerJson, parseOwner, parseResumeArgs, parseRoleArg, resolveRole, roleProblem } from './roles'
-import type { Lease, RoleResolution } from './roles'
+import { claimFromResume, heartbeatDue, leasePath, leaseState, ownerJson, parseOwner, parseResumeArgs, parseRoleArg, resolveRole, roleForCommand, roleProblem } from './roles'
+import type { Lease, ResumeClaim, RoleResolution } from './roles'
 import {
   contextFloor,
   crossesGates,
@@ -2317,9 +2317,25 @@ async function initCommand($: EngineInterface, preset: Preset): Promise<string> 
 async function resumeClaim($: EngineInterface, args: string): Promise<string | null> {
   const eff = mod.eff
   if (!eff) return null
-  const c = claimFromResume(mod.role.role, parseResumeArgs(args), eff.config)
+  return applyClaim($, 'ctx-guard:resume', claimFromResume(mod.role.role, parseResumeArgs(args), eff.config))
+}
+
+/**
+ * A role's own restart command typed by the person (`/restart-lead`) claims
+ * that role, by the same rules as `/ctx-guard:resume role=`. Answers the
+ * refusal text, or null to let the command run; a command that is no single
+ * role's runs untouched.
+ */
+async function commandClaim($: EngineInterface, command: string): Promise<string | null> {
+  const eff = mod.eff
+  const role = eff ? roleForCommand(eff.config, command) : null
+  if (!eff || role === null) return null
+  return applyClaim($, command, claimFromResume(mod.role.role, { role, handoff: null, prompt: '', errors: [] }, eff.config))
+}
+
+async function applyClaim($: EngineInterface, command: string, c: ResumeClaim): Promise<string | null> {
   if (c.kind === 'refuse') {
-    const text = `${PREFIX} /ctx-guard:resume refused: ${c.reason}. Nothing ran.`
+    const text = `${PREFIX} /${command} refused: ${c.reason}. Nothing ran.`
     $.ui.toast(text)
     return text
   }
@@ -2613,6 +2629,22 @@ export const register: Register = (on, options) => {
     // A claim that could not be judged never lets the resume through unchecked.
     next.called ? next(e) : { text: `${PREFIX} /ctx-guard:resume could not check its role= claim; nothing ran. Try again, or set the role with /ctx-guard role first.` },
   )
+
+  // A role's own restart command typed by the person claims that role. Every
+  // other command passes straight through; a claim that cannot be judged lets
+  // the command run, as it did before restart commands claimed roles.
+  on('command.run', async ($, e, next) => {
+    // Judged from memory first, so any other command runs with no work done for it.
+    const eff = mod.eff
+    if (e.origin.kind !== 'composer' || !eff || roleForCommand(eff.config, e.command) === null) return next(e)
+    if (needsReady()) await quietly(() => ready($))
+    if (!mod.commandOwned || !active()) return next(e)
+    let refusal: string | null = null
+    await quietly(async () => {
+      refusal = await commandClaim($, e.command)
+    })
+    return refusal === null ? next(e) : { text: refusal }
+  })
 
   // The denies, then the main loop's result size for the in-flight estimate.
   // No .catch on purpose: a hook that fails is skipped, so a guard that

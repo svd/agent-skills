@@ -150,5 +150,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - Ready checks run with `CTX_GUARD_*` environment variables: the role
   (`CTX_GUARD_SCRIPT_ROLE`), the handoff path and mtime, the bound a handoff must be newer than,
   the state dir and `via`; `CTX_GUARD_PURPOSE` is `dry-run` under `/ctx-guard check`.
+- A role's own `restart.command` typed by the operator (`/restart-lead`) claims that role in a
+  session with none, by the same rules as `/ctx-guard:resume role=`; in a session holding another
+  role it is refused and does not run. A command several roles share claims nothing.
 - `band.probes`: up to four project scripts whose output is a band segment, run on their own
   timers in a trusted repo; `/ctx-guard` reports their last run.

@@ -14,6 +14,7 @@ import {
   parseResumeArgs,
   parseRoleArg,
   resolveRole,
+  roleForCommand,
 } from './roles'
 import type { ResolveInput } from './roles'
 import type { Config, RoleClaim } from '../types'
@@ -260,5 +261,27 @@ describe('lease', () => {
     expect(heartbeatDue(null, now)).toBe(true)
     expect(heartbeatDue(now - LEASE_HEARTBEAT_MS + 1, now)).toBe(false)
     expect(heartbeatDue(now - LEASE_HEARTBEAT_MS, now)).toBe(true)
+  })
+})
+
+describe('roleForCommand', () => {
+  const two = validate({ version: 1, roles: { lead: { restart: { command: 'restart-lead' } }, design: { restart: { command: '/restart-design' } }, other: {} } }).config as Config
+
+  test('the one role whose restart command it is', () => {
+    expect(roleForCommand(two, 'restart-lead')).toBe('lead')
+    expect(roleForCommand(two, 'restart-design')).toBe('design')
+  })
+
+  test('no role, or several sharing it, claims nothing', () => {
+    expect(roleForCommand(two, 'commit')).toBeNull()
+    const shared = validate({ version: 1, roles: { a: { restart: { command: 'go' } }, b: { restart: { command: 'go' } } } }).config as Config
+    expect(roleForCommand(shared, 'go')).toBeNull()
+  })
+
+  test('never ctx-guard:resume, which names its role itself, nor a role that compacts', () => {
+    const one = validate({ version: 1, roles: { main: {} } }).config as Config
+    expect(roleForCommand(one, 'ctx-guard:resume')).toBeNull()
+    const compacts = validate({ version: 1, roles: { lead: { restart: { via: 'compact', command: 'restart-lead' } } } }).config as Config
+    expect(roleForCommand(compacts, 'restart-lead')).toBeNull()
   })
 })

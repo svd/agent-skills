@@ -1,7 +1,7 @@
 // ctx-guard roles: which role a session runs as, the `/ctx-guard role` and
 // `/ctx-guard:resume` argument parsers, and the role lease. Pure: no `$`, never throws.
 import type { Config, RoleClaim } from '../types'
-import { ROLE_NAME, roleSpec } from './config'
+import { DEFAULT_RESTART_COMMAND, ROLE_NAME, roleSpec } from './config'
 
 // The one env var ctx-guard reads; `$.env.get` takes only a literal.
 export const ROLE_ENV = 'CTX_GUARD_ROLE'
@@ -178,6 +178,25 @@ export function claimFromResume(held: string | null, args: ResumeArgs, config: C
   const problem = roleProblem(requested, config, 'resume')
   if (problem) return { kind: 'refuse', reason: problem.replace(/; running with no role$/, '') }
   return { kind: 'claim', role: requested }
+}
+
+/**
+ * The role whose own restart command `command` is, so typing it claims that
+ * role as `/ctx-guard:resume role=` does. Null when it is no role's, when
+ * several roles share it (it then says nothing about which), for
+ * `/ctx-guard:resume` (it names its role itself) and for a role that compacts
+ * (it runs no restart command).
+ */
+export function roleForCommand(config: Config, command: string): string | null {
+  if (command === DEFAULT_RESTART_COMMAND) return null
+  let found: string | null = null
+  for (const name of Object.keys(config.roles)) {
+    const spec = roleSpec(config, name)
+    if (!spec || spec.restart.via !== 'clear' || spec.restart.command !== command) continue
+    if (found !== null) return null
+    found = name
+  }
+  return found
 }
 
 // ---- lease -------------------------------------------------------------------

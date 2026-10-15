@@ -1650,16 +1650,41 @@ test('a typed resume claims its role for a session with none; a different held r
     $.command.run({ command: 'ctx-guard:resume', args, origin: { kind } as never, presentation: { isFullscreen: false, columns: 120 } })
   await run('role=lead handoff=.ctx-guard/lead-handoff.md Carry on.')
   expect(w.ran).toEqual(['ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md Carry on.'])
-  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume, set ')
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume or a restart command, set ')
   const refused = await run('role=reviewer handoff=x.md')
   expect(refused.text).toContain('/ctx-guard:resume refused: this session holds role "lead"')
   expect(w.ran.length).toBe(1)
   // Not typed by the person: no claim and no refusal.
   await run('role=reviewer handoff=x.md', 'plugin')
   expect(w.ran.length).toBe(2)
-  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume, set ')
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume or a restart command, set ')
   expect((await run('role=Bad!')).text).toContain('bad arguments')
   expect((await run('role=ghost')).text).toContain('refused')
+})
+
+test('a typed restart command claims its role; another role refuses and the command does not run', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, { version: 1, roles: { lead: { restart: { command: 'restart-lead' } }, design: { restart: { command: 'restart-design' } } } })
+  world(on, w)
+  await start($)
+  const run = (command: string, kind: 'composer' | 'plugin' = 'composer') =>
+    $.command.run({ command, args: '', origin: { kind } as never, presentation: { isFullscreen: false, columns: 120 } })
+  await run('restart-lead')
+  expect(w.ran).toEqual(['restart-lead'])
+  expect(await ctxGuard($, '')).toContain('role: lead (from /ctx-guard:resume or a restart command, set ')
+  // The same role passes.
+  await run('restart-lead')
+  expect(w.ran.length).toBe(2)
+  const refused = await run('restart-design')
+  expect(refused.text).toContain('/restart-design refused: this session holds role "lead"')
+  expect(w.ran.length).toBe(2)
+  // Not typed by the person: no claim and no refusal.
+  await run('restart-design', 'plugin')
+  expect(w.ran.length).toBe(3)
+  expect(await ctxGuard($, '')).toContain('role: lead (')
+  // Any other command is left alone.
+  await run('commit')
+  expect(w.ran.length).toBe(4)
 })
 
 test('the report shows trust, the last verdict, the handoff age and the lease owner', async ($, on) => {

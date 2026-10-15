@@ -200,7 +200,7 @@ function ago(ms: number): string {
 
 const SOURCE_TEXT: Record<string, string> = {
   command: '/ctx-guard role',
-  resume: '/ctx-guard:resume',
+  resume: '/ctx-guard:resume or a restart command',
   env: 'CTX_GUARD_ROLE',
   'repo-default': 'project defaultRole',
   'user-default': 'userConfig defaultRole',

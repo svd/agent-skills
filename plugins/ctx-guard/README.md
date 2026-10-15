@@ -375,8 +375,8 @@ an enforcement: to be strict, add a permission rule as well.
 
 A session takes the first role it finds:
 
-1. `/ctx-guard role <name|none>`, typed by you (or `/ctx-guard:resume role=<name> …` in a
-   session with no role);
+1. `/ctx-guard role <name|none>`, typed by you (or, in a session with no role,
+   `/ctx-guard:resume role=<name> …` or a role's own `restart.command`, such as `/restart-lead`);
 2. the `CTX_GUARD_ROLE` environment variable (`none` means no role);
 3. the project's `defaultRole`, then the `defaultRole` switch.
 
@@ -503,7 +503,9 @@ start, as long as it is under 5 minutes old. A resume that does not run puts
 "restart failed — type /…" on the band.
 
 `restart.command` can name your own project command instead of `ctx-guard:resume`; it gets the
-same `role=… handoff=… <prompt>` arguments.
+same `role=… handoff=… <prompt>` arguments. Typed by you in a session with no role, it claims the
+role it belongs to, as the resume does; in a session that holds another role it is refused and
+does not run.
 
 ### A manual restart
 
