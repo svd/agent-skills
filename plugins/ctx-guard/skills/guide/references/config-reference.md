@@ -634,7 +634,7 @@ Band probes follow the usage windows, then `untrusted` while settings that need 
 
 | Subcommand | Typed by | Does |
 |---|---|---|
-| *(none)* | anyone | Report: role and its source, config files and errors, effective config, metrics, marks, live denies, band probes, trust, handoff age, lease, last verdict. |
+| *(none)* | anyone | Report: role and its source, config files and errors, effective config, metrics, marks, live denies, band probes, trust, handoff age, lease, last verdict, self gap (`selfGap` and the time left before the ready token is no longer `too-soon`). |
 | `role <name\|none>` | operator | Sets this session's role. |
 | `check` | operator | Dry-runs the restart verdict. |
 | `trust` | operator | Approves the repo's restart, ready-check, compact and band-probe settings. |

@@ -16,7 +16,7 @@ import {
   versionBelow,
   wantsTrust,
 } from './commands'
-import type { ReportInput } from './commands'
+import type { ReportInput, RestartReport } from './commands'
 import { BUILTIN_LAYER, builtInConfig, mergeLayers, roleSpec, validate } from './config'
 import { metricsOf } from './triggers'
 
@@ -295,5 +295,43 @@ describe('report', () => {
     expect(reportText({ ...base, role: { role: 'main', source: 'resume', problem: null } })).toContain('role: main (from /ctx-guard:resume or a restart command, set 2h ago)')
     expect(reportText({ ...base, role: { role: 'main', source: 'repo-default', problem: null } })).toContain('role: main (from project defaultRole)\n')
     expect(reportText({ ...base, claimAt: null })).toContain('role: main (from /ctx-guard role)\n')
+  })
+
+  test('the self gap line says how long the ready token stays refused as too-soon', () => {
+    const now = 7_200_000
+    const restart: RestartReport = {
+      trusted: true,
+      changed: [],
+      approvedAt: null,
+      lastVerdict: null,
+      handoff: null,
+      lease: null,
+      pending: null,
+    }
+    const base: ReportInput = {
+      now,
+      interactive: true,
+      off: null,
+      pause: null,
+      role: { role: 'main', source: 'user-default', problem: null },
+      configState: null,
+      config: builtInConfig(),
+      switches: { blocking: true, autoActions: true, display: 'band' },
+      windowSource: 'model window',
+      mode: 'auto',
+      metrics: metricsOf({}, 1_000_000, null, now),
+      marks: null,
+      triggers: [],
+      denies: [],
+      lastClearAt: null,
+    }
+    const at = (selfGap: RestartReport['selfGap']) => reportText({ ...base, restart: { ...restart, selfGap } })
+    expect(at({ gap: 300_000, lastRestartAt: now - 120_000 })).toContain(
+      'self gap: 5m; last restart 2m ago, ready token refused (too-soon) for 3m more',
+    )
+    expect(at({ gap: 300_000, lastRestartAt: now - 420_000 })).toContain('self gap: 5m; last restart 7m ago, passed')
+    expect(at({ gap: 300_000, lastRestartAt: null })).toContain('self gap: 5m; no restart yet in this session')
+    expect(at({ gap: 0, lastRestartAt: now - 1_000 })).toContain('self gap: off (selfGap 0)')
+    expect(at(null)).not.toContain('self gap')
   })
 })

@@ -272,6 +272,8 @@ export type RestartReport = {
   // Who holds the role lease: `this session`, another id, `free`; null with no role.
   lease: string | null
   pending: string | null
+  // The role's selfGap (0: off) and this session's last restart on the ready token; absent with no role.
+  selfGap?: { gap: number; lastRestartAt: number | null } | null
   // A compact a trigger queued, and the last compact ctx-guard ran or gave up on; absent leaves them out.
   pendingCompact?: string | null
   lastCompact?: string | null
@@ -284,10 +286,23 @@ function trustLine(t: RestartReport, now: number): string {
   return `trust: not approved${what}; automatic clear and compact and ready checks stay off until the operator runs /ctx-guard trust`
 }
 
+// How long the ready token stays refused as too-soon, mirroring restart.ts's check.
+function selfGapLine(s: { gap: number; lastRestartAt: number | null }, now: number): string {
+  if (s.gap <= 0) return 'self gap: off (selfGap 0)'
+  const gap = humanDuration(s.gap)
+  if (s.lastRestartAt === null) return `self gap: ${gap}; no restart yet in this session`
+  const since = now - s.lastRestartAt
+  const left = s.gap - since
+  return left > 0
+    ? `self gap: ${gap}; last restart ${ago(since)}, ready token refused (too-soon) for ${humanDuration(left)} more`
+    : `self gap: ${gap}; last restart ${ago(since)}, passed`
+}
+
 function restartLines(t: RestartReport, now: number): string[] {
   const lines = [trustLine(t, now)]
   const v = t.lastVerdict
   lines.push(`last verdict: ${v ? `${v.code} (${ago(now - v.at)})${v.text ? `: ${v.text}` : ''}` : 'none'}`)
+  if (t.selfGap) lines.push(selfGapLine(t.selfGap, now))
   if (t.handoff) lines.push(`handoff: ${t.handoff.path}, ${t.handoff.mtime === null ? 'absent' : `written ${ago(now - t.handoff.mtime)}`}`)
   if (t.lease) lines.push(`lease: ${t.lease}`)
   if (t.pending) lines.push(`pending resume: ${t.pending}`)

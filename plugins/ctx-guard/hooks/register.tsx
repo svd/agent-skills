@@ -2239,6 +2239,8 @@ async function restartReport($: EngineInterface, role: string | null, spec: Role
   const lc = mem.lastCompact
   if (lc) out.lastCompact = `${lc.outcome} ${humanDuration(now - lc.at)} ago (${lc.source}): ${lc.text}`
   if (role === null || !spec) return out
+  // A config another version stored may lack it.
+  out.selfGap = { gap: spec.restart.selfGap ?? DEFAULT_SELF_GAP, lastRestartAt: mem.lastRestartAt }
   try {
     const root = await $.session.root()
     const h = await handoffOf($, root, await realRootOf($, root), role, spec)

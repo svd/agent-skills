@@ -462,6 +462,7 @@ test('a /clear that wipes $.state: the next hook writes back the role, pause, ve
   expect(report).toContain('role: lead (from /ctx-guard role, set ')
   expect(report).toContain('last /clear: 0s ago')
   expect(report).toContain('lease: held by this session')
+  expect(report).toContain('self gap: 5m; no restart yet in this session')
   // The marks were reset by the clear: a new crossing notes again.
   await measure($, w, 310_000)
   expect(notes(session).length).toBe(2)

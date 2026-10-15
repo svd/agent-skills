@@ -21,6 +21,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
   cases 13-15 (builders in git worktrees, jobs outside the session, a superpowers plan's progress).
 - `/ctx-guard` reports `trust: not needed` when an approval would turn nothing on (no automatic
   restart, `compact` trigger or band probe), instead of an untrusted line the band does not show.
+- `/ctx-guard` reports the role's `selfGap` and, after this session's last restart on the ready
+  token, how long the token stays refused as `too-soon`.
 - Role lists (`/ctx-guard`, an unknown-role error) leave out the built-in `main` once the
   project names roles of its own and gives `main` nothing: no settings, not the `defaultRole`,
   not the session's role. It still resolves, so a userConfig `defaultRole` of `main` keeps working.
