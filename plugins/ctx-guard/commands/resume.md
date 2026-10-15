@@ -1,6 +1,6 @@
 ---
 description: Resume a role's work from its ctx-guard handoff after a /clear
-argument-hint: [role=<role>] [handoff=<path>] [prompt]
+argument-hint: "[role=<role>] [handoff=<path>] [prompt]"
 ---
 
 Resume from a handoff. The arguments are: `$ARGUMENTS`

@@ -2,6 +2,23 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [Unreleased]
+
+### Added
+
+- An icon and homepage, repository, documentation and support links in `plugin.json`, for the
+  plugin directory listing.
+- A README section on what ctx-guard runs, reads, writes and sends, and what each hook changes.
+
+### Fixed
+
+- `/ctx-guard:resume`'s `argument-hint` is quoted, so its front matter parses as YAML.
+
+### Changed
+
+- The band's render hook is registered in `register.tsx` itself, where the plugin directory's
+  checks can read it.
+
 ## [0.1.0] - 2026-10-15
 
 ### Added

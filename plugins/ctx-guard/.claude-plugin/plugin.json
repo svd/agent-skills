@@ -7,8 +7,21 @@
     "name": "Sviatoslav Sviridov",
     "email": "sviridov@gmail.com"
   },
+  "homepage": "https://github.com/svd/agent-skills/tree/main/plugins/ctx-guard",
+  "repository": "https://github.com/svd/agent-skills",
   "license": "MIT",
-  "keywords": ["claude-code", "context", "usage-limits", "handoff", "compact", "subagents", "mod"],
+  "keywords": [
+    "claude-code",
+    "context",
+    "usage-limits",
+    "handoff",
+    "compact",
+    "subagents",
+    "mod"
+  ],
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://github.com/svd/agent-skills/blob/main/plugins/ctx-guard/docs/README.md",
+  "supportUrl": "https://github.com/svd/agent-skills/issues",
   "types": "./types/index.d.ts",
   "userConfig": {
     "enabled": {
@@ -51,7 +64,11 @@
       "type": "string",
       "title": "Display",
       "description": "band: a line above the prompt where the surface has one, else status-line text. status: status-line text only. off: nothing drawn.",
-      "options": ["band", "status", "off"],
+      "options": [
+        "band",
+        "status",
+        "off"
+      ],
       "default": "band"
     }
   }

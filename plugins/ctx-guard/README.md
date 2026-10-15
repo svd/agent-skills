@@ -113,6 +113,45 @@ triggers, active blocks and trust. Full walk-through: [Getting started](docs/get
 - **Easy to turn down.** `/ctx-guard pause 1h`, or the `blocking`, `autoActions` and `enabled`
   switches in `/config`.
 
+## What it runs, reads, writes and sends
+
+ctx-guard makes no network requests. It sends nothing to any server, has no telemetry and
+fetches nothing. Every figure comes from Claude Code itself or from files in your project.
+
+- **Reads.** Claude Code's own figures for the session through the mod API: context fill, token
+  usage, the 5-hour and weekly limit status, running agents and background tasks. Your Claude
+  Code settings, for `autoCompactWindow` only. The `CTX_GUARD_ROLE` environment variable. Its
+  config, `.claude/ctx-guard.json` and `.claude/ctx-guard.local.json`. A role's handoff file
+  when it resumes. The ready-check and probe scripts your config names, to hash them for trust.
+- **Writes.** Role leases (`<role>.owner`) and restart stamps in the project's state folder,
+  `.ctx-guard/` by default (`stateDir`). Its session state and your trust approvals go to Claude
+  Code's own plugin storage. Only `/ctx-guard init`, when you type it, writes a file outside
+  that folder: it creates `.claude/ctx-guard.json` from a preset if there is none and adds the
+  local config and the state folder to `.gitignore`. Handoffs are written by the model, not by
+  ctx-guard.
+- **Sends to the model.** Notes that start with `[ctx-guard]`, added to the conversation as
+  user messages: to the main session when a trigger fires, or to a subagent nearing its budget.
+- **Runs commands.** `/clear` followed by `/ctx-guard:resume` (or the restart command a role
+  names in your config), or `/compact`. Only with `autoActions` on, after `/ctx-guard trust` and
+  when every check of the verdict passes. It adds the `/ctx-guard` command.
+- **Runs programs.** Only the ready checks and band probes you list under `run` in your project
+  config, from the project root, with a timeout, and only after `/ctx-guard trust`. The scripts
+  in `skills/guide/assets/` are examples to copy; none runs unless your config names it. The
+  `superpowers-plan.py` probe reads plan files written by the
+  [superpowers](https://github.com/obra/superpowers) plugin.
+- **Shows.** The band above the prompt (or status-line text), toasts and OS notifications
+  through Claude Code.
+
+What each hook does, and what it may change:
+
+| Hook | What it does |
+| --- | --- |
+| `session.start`, `session.measure`, `session.end`, `turn.start`, `turn.step`, `turn.complete`, `classic.Stop` | Read the figures and evaluate the triggers. Each passes the event on unchanged. |
+| `tool.call` | Denies a main-loop tool call while a `deny` trigger holds, and a subagent's call once it is past its budget. Every other call passes unchanged. |
+| `agent.spawn` | Records each new agent's id and type, for its budget. Passes the spawn on unchanged. |
+| `command.run` | Runs `/ctx-guard`. For `/ctx-guard:resume` typed by you, checks its `role=` claim against the role lease, refuses it if another session holds the role, and fills in the role, handoff path and prompt it already knows. For a role's restart command typed by you, refuses it if another session holds the role. Every other command passes unchanged. |
+| `ui.render` (`AbovePrompt`) | Draws the band. |
+
 ## Pick your setup
 
 | You want | Start from |

@@ -29,7 +29,7 @@ import type {
   Trigger,
   Work,
 } from '../types'
-import { bandLags, bandOf, bandText, registerBand, sameBand, untrustedText } from './band'
+import { bandLags, bandOf, bandSegments, bandText, sameBand, untrustedText } from './band'
 import {
   ARGUMENT_HINT,
   INIT_TRUST_HINT,
@@ -2747,5 +2747,23 @@ export const register: Register = (on, options) => {
     return runCommand($, e)
   }).catch(($, e, next) => (next.called ? next(e) : { text: `${PREFIX} the command failed; nothing changed.` }))
 
-  registerBand(on, drawsBand, () => mem.band)
+  // The band above the prompt: the band ctx-guard holds in memory, never waiting on `$`.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || !drawsBand(e.surface)) return next(e)
+    // Read on every draw, unawaited and unused: the read subscribes the drawing to the band's next write.
+    void $.state.get(BAND).catch(() => undefined)
+    const band = mem.band
+    const segments = band ? bandSegments(band) : []
+    if (!segments.length) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return (
+      <Text wrap="truncate-end">
+        {segments.map((s, i) => (
+          <Text key={`s${i}`} color={s.color} dimColor={s.dim === true}>
+            {s.text}
+          </Text>
+        ))}
+      </Text>
+    )
+  })
 }
