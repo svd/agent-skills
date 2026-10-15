@@ -200,7 +200,7 @@ context is past 70 %, when their reports would crowd out what is left:
 ```
 
 The `guide` skill tells the model not to route around a block with another tool that does the
-same job (for example `curl` through `Bash` instead of `WebFetch`). That is an instruction, not
+same job (for example a shell command through `Bash` instead of `WebFetch`). That is an instruction, not
 an enforcement: to be strict, add a permission rule as well.
 
 ## Roles
