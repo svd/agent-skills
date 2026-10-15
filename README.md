@@ -170,3 +170,7 @@ users who run `/plugin marketplace update svd-agent-skills`.
 
 The Python helper scripts are pure Python 3 stdlib — no pip install required. ctx-guard is a
 TypeScript mod that Claude Code loads directly, with no build step.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Each plugin declares the same license in its `plugin.json`.

@@ -7,7 +7,7 @@ thresholds into actions. It tells the model when to wrap up, brakes subagents an
 before a limit runs out, caps each subagent's context, and restarts the session from a handoff
 only when 11 checks say your work is safe. One JSON file, no code.
 
-![license: MIT](https://img.shields.io/badge/license-MIT-blue)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Claude Code 2.1.293+](https://img.shields.io/badge/Claude%20Code-2.1.293%2B-d97757)
 ![version 0.1.0](https://img.shields.io/badge/version-0.1.0-informational)
 ![500+ tests](https://img.shields.io/badge/tests-500%2B-brightgreen)
@@ -184,4 +184,4 @@ plan's progress, and any skill can write the handoff
 
 ## License
 
-MIT.
+MIT, see [LICENSE](LICENSE).
