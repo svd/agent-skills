@@ -194,6 +194,85 @@
           }
         }
       }
+    },
+    "cache": {
+      "description": "The main thread's prompt cache: the band countdown and the keep-warm ping.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ttl": {
+          "description": "How long the cache lives. Default auto: detected from the transcript, then observed, else a guess from the subscription. An explicit value overrides detection.",
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "5m",
+                "1h"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "band": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "show": {
+              "description": "Show the countdown when idle and the time left is within this duration or percent of the TTL; \"always\", or false for never. Default 25%.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/duration"
+                },
+                {
+                  "$ref": "#/$defs/percent"
+                },
+                {
+                  "const": "always"
+                },
+                {
+                  "const": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "warn": {
+              "description": "Below this duration or percent of the TTL the countdown takes the warning colour. Default 10m.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/duration"
+                },
+                {
+                  "$ref": "#/$defs/percent"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "ping": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxUsage": {
+              "description": "No ping while any usage window is at or above this percent. Default 90.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/percent"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -362,6 +441,40 @@
             }
           ]
         },
+        "cache.expiresIn": {
+          "description": "Time left before the main thread's prompt cache expires, at most. Holds at or below the threshold; unknown (the trigger waits) until a request has set the cache. Cannot be combined with a deny.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cache.miss": {
+          "description": "Tokens the latest main request rewrote although the cache was expected warm, at least. Cannot be combined with a deny.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tokens"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cache.pings": {
+          "description": "Warm pings in the current idle period, at least. Cannot be combined with a deny.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "every": {
           "description": "Repeat step. Needs exactly one of context, limit.five_hour, limit.seven_day, limit.any, cost in the same `when`.",
           "anyOf": [
@@ -441,6 +554,42 @@
           ],
           "properties": {
             "idle": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "cache.expiresIn"
+          ],
+          "properties": {
+            "cache.expiresIn": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "cache.miss"
+          ],
+          "properties": {
+            "cache.miss": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "cache.pings"
+          ],
+          "properties": {
+            "cache.pings": {
               "not": {
                 "type": "null"
               }
@@ -734,9 +883,11 @@
             "note",
             "toast",
             "notify",
-            "compact"
+            "compact",
+            "ping",
+            "prompt"
           ],
-          "description": "Fires once on the rising edge."
+          "description": "Fires once on the rising edge. ping sends a cheap request that keeps the prompt cache warm (needs cache.expiresIn in the same `when`); prompt sends the operator-away message into the session. Both need times, and a trusted repo."
         },
         {
           "type": "object",
@@ -802,6 +953,18 @@
               "type": "null"
             }
           ]
+        },
+        "times": {
+          "description": "At most this many fires per idle period. Required with ping or prompt.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -834,7 +997,67 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "when"
+            ],
+            "properties": {
+              "when": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "cache.expiresIn"
+                    ],
+                    "properties": {
+                      "cache.expiresIn": {
+                        "not": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "cache.miss"
+                    ],
+                    "properties": {
+                      "cache.miss": {
+                        "not": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "cache.pings"
+                    ],
+                    "properties": {
+                      "cache.pings": {
+                        "not": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "do": {
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "readyCheck": {
       "type": "object",

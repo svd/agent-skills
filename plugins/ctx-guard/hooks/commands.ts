@@ -1,7 +1,7 @@
 // ctx-guard's `/ctx-guard` command and start-up checks: argument parsing, the
 // pause, `init` presets and .gitignore lines, the report text, the engine
 // version gate and the command-collision check. Pure: no `$`, never throws.
-import type { Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger } from '../types'
+import type { Action, Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger } from '../types'
 import { parseQuantity, roleSpec, validate } from './config'
 import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
 import { listedRoles } from './roles'
@@ -117,11 +117,14 @@ export function presetProblem(text: string, preset: Preset): string | null {
 export const INIT_TRUST_HINT =
   'Its automatic clear, compact and ready checks stay off, and notes ask for the operator, until you review it and run /ctx-guard trust.'
 
-/** True when a role restarts on its own or a trigger compacts: the actions trust gates. */
+// The trigger actions that run unattended, so trust gates them.
+const TRUST_ACTIONS: readonly Action[] = ['compact', 'ping', 'prompt']
+
+/** True when a role restarts on its own or a trigger compacts, pings or prompts: the actions trust gates. */
 export function wantsTrust(config: Config): boolean {
   return Object.keys(config.roles).some(name => {
     const spec = roleSpec(config, name)
-    return spec !== null && (spec.restart.mode === 'auto' || spec.triggers.some(t => t.do.includes('compact')))
+    return spec !== null && (spec.restart.mode === 'auto' || spec.triggers.some(t => t.do.some(a => TRUST_ACTIONS.includes(a))))
   })
 }
 

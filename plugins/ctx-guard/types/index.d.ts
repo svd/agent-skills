@@ -4,16 +4,16 @@
 
 // ---- quantities ------------------------------------------------------------
 
-export type QuantityKind = 'tokens' | 'percent' | 'duration' | 'usd'
+export type QuantityKind = 'tokens' | 'percent' | 'duration' | 'usd' | 'count'
 
-// `value` is a token count, a percentage (0-100], milliseconds, or US dollars.
+// `value` is a token count, a percentage (0-100], milliseconds, US dollars, or a whole count.
 export type Quantity = { kind: QuantityKind; value: number }
 
 // ---- config (normalized: every key present, defaults filled in) -------------
 
 export type Level = 'soft' | 'hard' | 'stop'
 
-export type EdgeAction = 'note' | 'toast' | 'notify' | 'compact'
+export type EdgeAction = 'note' | 'toast' | 'notify' | 'compact' | 'ping' | 'prompt'
 export type DenyAction = { deny: string[] }
 export type Action = EdgeAction | DenyAction
 
@@ -26,6 +26,9 @@ export type Metric =
   | 'limit.seven_day.resetsIn'
   | 'cost'
   | 'idle'
+  | 'cache.expiresIn'
+  | 'cache.miss'
+  | 'cache.pings'
 
 // An AND of metrics; a null metric is not part of the trigger. `every` steps
 // the trigger's one context, limit or cost metric past its first threshold.
@@ -40,6 +43,12 @@ export type TriggerWhen = {
   'limit.seven_day.resetsIn': Quantity | null
   cost: Quantity | null
   idle: Quantity | null
+  // Time left before the main thread's prompt cache expires; holds at or below its threshold.
+  'cache.expiresIn': Quantity | null
+  // Tokens the latest main request rewrote although the cache was expected warm.
+  'cache.miss': Quantity | null
+  // Warm pings in the current idle period.
+  'cache.pings': Quantity | null
   every: Quantity | null
   // The metric `every` steps; its kind is that metric's kind.
   everyMetric: Metric | null
@@ -51,6 +60,8 @@ export type Trigger = {
   do: Action[]
   level: Level | null
   message: string | null
+  // At most this many fires per idle period; null is no cap.
+  times: number | null
 }
 
 export type RestartMode = 'auto' | 'manual' | 'off'
@@ -60,6 +71,17 @@ export type ReadyCheck = { run: string[]; timeout: number }
 
 // A script whose output is a band segment; `every` and `timeout` in ms.
 export type BandProbeSpec = { id: string; run: string[]; every: number; timeout: number }
+
+// When the band shows the cache countdown: within a duration or a percent of the TTL, always, or never.
+export type CacheShow = Quantity | 'always' | 'off'
+
+export type CacheConfig = {
+  // 'auto' detects the TTL; a number (ms) is 300000 or 3600000.
+  ttl: 'auto' | number
+  band: { show: CacheShow; warn: Quantity }
+  // No ping while any usage window is at or above this percent.
+  ping: { maxUsage: number }
+}
 
 export type RoleSpec = {
   description: string | null
@@ -104,6 +126,7 @@ export type Config = {
   subagents: { [type: string]: SubagentBudget }
   // Probes shared by every role; empty when none.
   band: { probes: BandProbeSpec[] }
+  cache: CacheConfig
 }
 
 export type Display = 'band' | 'status' | 'off'

@@ -1003,3 +1003,148 @@ describe('band probes', () => {
     expect(checkScripts(withProbe)).toEqual(['./probe.sh'])
   })
 })
+
+describe('cache config', () => {
+  const role = (triggers: unknown[]) => ({ version: 1, roles: { lead: { triggers } } })
+
+  test('defaults when the block is absent', () => {
+    const r = validate({ version: 1 })
+    expect(r.errors).toEqual([])
+    expect(r.config?.cache).toEqual({
+      ttl: 'auto',
+      band: { show: { kind: 'percent', value: 25 }, warn: { kind: 'duration', value: 600_000 } },
+      ping: { maxUsage: 90 },
+    })
+  })
+
+  test('ttl, show and warn forms', () => {
+    const r = validate({ version: 1, cache: { ttl: '1h', band: { show: '30m', warn: '10%' }, ping: { maxUsage: 80 } } })
+    expect(r.errors).toEqual([])
+    expect(r.config?.cache).toEqual({
+      ttl: 3_600_000,
+      band: { show: { kind: 'duration', value: 1_800_000 }, warn: { kind: 'percent', value: 10 } },
+      ping: { maxUsage: 80 },
+    })
+    expect(validate({ version: 1, cache: { band: { show: 'always' } } }).config?.cache.band.show).toBe('always')
+    expect(validate({ version: 1, cache: { band: { show: false } } }).config?.cache.band.show).toBe('off')
+  })
+
+  test('bad cache values are errors', () => {
+    expect(validate({ version: 1, cache: { ttl: '10m' } }).errors.join()).toContain('cache.ttl')
+    expect(validate({ version: 1, cache: { band: { show: '5k' } } }).errors.join()).toContain('cache.band.show')
+    expect(validate({ version: 1, cache: { band: { show: 'off' } } }).errors.join()).toContain('cache.band.show')
+    expect(validate({ version: 1, cache: { ping: { maxUsage: 120 } } }).errors.join()).toContain('cache.ping.maxUsage')
+    expect(validate({ version: 1, cache: { nope: 1 } }).errors.join()).toContain('nope')
+  })
+
+  test('ttl names are own keys only', () => {
+    for (const ttl of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(validate({ version: 1, cache: { ttl } }).errors.join()).toContain('cache.ttl')
+    }
+  })
+
+  test('a stored cache block of the wrong shape reads as the defaults', () => {
+    const c = validate({ version: 1, cache: { ttl: '1h', band: { show: false } } }).config as Config
+    expect(asConfig(c)?.cache).toEqual(c.cache)
+    expect(asConfig(c)?.cache.band.show).toBe('off')
+    for (const bad of [{}, { ttl: 'auto' }, { ...c.cache, ttl: '1h' }, { ...c.cache, band: { show: 'x', warn: c.cache.band.warn } }, { ...c.cache, ping: {} }, 'x']) {
+      expect(asConfig({ ...c, cache: bad })?.cache).toEqual(validate({ version: 1 }).config?.cache)
+    }
+  })
+
+  test('cache metrics parse', () => {
+    const r = validate(role([{ id: 'w', when: { 'cache.expiresIn': '5m', 'cache.pings': 3, 'cache.miss': '50k' }, do: ['toast'] }]))
+    expect(r.errors).toEqual([])
+    const w = r.config?.roles.lead?.triggers[0]?.when
+    expect(w?.['cache.expiresIn']).toEqual({ kind: 'duration', value: 300_000 })
+    expect(w?.['cache.pings']).toEqual({ kind: 'count', value: 3 })
+    expect(w?.['cache.miss']).toEqual({ kind: 'tokens', value: 50_000 })
+  })
+
+  test('a count is a whole number', () => {
+    expect(parseQuantity(3, ['count'], 'count')).toEqual({ kind: 'count', value: 3 })
+    expect(parseQuantity('3', ['count'], 'count')).toEqual({ kind: 'count', value: 3 })
+    expect(parseQuantity(1.5, ['count'], 'count')).toBeNull()
+    expect(parseQuantity(0, ['count'], 'count')).toBeNull()
+  })
+
+  test('ping and prompt with times', () => {
+    const r = validate(role([
+      { id: 'warm', when: { 'cache.expiresIn': '5m' }, do: ['ping'], times: 3 },
+      { id: 'away', when: { 'cache.expiresIn': '5m', 'cache.pings': 3 }, do: ['prompt', 'notify'], times: 1 },
+    ]))
+    expect(r.errors).toEqual([])
+    expect(r.config?.roles.lead?.triggers.map(t => t.times)).toEqual([3, 1])
+  })
+
+  test('times is optional elsewhere and must be a whole number of at least 1', () => {
+    expect(validate(role([{ id: 't', when: { idle: '5m' }, do: ['toast'] }])).config?.roles.lead?.triggers[0]?.times).toBeNull()
+    expect(validate(role([{ id: 't', when: { idle: '5m' }, do: ['toast'], times: 0 }])).errors.join()).toContain('times')
+    expect(validate(role([{ id: 't', when: { idle: '5m' }, do: ['toast'], times: 1.5 }])).errors.join()).toContain('times')
+  })
+
+  test('ping and prompt rules', () => {
+    expect(validate(role([{ id: 'p', when: { context: '50k' }, do: ['ping'], times: 1 }])).errors.join()).toContain('needs cache.expiresIn')
+    expect(validate(role([{ id: 'p', when: { 'cache.expiresIn': '5m' }, do: ['ping'] }])).errors.join()).toContain('needs times')
+    expect(validate(role([{ id: 'p', when: { idle: '50m' }, do: ['prompt'] }])).errors.join()).toContain('needs times')
+    expect(validate(role([{ id: 'd', when: { 'cache.miss': '10k' }, do: [{ deny: ['Agent'] }] }])).errors.join()).toContain('deny cannot be combined')
+  })
+
+  test('a stored config from before the cache block reads with the defaults', () => {
+    const c = validate({ version: 1 }).config as Config
+    const { cache: _drop, ...old } = c
+    expect(asConfig(old)?.cache).toEqual(c.cache)
+  })
+
+  test('a trigger stored before times and the cache metrics read them as null', () => {
+    const c = validate(role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }])).config as Config
+    const strip = (t: Record<string, unknown>) => {
+      const { times: _t, ...rest } = t
+      const { 'cache.expiresIn': _a, 'cache.miss': _b, 'cache.pings': _c, ...when } = t.when as Record<string, unknown>
+      return { ...rest, when }
+    }
+    const spec = c.roles.lead as unknown as { triggers: Record<string, unknown>[] }
+    const old = { ...c, roles: { lead: { ...spec, triggers: spec.triggers.map(strip) } } }
+    const back = asConfig(old)
+    expect(back?.roles.lead?.triggers[0]?.times).toBeNull()
+    expect(back?.roles.lead?.triggers[0]?.when['cache.expiresIn']).toBeNull()
+    expect(trustHash(back as Config)).toBe(trustHash(c))
+  })
+
+  test('the trust hash of a config with no ping or prompt is unchanged by the cache block', () => {
+    const plain = validate(role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }])).config as Config
+    const tuned = validate({ ...role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }]), cache: { ttl: '1h' } }).config as Config
+    expect(trustHash(tuned)).toBe(trustHash(plain))
+    const warm = validate(role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }, { id: 'w', when: { 'cache.expiresIn': '5m' }, do: ['ping'], times: 3 }])).config as Config
+    expect(trustHash(warm)).not.toBe(trustHash(plain))
+    expect(Object.keys(trustFields(warm))).toContain('lead.autoTriggers')
+  })
+
+  test('an approval given before the cache block still matches (hashes computed by the code before it)', () => {
+    expect(trustHash(validate(role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }])).config as Config)).toBe(
+      '494a3f7d85bafc05f6a4d41ec9251e6a3cf0dc73d9dce2910c816de7fb402658',
+    )
+    expect(
+      trustHash(
+        validate({
+          version: 1,
+          roles: { lead: { restart: { mode: 'auto' }, triggers: [{ id: 'c', when: { context: '60%', idle: '5m' }, do: ['toast', 'compact'], level: 'hard', message: 'hi' }] } },
+        }).config as Config,
+      ),
+    ).toBe('d0c30dddc136787f79a39908c5dde975b3aaaa1bb25f3a3df679f68dff3a0f3a')
+    const full = {
+      version: 1,
+      roles: {
+        lead: {
+          triggers: [{ id: 'n', when: { context: '50%' }, do: ['note'] }, { id: 'sq', when: { context: '85%' }, do: ['compact'] }],
+          notes: { suffix: 's' },
+          handoff: { instructions: 'h' },
+          restart: { mode: 'auto', command: 'ctx-guard:resume', prompt: 'go', peers: ['b'], readyChecks: [{ run: ['make', 'ok'] }] },
+          compact: { instructions: 'keep tasks' },
+        },
+      },
+      subagents: { '*': { stop: '100k' } },
+    }
+    expect(trustHash(validate(full).config as Config)).toBe('a7da1ec5f112a4030c57961f540f32b5d12a0df768fcd191f447f51c4c6b7011')
+  })
+})

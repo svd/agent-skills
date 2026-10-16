@@ -4,6 +4,8 @@ import type {
   Action,
   BandProbeSpec,
   Budget,
+  CacheConfig,
+  CacheShow,
   Config,
   ConfigSource,
   ConfigState,
@@ -75,10 +77,12 @@ const KIND_TEXT: Record<QuantityKind, string> = {
   percent: 'a percent ("40%")',
   duration: 'a duration ("10s", "10m", "2h", "1d")',
   usd: 'US dollars ("$2.50")',
+  count: 'a whole number (3)',
 }
 
 function quantity(kind: QuantityKind, value: number): Quantity | null {
   if (!Number.isFinite(value) || value <= 0) return null
+  if (kind === 'count' && !Number.isInteger(value)) return null
   if (kind === 'percent' && value > 100) return null
   const rounded = kind === 'tokens' || kind === 'duration' ? Math.round(value) : value
   return rounded > 0 ? { kind, value: rounded } : null
@@ -341,17 +345,18 @@ function pathAt(ctx: Ctx, path: string, v: unknown, fallback: string, template =
 
 // ---- schema v1 ---------------------------------------------------------------
 
-const TOP_KEYS = ['$schema', 'version', 'enabled', 'stateDir', 'readyToken', 'defaultRole', 'contextWindow', 'defaults', 'roles', 'subagents', 'band']
+const TOP_KEYS = ['$schema', 'version', 'enabled', 'stateDir', 'readyToken', 'defaultRole', 'contextWindow', 'defaults', 'roles', 'subagents', 'band', 'cache']
 const ROLE_KEYS = ['description', 'triggers', 'notes', 'handoff', 'restart', 'compact']
-const TRIGGER_KEYS = ['id', 'when', 'do', 'level', 'message']
+const TRIGGER_KEYS = ['id', 'when', 'do', 'level', 'message', 'times']
 const LIMIT_METRICS = ['limit.five_hour', 'limit.seven_day', 'limit.any'] as const
 // Time left to a window's reset; each needs its window's percent metric beside it.
 const RESETS_IN = { 'limit.five_hour.resetsIn': 'limit.five_hour', 'limit.seven_day.resetsIn': 'limit.seven_day' } as const
 const RESETS_IN_METRICS = Object.keys(RESETS_IN) as (keyof typeof RESETS_IN)[]
-const METRICS = ['context', ...LIMIT_METRICS, ...RESETS_IN_METRICS, 'cost', 'idle'] as const
+const CACHE_METRICS = ['cache.expiresIn', 'cache.miss', 'cache.pings'] as const
+const METRICS = ['context', ...LIMIT_METRICS, ...RESETS_IN_METRICS, 'cost', 'idle', ...CACHE_METRICS] as const
 const WHEN_KEYS = [...METRICS, 'every']
 const STEPPABLE = ['context', ...LIMIT_METRICS, 'cost'] as const
-const EDGE_ACTIONS = ['note', 'toast', 'notify', 'compact'] as const
+const EDGE_ACTIONS = ['note', 'toast', 'notify', 'compact', 'ping', 'prompt'] as const
 const LEVELS: readonly Level[] = ['soft', 'hard', 'stop']
 const MODES: readonly RestartMode[] = ['auto', 'manual', 'off']
 const VIAS: readonly RestartVia[] = ['clear', 'compact']
@@ -368,6 +373,9 @@ const METRIC_KINDS: Record<MetricKey, { allowed: readonly QuantityKind[]; bare?:
   'limit.seven_day.resetsIn': { allowed: ['duration'] },
   cost: { allowed: ['usd'], bare: 'usd' },
   idle: { allowed: ['duration'] },
+  'cache.expiresIn': { allowed: ['duration'] },
+  'cache.miss': { allowed: ['tokens'], bare: 'tokens' },
+  'cache.pings': { allowed: ['count'], bare: 'count' },
 }
 
 function emptyWhen(): TriggerWhen {
@@ -380,6 +388,9 @@ function emptyWhen(): TriggerWhen {
     'limit.seven_day.resetsIn': null,
     cost: null,
     idle: null,
+    'cache.expiresIn': null,
+    'cache.miss': null,
+    'cache.pings': null,
     every: null,
     everyMetric: null,
   }
@@ -466,10 +477,25 @@ function normalizeTrigger(ctx: Ctx, path: string, v: unknown): Trigger | null {
   if (when?.idle && actions.some(a => typeof a === 'object')) {
     err(ctx, join(path, 'do'), 'deny cannot be combined with an idle metric')
   }
+  // A deny is judged at each tool call; the cache figures move only between requests.
+  if (CACHE_METRICS.some(m => when?.[m]) && actions.some(a => typeof a === 'object')) {
+    err(ctx, join(path, 'do'), 'deny cannot be combined with a cache metric')
+  }
+  const auto = actions.filter((a): a is 'ping' | 'prompt' => a === 'ping' || a === 'prompt')
+  if (actions.includes('ping') && when && !when['cache.expiresIn']) {
+    err(ctx, join(path, 'do'), 'ping needs cache.expiresIn in the same `when`')
+  }
+  let times: number | null = null
+  if (v.times !== undefined) {
+    if (typeof v.times === 'number' && Number.isInteger(v.times) && v.times >= 1) times = v.times
+    else err(ctx, join(path, 'times'), `expected a whole number of at least 1, got ${shown(v.times)}`)
+  } else if (auto.length) {
+    err(ctx, join(path, 'times'), `${auto.join(' and ')} needs times, so automatic spending has a cap`)
+  }
   const level = v.level === undefined ? null : enumAt<Level>(ctx, join(path, 'level'), v.level, LEVELS, 'soft')
   const message = textAt(ctx, join(path, 'message'), v.message, null)
   if (ctx.errors.length > before || !when) return null
-  return { id, when, do: actions, level, message }
+  return { id, when, do: actions, level, message, times }
 }
 
 function normalizeTriggers(ctx: Ctx, path: string, v: unknown): Trigger[] {
@@ -564,6 +590,41 @@ function normalizeBand(ctx: Ctx, path: string, v: unknown): Config['band'] {
     else probes.push(p)
   })
   return { probes }
+}
+
+const TTLS: Record<string, number> = { '5m': 5 * MINUTE, '1h': 60 * MINUTE }
+
+export const DEFAULT_CACHE: CacheConfig = {
+  ttl: 'auto',
+  band: { show: { kind: 'percent', value: 25 }, warn: { kind: 'duration', value: 10 * MINUTE } },
+  ping: { maxUsage: 90 },
+}
+
+function normalizeCache(ctx: Ctx, path: string, v: unknown): CacheConfig {
+  const o = objAt(ctx, path, v)
+  checkKeys(ctx, path, o, ['ttl', 'band', 'ping'])
+  let ttl: CacheConfig['ttl'] = DEFAULT_CACHE.ttl
+  if (o.ttl !== undefined && o.ttl !== 'auto') {
+    const key = typeof o.ttl === 'string' ? o.ttl.trim() : ''
+    const ms = Object.hasOwn(TTLS, key) ? TTLS[key] : undefined
+    if (ms === undefined) err(ctx, join(path, 'ttl'), `expected "auto", "5m" or "1h", got ${shown(o.ttl)}`)
+    else ttl = ms
+  }
+  const band = objAt(ctx, join(path, 'band'), o.band)
+  checkKeys(ctx, join(path, 'band'), band, ['show', 'warn'])
+  let show: CacheShow = DEFAULT_CACHE.band.show
+  if (band.show === false) show = 'off'
+  else if (band.show === 'always') show = 'always'
+  else if (band.show !== undefined) show = qtyAt(ctx, join(path, 'band.show'), band.show, ['duration', 'percent']) ?? DEFAULT_CACHE.band.show
+  const warn =
+    band.warn === undefined ? DEFAULT_CACHE.band.warn : (qtyAt(ctx, join(path, 'band.warn'), band.warn, ['duration', 'percent']) ?? DEFAULT_CACHE.band.warn)
+  const ping = objAt(ctx, join(path, 'ping'), o.ping)
+  checkKeys(ctx, join(path, 'ping'), ping, ['maxUsage'])
+  const maxUsage =
+    ping.maxUsage === undefined
+      ? DEFAULT_CACHE.ping.maxUsage
+      : (qtyAt(ctx, join(path, 'ping.maxUsage'), ping.maxUsage, ['percent'], 'percent')?.value ?? DEFAULT_CACHE.ping.maxUsage)
+  return { ttl, band: { show, warn }, ping: { maxUsage } }
 }
 
 function handoffPathAt(ctx: Ctx, path: string, v: unknown, fallback: string): string {
@@ -734,6 +795,7 @@ function normalizeConfig(ctx: Ctx, raw: unknown): Config {
     roles,
     subagents: normalizeSubagents(ctx, 'subagents', o.subagents),
     band: normalizeBand(ctx, 'band', o.band),
+    cache: normalizeCache(ctx, 'cache', o.cache),
   }
 }
 
@@ -970,6 +1032,51 @@ function isSpecShape(v: unknown): boolean {
 const isProbeShape = (p: unknown): boolean =>
   isObj(p) && typeof p.id === 'string' && isStrArray(p.run) && typeof p.every === 'number' && typeof p.timeout === 'number'
 
+const isStoredQuantity = (q: unknown): boolean => isObj(q) && typeof q.kind === 'string' && typeof q.value === 'number' && q.value > 0
+
+function isCacheShape(c: unknown): boolean {
+  if (!isObj(c) || !isObj(c.band) || !isObj(c.ping)) return false
+  const { ttl } = c
+  const { show, warn } = c.band
+  return (
+    (ttl === 'auto' || (typeof ttl === 'number' && ttl > 0)) &&
+    (show === 'always' || show === 'off' || isStoredQuantity(show)) &&
+    isStoredQuantity(warn) &&
+    typeof c.ping.maxUsage === 'number'
+  )
+}
+
+// A trigger stored before `times` and the cache metrics existed reads with them unset (null).
+// A trigger that already has them comes back as the same object.
+function storedTrigger(t: unknown): unknown {
+  if (!isObj(t) || !isObj(t.when)) return t
+  const when = t.when
+  if (typeof t.times === 'number' || t.times === null) {
+    if (CACHE_METRICS.every(m => when[m] !== undefined)) return t
+  }
+  const filled: Obj = { ...when }
+  for (const m of CACHE_METRICS) if (filled[m] === undefined) filled[m] = null
+  return { ...t, when: filled, times: typeof t.times === 'number' ? t.times : null }
+}
+
+function storedSpec(spec: unknown): unknown {
+  if (!isObj(spec) || !Array.isArray(spec.triggers)) return spec
+  const list: unknown[] = spec.triggers
+  const triggers = list.map(storedTrigger)
+  return triggers.every((t, i) => t === list[i]) ? spec : { ...spec, triggers }
+}
+
+function storedRoles(roles: unknown): unknown {
+  if (!isObj(roles)) return roles
+  const out = dict<unknown>()
+  let same = true
+  for (const [name, spec] of Object.entries(roles)) {
+    out[name] = storedSpec(spec)
+    if (out[name] !== spec) same = false
+  }
+  return same ? roles : out
+}
+
 /** A normalized Config as another version of ctx-guard may have stored it; null when it does not look like one. */
 export function asConfig(v: unknown): Config | null {
   if (!isObj(v) || v.version !== 1 || typeof v.enabled !== 'boolean') return null
@@ -977,10 +1084,15 @@ export function asConfig(v: unknown): Config | null {
   if (!(v.defaultRole === null || typeof v.defaultRole === 'string')) return null
   if (!(v.contextWindow === 'auto' || (typeof v.contextWindow === 'number' && v.contextWindow > 0))) return null
   if (!isSpecShape(v.defaults) || !isObj(v.roles) || !Object.values(v.roles).every(isSpecShape) || !isObj(v.subagents)) return null
-  // A config stored before band existed reads as no probes.
-  if (v.band === undefined) return { ...v, band: { probes: [] } } as unknown as Config
+  // A config stored before cache existed reads with the defaults; before band, with no probes.
+  const cache = isCacheShape(v.cache) ? v.cache : DEFAULT_CACHE
+  const defaults = storedSpec(v.defaults)
+  const roles = storedRoles(v.roles)
+  const same = cache === v.cache && defaults === v.defaults && roles === v.roles
+  const stored = same ? v : { ...v, cache, defaults, roles }
+  if (v.band === undefined) return { ...stored, band: { probes: [] } } as unknown as Config
   if (!isObj(v.band) || !Array.isArray(v.band.probes) || !v.band.probes.every(isProbeShape)) return null
-  return v as unknown as Config
+  return stored as unknown as Config
 }
 
 /** The stored ConfigState, checked; a lastGood that does not look like a config is dropped. */
@@ -1010,6 +1122,15 @@ export function canonicalJson(v: unknown): string {
   return JSON.stringify(v) ?? 'null'
 }
 
+// A trigger as the trust hash sees it: the cache metrics and `times` appear only when set,
+// so an approval given before they existed still matches.
+function trustedTrigger(t: Trigger): Obj {
+  const when: Obj = { ...t.when }
+  for (const m of CACHE_METRICS) if (when[m] === null || when[m] === undefined) delete when[m]
+  const { times, ...rest } = t
+  return times === null || times === undefined ? { ...rest, when } : { ...rest, when, times }
+}
+
 /**
  * The fields that can run code or prompts unattended, or steer where and when
  * that happens, per role; `*` holds the config-wide ones.
@@ -1024,12 +1145,15 @@ export function trustMaterial(config: Config): unknown {
     const spec = roleSpec(config, name)
     if (!spec) continue
     const { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext } = spec.restart
+    const auto = spec.triggers.filter(t => t.do.includes('ping') || t.do.includes('prompt'))
     out[name] = {
       restart: { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext },
       // The handoff path lands in the resume command line.
       handoff: { path: spec.handoff.path },
       compact: spec.compact.instructions,
-      compactTriggers: spec.triggers.filter(t => t.do.includes('compact')),
+      compactTriggers: spec.triggers.filter(t => t.do.includes('compact')).map(trustedTrigger),
+      // Only when there are some, so an approval given before ping and prompt existed still matches.
+      ...(auto.length ? { autoTriggers: auto.map(trustedTrigger) } : {}),
     }
   }
   return out

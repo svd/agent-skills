@@ -58,6 +58,8 @@ export function humanQuantity(q: Quantity): string {
       return humanDuration(q.value)
     case 'usd':
       return humanUsd(q.value)
+    case 'count':
+      return String(q.value)
   }
 }
 
