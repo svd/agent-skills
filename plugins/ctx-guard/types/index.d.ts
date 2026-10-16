@@ -151,6 +151,37 @@ export type BandLimit = { kind: string; percentUsed: number; resetsAt: string | 
 // A band probe's segment as last drawn; `color` is a theme key, null for the default.
 export type BandProbe = { id: string; text: string; color: string | null }
 
+export type TtlSource = 'config' | 'transcript' | 'observed' | 'guess'
+
+// The main thread's prompt cache, as last observed.
+export type CacheState = {
+  // Detected TTL in ms and where it came from; null until detected (a guess is not stored).
+  ttl: number | null
+  ttlSource: TtlSource | null
+  // The transcript was read for the TTL (or could not be): not again until /clear or a new session.
+  transcriptTried: boolean
+  // When the main prefix was last written or read: the latest main request or warm ping; null when unknown.
+  anchor: number | null
+  // The previous main request's fill (input + cache read + cache write); null after a start-over.
+  prevFill: number | null
+  // A main request read at least 90 % of the previous fill since the last start-over.
+  warmSeen: boolean
+  model: string | null
+  // The latest main request's miss in tokens (0 below the floor) and its cause.
+  miss: number
+  missCause: 'model' | 'prefix' | null
+  // Warm pings in the current idle period; the period's ping found the cache gone.
+  pings: number
+  cold: boolean
+  // The cold verdict is the latest news: the countdown reads 0 until the next main request rewrites the prefix.
+  coldShown: boolean
+  // Fires per trigger id in the current idle period, for `times`.
+  fired: { [triggerId: string]: number }
+}
+
+// The band's cache segment as last drawn; `color` is a theme key, null for the default.
+export type BandCache = { text: string; color: string | null; dim: boolean }
+
 export type Band = {
   role: string | null
   tokens: number | null
