@@ -16,6 +16,7 @@ Every key, default and rule of config schema v1, then recipes. The JSON Schema i
 - [Ready checks](#ready-checks)
 - [Band probes](#band-probes)
 - [Compact](#compact)
+- [Prompt cache](#prompt-cache)
 - [Subagent budgets](#subagent-budgets)
 - [Trust](#trust)
 - [Path confinement](#path-confinement)
@@ -44,7 +45,7 @@ modification time changes (checked after each main-loop turn).
 
 An invalid file (bad JSON, unknown key, bad value) is a toast and a list of errors in the
 `/ctx-guard` report. ctx-guard keeps the last good config. With no good config yet, it runs the
-built-ins with automatic clear and compact off. Hooks never throw.
+built-ins with automatic clear, compact, ping and prompt off. Hooks never throw.
 
 ## Zero-config behaviour
 
@@ -76,6 +77,7 @@ million tokens in a token field.
 | percent | `"40%"`; `80` where the field is a percent only | above 0, at most 100 |
 | duration | `"500ms"`, `"10s"`, `"10m"`, `"2h"`, `"1d"` | unit required, rounded to whole milliseconds |
 | usd | `2.5`, `"$2.50"` | US dollars |
+| count | `3` | a whole number |
 
 Every quantity must be above zero.
 
@@ -94,6 +96,7 @@ Every quantity must be above zero.
 | `roles` | object of role name → role object | `{ "main": {} }` | The roles. Names match `^[a-z][a-z0-9-]{0,31}$`. The built-in `main` stays unless a layer sets `"main": null`, so a userConfig `defaultRole` of `main` works in every repo. Once the project names roles of its own, `/ctx-guard` and role errors leave out a `main` that has no settings of its own and is neither the `defaultRole` nor the session's role. |
 | `subagents` | object of subagent type (or `*`, `fork`, `teammate`) → budget | `{}` | [Subagent budgets](#subagent-budgets). |
 | `band` | object | `{ "probes": [] }` | [Band probes](#band-probes): project scripts whose output is a band segment. Shared by every role. |
+| `cache` | object | see [Prompt cache](#prompt-cache) | The cache TTL, the band countdown and the ping limit. Shared by every role. |
 
 ## Role keys
 
@@ -131,7 +134,8 @@ Text values must hold more than whitespace. Unknown keys are errors at every lev
 | `when` | yes | An AND of metrics, plus an optional `every`. |
 | `do` | yes | A non-empty list of [actions](#actions). |
 | `level` | no | `soft`, `hard` or `stop`: picks the built-in note wording. |
-| `message` | no | A note template that replaces the built-in wording for this trigger. |
+| `message` | no | A note template that replaces the built-in wording for this trigger. For a `prompt` action it is the prompt's text. |
+| `times` | no (yes with `ping` or `prompt`) | A whole number of at least 1: the most fires of this trigger in one idle period. See [`times`](#times). |
 
 ### Metrics
 
@@ -144,15 +148,19 @@ Text values must hold more than whitespace. Unknown keys are errors at every lev
 | `limit.five_hour.resetsIn` | duration | Time left until the 5-hour window resets, at least. Needs `limit.five_hour` in the same `when`. |
 | `limit.seven_day.resetsIn` | duration | Time left until the weekly window resets, at least. Needs `limit.seven_day` in the same `when`. |
 | `cost` | usd | Session cost. |
-| `idle` | duration | Time since the last main-loop turn ended. Zero while a turn runs. |
+| `idle` | duration | Time since the last main-loop turn ended. Zero while a turn runs. The turn of a `prompt` action does not reset it. |
+| `cache.expiresIn` | duration | Time left before the main thread's prompt cache expires, at most: it holds at or **below** its threshold. See [Prompt cache](#prompt-cache). |
+| `cache.miss` | tokens | Tokens the latest main-loop request re-wrote of a cache that should have been warm. `0` for a request with no miss. |
+| `cache.pings` | count | Warm pings in the current idle period. |
 
 ctx-guard evaluates triggers after each main-loop turn (and when a usage window moves), mid-turn
 after a main-loop request whose fill crosses a threshold, and on a one-minute timer that catches
 `idle`.
 
-**Rising edge.** Edge actions (`note`, `toast`, `notify`, `compact`) fire once, when the whole AND
+**Rising edge.** Edge actions (`note`, `toast`, `notify`, `compact`, `ping`, `prompt`) fire once, when the whole AND
 starts to hold. The trigger's mark then stays until a metric drops below its threshold (after
-`/compact`, or when a usage window resets); the trigger re-arms then. `/clear` resets the mark of
+`/compact`, or when a usage window resets); the trigger re-arms then. `cache.expiresIn` is the
+reverse: its trigger re-arms when the time left rises above the threshold, as after a warm ping. `/clear` resets the mark of
 every trigger with a `context` condition; a trigger on `limit.*`, `cost` or `idle` alone keeps
 its mark, since a `/clear` leaves those figures as they were, and re-arms only when its figure
 drops.
@@ -160,9 +168,10 @@ Marks survive a hot reload. A role change drops the old role's marks.
 
 **Unknown metrics.** Context is unknown before the first response and right after `/clear`;
 usage windows are unknown until the engine reports them, and a `.resetsIn` metric while its
-window reports no reset time. A trigger with an unknown metric is skipped and keeps its mark.
+window reports no reset time. `cache.expiresIn` is unknown before the first main-loop request
+and after `/clear` or `/compact` until the next one. A trigger with an unknown metric is skipped and keeps its mark.
 
-**Time left to a reset.** Every metric holds at or above its threshold, so a `.resetsIn`
+**Time left to a reset.** Every metric but `cache.expiresIn` holds at or above its threshold, so a `.resetsIn`
 threshold means "at least this long until the reset". It pairs a usage level with how early it
 came: `{ "limit.seven_day": 80, "limit.seven_day.resetsIn": "2d" }` holds at 80 % of the weekly
 window only while two days or more remain. As the reset nears the condition stops holding, so a
@@ -176,9 +185,20 @@ deny on it lifts then and an edge action re-arms. See the
 the highest. The step falls with the metric, so a drop re-arms the lower steps.
 
 - The `when` needs exactly one of `context`, `limit.five_hour`, `limit.seven_day`, `limit.any`,
-  `cost`. `idle` and the `.resetsIn` metrics cannot step.
+  `cost`. `idle`, the `.resetsIn` metrics and the `cache.*` metrics cannot step.
 - `every` takes the stepped threshold's unit: a percent step on a percent threshold, tokens on
   tokens. A bare number means that unit.
+
+### `times`
+
+`times: N` caps a trigger at N fires per idle period. An idle period starts when the operator's
+own turn ends, at session start and after `/clear`; the turn of a `prompt` action does not start
+one. A new period resets every trigger's count and `cache.pings`. With `every`, each step is one
+fire. A fire counts whether or not its actions succeed. A trigger that used up its `times` keeps
+re-arming as usual but does not act until the next period. A trigger without `times` fires as
+often as its condition re-arms.
+
+A trigger with `ping` or `prompt` must have `times`, so automatic spending has a cap.
 
 ### Actions
 
@@ -188,6 +208,8 @@ the highest. The step falls with the metric, so a drop re-arms the lower steps.
 | `"toast"` | rising edge | A toast in the session. |
 | `"notify"` | rising edge | An OS-level notification. |
 | `"compact"` | rising edge | Runs `/compact <compact.instructions>` at the next main-loop turn end, under the busy-work guard. Needs trust, `autoActions` on and no pause. |
+| `"ping"` | rising edge | Sends one tool-less model request over the main thread's own prefix (`Reply with OK.`) and discards the reply. A warm read refreshes the cache's lifetime. Needs trust, `autoActions` on, no pause, `times`, and `cache.expiresIn` in the same `when`. See [Prompt cache](#prompt-cache). |
+| `"prompt"` | rising edge | Submits a real turn with the trigger's `message`, or a default asking for the handoff. Needs trust, `autoActions` on, no pause and `times`. See [Prompt cache](#prompt-cache). |
 | `{ "deny": ["Agent", …] }` | while the AND holds | Denies those main-loop tool calls. See below. |
 
 **Denies** are level-triggered: each main-loop tool call is judged afresh from live usage, so a
@@ -195,7 +217,7 @@ deny lifts as soon as its metrics drop. They match tool names exactly, apply onl
 session has a role, and fail open: an unknown metric or a failed check denies nothing. The
 reason names the trigger, its figures and what lifts it (for a `.resetsIn` condition, also when
 the reset comes close enough). `/ctx-guard pause` and the `blocking`
-switch lift every deny. A deny cannot share a trigger with `idle`. A response's tool calls start
+switch lift every deny. A deny cannot share a trigger with `idle` or a `cache.*` metric. A response's tool calls start
 before its usage arrives, so a call made while the response streams is judged on an estimate of
 that request's context: the previous request's input and output plus the tool results since, at
 4 characters a token (the person's prompt and any note are not counted).
@@ -281,6 +303,8 @@ never file contents. A missing value reads `unknown`; an unknown `{name}` stays 
 | `{resetsIn}` | `2h10m` | Time until that window resets. |
 | `{handoffPath}` | `.ctx-guard/lead-handoff.md` | The role's handoff file. |
 | `{readyToken}` | `CTX-READY` | The ready token. |
+| `{idle}` | `3h40m` | Time since the last main-loop turn ended. |
+| `{expiresIn}` | `5m` | Time left before the main thread's prompt cache expires. |
 
 ## Restart
 
@@ -508,6 +532,183 @@ At most one compact waits. A queued compact is dropped when its trigger re-arms 
 
 Both ways need trust, `autoActions` on and no pause.
 
+## Prompt cache
+
+Claude Code caches the main thread's prompt prefix for a time (the TTL); a request after that
+re-writes the whole prefix at the cache-write rate. ctx-guard counts down to the expiry, flags a
+request that re-wrote a cache that should have been warm, and can keep the cache alive while you
+are away.
+
+```json
+{
+  "version": 1,
+  "cache": {
+    "ttl": "auto",
+    "band": { "show": "25%", "warn": "10m" },
+    "ping": { "maxUsage": 90 },
+    "prompt": { "maxUsage": 90 }
+  }
+}
+```
+
+| Key | Values | Default | Meaning |
+|---|---|---|---|
+| `cache.ttl` | `"auto"`, `"5m"`, `"1h"` | `"auto"` | The cache's lifetime. `"5m"` or `"1h"` overrides detection. |
+| `cache.band.show` | duration, percent of the TTL, `"always"` or `false` | `"25%"` | The countdown shows while the session is idle and the time left is at or below this. `25%` is 15 minutes of a 1-hour TTL and 75 seconds of a 5-minute one. `"always"` shows it for the whole idle period; `false` hides it. |
+| `cache.band.warn` | duration or percent of the TTL | `"10m"` | At or below this the segment takes the warning colour. Claude Code compacts an idle session itself about 6 minutes before a 1-hour cache expires; the default warns 4 minutes ahead of that. |
+| `cache.ping.maxUsage` | percent | `90` | No ping while either usage window is at or above this. |
+| `cache.prompt.maxUsage` | percent | `90` | No prompt from a trigger on a cache metric while either usage window is at or above this. |
+
+Unknown keys in `cache` are errors.
+
+### The TTL
+
+With `ttl: "auto"` the TTL comes from the first source that answers; a later, stronger answer
+replaces a weaker one.
+
+1. **The transcript.** After a main-loop turn ends, ctx-guard reads the session's transcript
+   (`<claude config dir>/projects/<working directory with every non-alphanumeric character as "-">/<session id>.jsonl`,
+   where the config dir is `CLAUDE_CONFIG_DIR` or `~/.claude`; also the path a Stop hook names,
+   where those run) and takes the newest request that
+   wrote to the cache. A write to the 1-hour tier means `1h`; to the 5-minute tier, `5m`. It reads
+   again after each turn until a request tells. A refused read, or a read of a file over 1 MiB
+   with no cache write in it, is not retried until `/clear`.
+2. **Observation.** A main-loop request that finds the cache warm after a gap of more than 5
+   minutes proves `1h`.
+3. **A guess.** A session with usage windows (a subscription) guesses `1h`, any other `5m`. The
+   band marks a guessed TTL with `~`: `cache ~8m`.
+
+### The countdown
+
+`cache.expiresIn` is the time left before the main thread's cache expires: the latest main-loop
+request or warm ping, plus the TTL, less 30 seconds because the exact moment of the cache write is
+unknown. It is `0` once expired and unknown before the first main-loop request and after `/clear` or `/compact`.
+While a main-loop turn runs it is the full TTL, since the cache is in use. Subagent requests do
+not move it: their prefix differs.
+
+The band shows the countdown right after the context figure, only while the session is idle and
+the time left is within `band.show`:
+
+| Band | Meaning |
+|---|---|
+| `cache 8m` | Time left, in whole minutes; `cache <1m` in the last minute. |
+| `cache ~8m` | The same, with a guessed TTL. |
+| `cache 8m · ping 2/3` | Two of the three pings the pinging trigger allows have found the cache warm. |
+| `cache cold` | The cache expired, or a ping found it already expired. Cleared by the next main-loop request. |
+
+The segment is the `warning` colour at or below `band.warn`; `cache cold` is dim. The one-minute
+idle tick redraws the band, and it is written only when the band changed.
+
+The `/ctx-guard` report has one `cache:` line: the TTL and its source (`a guess` for a guessed
+one), the time left, `pings 2/3` when a trigger pings, `cold` after a cold ping, the last miss, and
+a ping or prompt waiting for its retry:
+`cache: TTL 1h (observed); expires in 12m; pings 1/3; last miss 140k (prefix changed)`.
+
+### Idle periods
+
+An idle period begins when the operator's own turn ends, at session start and after `/clear`. It
+resets `cache.pings`, every trigger's `times` count and the `cold` mark of a ping. The turn of a
+`prompt` action is ctx-guard's own: it moves the anchor of the countdown but does not begin a
+period, and `idle` keeps counting from the operator's last turn. A turn after a restart's resume
+is real work and begins one.
+
+### Cache misses
+
+`cache.miss` is read once per main-loop request. When the cache should have been warm (the
+previous request, or ping, is within the TTL), it is the number of tokens the request re-wrote:
+the previous request's fill less what this one read from the cache. Less than 2k tokens counts as
+`0`. A miss is not counted:
+
+- until the session has had one warm request (one that read at least 90 % of the previous fill);
+  the first requests of a session re-write part of the prefix as a matter of course;
+- for the first request after `/clear`, `/compact` or a resume, which writes a new prefix;
+- for a request whose fill falls below half the previous one: the context started over;
+- for the first request after a ping that found the cache cold.
+
+A trigger on `cache.miss` fires on the request with the miss and re-arms on the next request
+without one. A miss after a model switch is named as such in the text; any other reads `prefix
+changed: CLAUDE.md, tools or MCP?`. The toast reads `ctx-guard: main: cache miss, 140k re-written
+(model switch)`. A trigger on `cache.miss` raises it; the `solo` and `peers` presets carry a `cache-miss` toast at 50k.
+
+### Keeping the cache warm
+
+Keep-warm is off until a trigger asks for it. Two actions do it, both capped by `times`:
+
+- **`ping`** sends one tool-less model request over the main thread's own prefix and discards the
+  reply. A request that reads the prefix refreshes the cache's lifetime, so a warm ping keeps it
+  alive. The trigger must hold `cache.expiresIn` in its `when`. A `cache.expiresIn` trigger
+  re-arms when the time left rises above its threshold, and the first check after a warm ping is
+  the next one-minute tick, when about the TTL less 90 seconds is left. Pick a threshold below
+  that (under `3m30s` for a 5-minute cache) and at least `2m`; a higher one pings once. With a
+  1-hour cache, pick one above `6m`: Claude Code itself compacts an idle session about 6 minutes
+  before the cache expires, and a lower threshold acts after that.
+- **`prompt`** submits a real turn as ctx-guard. The default text is "[ctx-guard] The user has been
+  away {idle}; the prompt cache expires in {expiresIn}. Write the handoff to {handoffPath} and
+  stop; do not start new work." The trigger's `message` replaces it; template variables apply. The
+  `guide` skill tells the model how to answer.
+
+```json
+{
+  "version": 1,
+  "roles": {
+    "main": {
+      "triggers": [
+        { "id": "warm", "when": { "cache.expiresIn": "8m", "context": "50k" }, "do": ["ping"], "times": 3 },
+        { "id": "away", "when": { "cache.expiresIn": "8m", "cache.pings": 3 }, "do": ["prompt", "notify"], "times": 1 },
+        { "id": "miss", "when": { "cache.miss": "50k" }, "do": ["toast"] }
+      ]
+    }
+  }
+}
+```
+
+Here, with a 1-hour TTL, `warm` pings about 52 minutes after the last request, as long as the
+context is at least 50k tokens. Each warm ping moves the countdown back to an hour and counts in
+`cache.pings`. After the third, `away` fires at the next 8-minute mark: it submits the handoff
+prompt and sends an OS notification. The session then goes quiet; the cache expires an hour after
+the prompt's turn.
+
+**Rules for a ping:**
+
+- It runs only with a role, a trusted repo, `autoActions` on and no pause, and not while a main-loop
+  turn runs, while another ping is in flight, once the cache expired or while either usage window
+  is at or above `cache.ping.maxUsage`.
+- A ping is warm when it read from the cache and wrote less than a tenth of what it read. A warm
+  ping adds one to `cache.pings` and moves the countdown's start to now.
+- A ping that finds the cache cold stops pings for the rest of the idle period, and the band shows
+  `cache cold` until the next main-loop request. The first request after it counts no miss.
+- A ping that fails (an error, an empty reply, a 2-minute timeout) does not count in
+  `cache.pings`. It is tried again on each idle tick while the cache is unexpired and the trigger
+  holds; the trigger does not fire again for it.
+
+**Rules for a prompt:**
+
+- It runs only with a role, a trusted repo, `autoActions` on and no pause. While a main-loop turn
+  runs it waits for the next idle tick.
+- A prompt from a trigger with a cache metric in its `when` is skipped while the session is idle
+  and either usage window is at or above `cache.prompt.maxUsage`. The fire counts in `times`; a
+  `compact` beside it does not wait for a prompt turn, and a `ping` or another trigger's prompt in
+  the same evaluation goes instead. A retry skipped this way ends, and the compact waiting behind
+  it goes ahead while its trigger holds. A prompt from any other trigger, such as one on a usage
+  window, is not skipped.
+- A prompt that is refused (a hook of another plugin drops it, or the submit throws) is tried again
+  on each idle tick while the trigger holds, up to three tries in all.
+- A `prompt` and a `ping` in one evaluation run the prompt alone: its turn warms the cache. Of
+  several prompts in one evaluation, the first that is not skipped goes.
+- With `compact` in the same fire, the compact waits for the end of the prompt's turn. If the
+  prompt gives up, the compact is dropped.
+
+**Without approval.** In an untrusted repo, with `autoActions` off or while paused, `ping` and
+`prompt` do not run; the rest of the fire does. A toast says why ("automatic actions are not
+approved" for an untrusted repo). Only an untrusted repo shows `untrusted` on the band.
+`/ctx-guard trust` lists each
+`ping` and `prompt` trigger it approves with its `times` and, for a prompt, its text (`default`
+for the default one): `prompt trigger away: times 1, prompt default`.
+
+**Cost.** A ping reads the whole prefix at the cache-read rate, one tenth of the input rate. A
+cache that expired costs a re-write at the cache-write rate: 1.25 times the input rate for the
+5-minute tier, twice for the 1-hour tier.
+
 ## Subagent budgets
 
 ```json
@@ -563,7 +764,7 @@ before ctx-guard acts on them.
 
 - `readyToken` and `stateDir`, and, for all roles, `band.probes`;
 - per role: `restart.mode`, `via`, `command`, `prompt`, `peers`, `peerGap`, `selfGap`, `minContext` and `readyChecks`;
-  `handoff.path`; `compact.instructions`; every trigger with a `compact`
+  `handoff.path`; `compact.instructions`; every trigger with a `compact`, `ping` or `prompt`
   action;
 - the content of every ready-check or band-probe argument that is a file under the project root (SHA-256).
   Editing such a script withdraws the approval. A command outside the root is trusted by name.
@@ -581,9 +782,10 @@ drops the approval outright. To stop automatic actions but keep the approval, se
 to `manual` or turn `autoActions` off.
 
 **Untrusted,** notes, toasts and denies still work; they carry no more power than CLAUDE.md text.
-Ready-token restarts refuse with `untrusted`, `compact` actions, ready checks and band probes do
-not run, and notes ask the model to tell the operator instead. Where something needs trust (an
-automatic restart, a `compact` trigger or a band probe), the band shows `untrusted`, or
+Ready-token restarts refuse with `untrusted`; `compact`, `ping` and `prompt` actions, ready checks
+and band probes do not run; and notes ask the model to tell the operator instead. Where something
+needs trust (an automatic restart, a `compact`, `ping` or `prompt` trigger or a band probe), the
+band shows `untrusted`, or
 `untrusted (changed)` once an approval no longer matches. Where nothing does, the band shows
 nothing and `/ctx-guard` reports `trust: not needed`.
 
@@ -630,12 +832,12 @@ Set in `/config`, machine-wide.
 | `configPath` | path | `.claude/ctx-guard.json` | The team file; the local file sits beside it as `*.local.json`. |
 | `defaultRole` | string | `""` | Role when nothing else sets one. Empty for none. |
 | `blocking` | boolean | `true` | `false` lifts every deny; notes and toasts go on. |
-| `autoActions` | boolean | `true` | `false` stops automatic clear and compact; notes then ask the model to tell the operator. |
+| `autoActions` | boolean | `true` | `false` stops automatic clear, compact, ping and prompt; notes then ask the model to tell the operator. |
 | `noteToasts` | boolean | `true` | `false` stops the toast that shows each note sent to the model. |
 | `display` | `band`, `status` or `off` | `band` | `band`: a line above the prompt where the surface has one, else status-line text. `status`: status-line text only. `off`: nothing drawn. |
 
-The band reads like `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · sub 1! · deny Agent`.
-Band probes follow the usage windows, then `untrusted` while settings that need trust wait for it.
+The band reads like `lead · 312k (31%) · cache 8m · 5h 42% (2h10m) · wk 61% (3d4h) · sub 1! · deny Agent`.
+The cache countdown follows the context figure ([Prompt cache](#prompt-cache)). Band probes follow the usage windows, then `untrusted` while settings that need trust wait for it.
 
 ## The `/ctx-guard` command
 
@@ -644,7 +846,7 @@ Band probes follow the usage windows, then `untrusted` while settings that need 
 | *(none)* | anyone | Report: role and its source, config files and errors, effective config, metrics, marks, live denies, band probes, trust, handoff age, lease, last verdict, self gap (`selfGap` and the time left before the ready token is no longer `too-soon`). |
 | `role <name\|none>` | operator | Sets this session's role. |
 | `check` | operator | Dry-runs the restart verdict. |
-| `trust` | operator | Approves the repo's restart, ready-check, compact and band-probe settings. |
+| `trust` | operator | Approves the repo's restart, ready-check, compact, ping, prompt and band-probe settings. |
 | `trust off` | operator | Withdraws that approval. |
 | `reload` | anyone | Re-reads the config files. |
 | `pause [30m\|off]` | operator | Lifts denies and automatic actions for a while (default 30 min); notes go on. `off` ends the pause. |
@@ -662,7 +864,7 @@ Recipes use generic role names; rename them to fit your project.
 One long-running session, role `main`. `assets/presets/solo.json` spells out the built-in ladder:
 notes at 40 / 60 / 75 % (then every 5 %), usage notes at 80 / 90 %, an early brake that denies
 `Agent` and `Workflow` while the weekly window is at 80 % with two days or more to its reset (90 %
-with one day or more), and a brake at 95 % that also denies `WebSearch` and `WebFetch`. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume, and
+with one day or more), and a brake at 95 % that also denies `WebSearch` and `WebFetch`. It adds a toast for a prompt cache miss of 50k tokens or more. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume, and
 `restart.minContext: "40%"` refuses the ready token below the first context note.
 `/ctx-guard init` writes it to `.claude/ctx-guard.json`; review it, then run `/ctx-guard trust`.
 
@@ -767,7 +969,8 @@ again.
 }
 ```
 
-`idle-cache` reminds you that a large context left idle will be re-read at full price.
+`idle-cache` reminds you that a large context left idle will be re-read at full price. To keep
+the cache warm, see [Prompt cache](#prompt-cache).
 
 ### An early-spend brake
 

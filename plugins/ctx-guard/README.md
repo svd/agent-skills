@@ -43,7 +43,7 @@ Long Claude Code sessions go wrong in three ways:
 
 | See | Steer | Restart safely |
 |---|---|---|
-| A **band** above the prompt with context fill, both usage windows and their resets, plus your own project probes (branch, worktrees, plan progress). | **Triggers** on context, usage, time to reset, cost and idle send the model `soft` → `hard` → `stop` notes, show toasts and OS notifications, **deny tools** such as `Agent`, `WebFetch` or browser navigation while a window runs hot, and cap each **subagent's** tokens by type. | The model rewrites a **handoff** and ends its reply with `CTX-READY`. ctx-guard runs an 11-check **verdict**; if every check passes it runs `/clear` and resumes from the handoff, which is checked against the repo first. Prefer `/compact`? One setting. |
+| A **band** above the prompt with context fill, a prompt-cache countdown, both usage windows and their resets, plus your own project probes (branch, worktrees, plan progress). | **Triggers** on context, usage, time to reset, cost, idle time and the prompt cache send the model `soft` → `hard` → `stop` notes, show toasts and OS notifications, **deny tools** such as `Agent`, `WebFetch` or browser navigation while a window runs hot, and cap each **subagent's** tokens by type. | The model rewrites a **handoff** and ends its reply with `CTX-READY`. ctx-guard runs an 11-check **verdict**; if every check passes it runs `/clear` and resumes from the handoff, which is checked against the repo first. Prefer `/compact`? One setting. |
 
 A note, as the model sees it:
 
@@ -53,6 +53,13 @@ A note, as the model sees it:
 > Sections: Goal, State, Next action. Then tell the operator 'ready for /clear'.
 
 Each note also shows a toast, so you see what the model was told (`noteToasts`).
+
+The prompt cache gets the same treatment. The band counts down to the cache's expiry
+(`cache 8m`), and a `cache.miss` trigger, such as the presets' `cache-miss` toast, flags a request
+that re-wrote a cache that should have been warm.
+Keeping the cache warm while you are away is opt-in: a trigger's `ping` action sends a tool-less
+request that refreshes the cache, and its `prompt` action submits a turn that asks the model for
+a handoff. Both are capped by `times` and need `/ctx-guard trust`.
 
 ## How a restart works
 
@@ -100,9 +107,9 @@ triggers, active blocks and trust. Full walk-through: [Getting started](docs/get
 ## Safety by design
 
 - **Restarts fail closed.** Any failed check refuses the restart, and nothing is cleared.
-- **Nothing runs unattended without your approval.** Automatic restarts, `compact` actions,
-  ready checks and band probes need `/ctx-guard trust` per repo. Trust covers the exact settings
-  and the scripts' contents; any change withdraws it until you approve again.
+- **Nothing runs unattended without your approval.** Automatic restarts, `compact`, `ping` and
+  `prompt` actions, ready checks and band probes need `/ctx-guard trust` per repo. Trust covers
+  the exact settings and the scripts' contents; any change withdraws it until you approve again.
 - **The model cannot talk its way out.** `role`, `check`, `trust`, `pause` and `init` work only
   when you type them; ctx-guard refuses them from the model or another plugin.
 - **Blocks fail open and lift themselves.** An unknown metric or a failed check denies nothing,
@@ -115,17 +122,23 @@ triggers, active blocks and trust. Full walk-through: [Getting started](docs/get
 
 ## What it runs, reads, writes and sends
 
-ctx-guard makes no network requests. It sends nothing to any server, has no telemetry and
-fetches nothing. Every figure comes from Claude Code itself or from files in your project.
+ctx-guard makes no network requests of its own, has no telemetry and fetches nothing. The
+requests it can start are model requests that Claude Code sends like any other: a keep-warm
+`ping`, a `prompt` turn, and the turns that follow its `/clear` and `/compact` (see Sends to the
+model). Every figure comes from Claude Code itself or from files in your project.
 
 - **Reads.** Claude Code's own figures for the session through the mod API: context fill, token
   usage, the 5-hour and weekly limit status, running agents and background tasks. Your Claude
-  Code settings, for `autoCompactWindow` only. The `CTX_GUARD_ROLE` environment variable. From
-  the conversation it takes only figures: each model request's token usage, the length of each
-  tool result (to estimate the fill before the usage arrives) and whether the model's last reply
-  ends with the ready token. It keeps no conversation text and hands none to any script. Its
-  config, `.claude/ctx-guard.json` and `.claude/ctx-guard.local.json`. A role's handoff file
-  when it resumes. The ready-check and probe scripts your config names, to hash them for trust.
+  Code settings, for `autoCompactWindow` only. The `CTX_GUARD_ROLE`, `HOME` and
+  `CLAUDE_CONFIG_DIR` environment variables. From the conversation it takes only figures: each
+  model request's token usage, the length of each tool result (to estimate the fill before the
+  usage arrives) and whether the model's last reply ends with the ready token. It keeps no
+  conversation text and hands none to any script. With `cache.ttl` at `auto`, the session
+  transcript, `~/.claude/projects/<working directory>/<session id>.jsonl` (under
+  `CLAUDE_CONFIG_DIR` when set): it searches the file for the cache-write figures that tell a
+  5-minute cache from a 1-hour one, and keeps nothing else from it. Its config,
+  `.claude/ctx-guard.json` and `.claude/ctx-guard.local.json`. A role's handoff file when it
+  resumes. The ready-check and probe scripts your config names, to hash them for trust.
 - **Writes.** Role leases (`<role>.owner`) and restart stamps in the project's state folder,
   `.ctx-guard/` by default (`stateDir`). Its session state and your trust approvals go to Claude
   Code's own plugin storage. Only `/ctx-guard init`, when you type it, writes a file outside
@@ -134,6 +147,11 @@ fetches nothing. Every figure comes from Claude Code itself or from files in you
   ctx-guard.
 - **Sends to the model.** Notes that start with `[ctx-guard]`, added to the conversation as
   user messages: to the main session when a trigger fires, or to a subagent nearing its budget.
+  Two more things reach the model, both only after `/ctx-guard trust`, with `autoActions` on and
+  a `times` cap: a `ping`, one tool-less request (`Reply with OK.`) over the session's own
+  transcript, made with the engine's `$.model.fork`, whose reply is discarded; and a `prompt`, a
+  real turn submitted with the trigger's `message`, or by default a message that starts with
+  `[ctx-guard]`.
 - **Runs commands.** Three, and only with `autoActions` on and after `/ctx-guard trust`:
   - `/clear`, when the model ends a reply with the ready token after a context note asked for a
     restart, the role restarts by clear, and every check of the verdict passes;
@@ -167,6 +185,7 @@ What each hook does, and what it may change:
 | Hook | What it does |
 | --- | --- |
 | `session.start`, `session.measure`, `session.end`, `turn.start`, `turn.step`, `turn.complete`, `classic.Stop` | Read the figures and evaluate the triggers. Each passes the event on unchanged. |
+| `prompt.submit` | Notes whether the prompt is ctx-guard's own `prompt` action, to tell its turn from yours. Passes the prompt on unchanged. |
 | `tool.call` | Denies a main-loop tool call while a `deny` trigger holds, and a subagent's call once it is past its budget. Every other call passes unchanged. |
 | `agent.spawn` | Records each new agent's id and type, for its budget. Passes the spawn on unchanged. |
 | `command.run` | Runs `/ctx-guard`. For `/ctx-guard:resume` typed by you, checks its `role=` claim against the role lease, refuses it if another session holds the role, and fills in the role, handoff path and prompt it already knows. For a role's restart command typed by you, refuses it if another session holds the role. Every other command passes unchanged. |
@@ -184,9 +203,10 @@ What each hook does, and what it may change:
 | A coordinator with subagent budgets | [6. Coordinator and workers](docs/use-cases.md#6-coordinator-and-workers) |
 | Two sessions, lead and reviewer | [7. Peer sessions](docs/use-cases.md#7-peer-sessions) |
 | Make the weekly limit last | [8. Usage-limit brake](docs/use-cases.md#8-usage-limit-brake), [9. Early-spend brake](docs/use-cases.md#9-early-spend-brake) |
+| Keep the prompt cache warm while you are away | [18. Stepped away](docs/use-cases.md#18-stepped-away) |
 | Builders in git worktrees | [13. Builders in git worktrees](docs/use-cases.md#13-builders-in-git-worktrees) |
 
-All 17 recipes: [Use cases](docs/use-cases.md).
+All 18 recipes: [Use cases](docs/use-cases.md).
 
 ## How it compares
 
@@ -208,8 +228,9 @@ The full feature matrix, including where other tools do better: [Comparison](doc
 - **Claude Code only.** It does not watch Codex, Cursor or other agents.
 - **Restarts need the model's cooperation** to write the handoff and send the token. For a
   backstop that needs none, a trigger can run `compact` on its own.
-- **No prompt-cache keep-warm.** An `idle` trigger can notify you before a large context's cache
-  expires, but ctx-guard sends no keep-alive requests.
+- **The cache TTL can be a guess.** ctx-guard reads it from the transcript when it can and
+  otherwise guesses; the band marks a guess with `~`, and `cache.ttl` fixes it. Each `ping` reads
+  the whole prefix at the cache-read rate, and `times` caps how many.
 
 ## FAQ
 
@@ -237,7 +258,7 @@ plan's progress, and any skill can write the handoff
 | [Getting started](docs/getting-started.md) | Concepts, install, the built-in ladder, the first project config, trust. |
 | [Configuration](docs/configuration.md) | Layers and switches, quantities, triggers, what to block, roles, commands. |
 | [Handoff, restart and compact](docs/handoff-and-restart.md) | Restart modes, the handoff file, the ready token, the verdict, compact. |
-| [Use cases](docs/use-cases.md) | 17 complete configs, from watch-only to worktree builders. |
+| [Use cases](docs/use-cases.md) | 18 complete configs, from watch-only to worktree builders. |
 | [Troubleshooting](docs/troubleshooting.md) | Symptoms, refusal codes and fixes; files ctx-guard writes. |
 | [Comparison](docs/comparison.md) | ctx-guard next to monitors, handoff plugins and built-ins. |
 | [Config reference](skills/guide/references/config-reference.md) | Every key, default, refusal code and trust rule. |

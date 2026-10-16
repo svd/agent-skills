@@ -16,7 +16,7 @@ are often better used together with ctx-guard than instead of it.
 
 | | Shows context and limits | Warns the model | Usage-limit brakes | Subagent budgets | Clears and resumes on its own | Checks before clearing | Multi-session coordination | Prompt-cache help | Other agents |
 |---|---|---|---|---|---|---|---|---|---|
-| **ctx-guard** | ● | ● | ● | ● | ● | ● | ● | ◐ | — |
+| **ctx-guard** | ● | ● | ● | ● | ● | ● | ● | ● | — |
 | [ctx-handoff-mod](https://github.com/cablate/ctx-handoff-mod) | — | — | — | — | ● | ◐ | — | ● | — |
 | [claude-code-auto-handoff](https://github.com/Amel-DZRV/claude-code-auto-handoff) | ◐ | ◐ | — | — | ● | ◐ | — | ◐ | — |
 | [claude-handoff](https://github.com/samzilverberg/claude-handoff) | — | ◐ | — | — | ◐ | ◐ | — | — | — |
@@ -32,7 +32,9 @@ are often better used together with ctx-guard than instead of it.
 and idle time; notes at three levels; tool denies while a condition holds; per-type subagent
 token budgets; a guarded `/clear` and resume (or `/compact`) behind an 11-check verdict plus your
 own ready-check scripts; role leases and peer gaps for several long-lived sessions. Prompt cache:
-an `idle` trigger can notify you, but there is no keep-warm.
+a band countdown to the cache's expiry, a `cache.miss` trigger (a toast in the presets) for a request that re-wrote a cache that should
+have been warm, and opt-in keep-warm (a `ping` request or a `prompt` turn, capped by `times`,
+behind `/ctx-guard trust`).
 
 **ctx-handoff-mod** (a mod). Hands off to a fresh conversation at a token threshold, after Claude
 and its subagents finish; its summary separates verified from unverified work. Keeps the prompt
@@ -74,7 +76,6 @@ clear-and-resume ([#90089](https://github.com/anthropics/claude-code/issues/9008
 
 ## Where other tools do better
 
-- **Keeping the prompt cache warm**: ctx-handoff-mod. ctx-guard only notifies you.
 - **Learning from your corrections**: ctx-handoff-mod's project notes.
 - **History and cross-agent reports**: ccusage, for Claude Code, Codex and others.
 - **Validating handoff structure out of the box**: claude-handoff checks its nine sections.

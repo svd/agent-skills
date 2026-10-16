@@ -38,7 +38,7 @@ For editor completion, point `$schema` at the schema (ctx-guard ignores the key)
 | `configPath` | `.claude/ctx-guard.json` | The team file, relative to the project root; the local file sits beside it as `*.local.json`. |
 | `defaultRole` | `""` | Role when nothing else sets one. Empty for none. |
 | `blocking` | `true` | `false` lifts every deny; notes and toasts go on. |
-| `autoActions` | `true` | `false` stops automatic clear and compact; notes then ask the model to tell you. |
+| `autoActions` | `true` | `false` stops automatic clear, compact, ping and prompt; notes then ask the model to tell you. |
 | `noteToasts` | `true` | `false` stops the toast that shows each note sent to the model. |
 | `display` | `band` | `band`, `status` (status-line text only) or `off`. |
 
@@ -83,7 +83,14 @@ For editor completion, point `$schema` at the schema (ctx-guard ignores the key)
     "*": { "warn": "120k", "stop": "170k" }
   },
 
-  "band": { "probes": [] }              // project scripts drawn on the band, shared by every role
+  "band": { "probes": [] },             // project scripts drawn on the band, shared by every role
+
+  "cache": {                            // prompt cache: TTL, band countdown, keep-warm limits
+    "ttl": "auto",                      // or "5m" / "1h"
+    "band": { "show": "25%", "warn": "10m" },
+    "ping": { "maxUsage": 90 },         // no ping while a usage window is at or above this %
+    "prompt": { "maxUsage": 90 }        // the same for a prompt from a trigger on a cache metric
+  }
 }
 ```
 
@@ -100,6 +107,7 @@ tokens in a token field.
 | percent | `"40%"`, or `80` where the field is a percent only (`limit.*`) |
 | duration | `"500ms"`, `"10s"`, `"10m"`, `"2h"`, `"1d"` (unit required) |
 | usd | `2.5`, `"$2.50"` |
+| count | `3` |
 
 ## Triggers
 
@@ -108,7 +116,7 @@ tokens in a token field.
 { "id": "ctx-stop", "when": { "context": "75%", "every": "5%" }, "do": ["note", "toast"], "level": "stop" }
 ```
 
-**`when`** is an AND of metrics, each holding at or above its threshold:
+**`when`** is an AND of metrics, each holding at or above its threshold (`cache.expiresIn` holds at or below it):
 
 | Metric | Takes | Reads |
 |---|---|---|
@@ -120,6 +128,9 @@ tokens in a token field.
 | `limit.seven_day.resetsIn` | duration | At least this long until the weekly reset. Needs `limit.seven_day` beside it. |
 | `cost` | usd | Session cost. |
 | `idle` | duration | Time since the last turn ended. |
+| `cache.expiresIn` | duration | At most this long until the main thread's prompt cache expires. |
+| `cache.miss` | tokens | Tokens the latest request re-wrote of a cache that should have been warm. |
+| `cache.pings` | count | Warm pings in the current idle period. |
 
 `every` repeats a trigger in steps past its first threshold (`75%`, `80%`, `85%`, …). It works
 on one of `context`, `limit.*` percents or `cost`.
@@ -132,15 +143,30 @@ on one of `context`, `limit.*` percents or `cost`.
 | `"toast"` | once | A toast in the session. |
 | `"notify"` | once | An OS notification. |
 | `"compact"` | once | Runs `/compact` at the next safe turn end. Needs trust. |
+| `"ping"` | once | Sends one tool-less request over the main thread's prefix to refresh the prompt cache. Needs trust, `times` and `cache.expiresIn` in the same `when`. |
+| `"prompt"` | once | Submits a turn that tells the model you are away and asks for the handoff. Needs trust and `times`. |
 | `{ "deny": ["Agent", "Workflow"] }` | while the AND holds | Refuses those main-loop tool calls. |
 
 Edge actions fire once when the condition starts to hold, then re-arm when a metric drops below
 its threshold (after `/compact`, after a usage window resets). `/clear` re-arms every trigger with
 a `context` condition.
 
-**`level`** (`soft`, `hard`, `stop`) picks the note wording; **`message`** adds your own text,
-with variables such as `{role}`, `{tokens}`, `{percent}`, `{threshold}`, `{window}`, `{limit}`,
-`{resetsIn}`, `{handoffPath}` and `{readyToken}`.
+**`level`** (`soft`, `hard`, `stop`) picks the note wording; **`message`** adds your own text
+to a note and, for a `prompt` action, replaces the default prompt text, with variables such as `{role}`, `{tokens}`, `{percent}`, `{threshold}`, `{window}`, `{limit}`,
+`{resetsIn}`, `{handoffPath}`, `{readyToken}`, `{idle}` and `{expiresIn}`.
+
+**`times`** caps a trigger at that many fires per idle period; a trigger with `ping` or `prompt`
+must have it.
+
+### Prompt cache
+
+The band shows a countdown to the prompt cache's expiry (`cache 8m`) while the session is idle. A
+trigger on `cache.miss` flags a request that re-wrote a cache that should have been warm, and
+`ping` and `prompt` keep it warm while you are away. The TTL, when the countdown shows and the
+ping limit are set by the top-level `cache` block. The `/ctx-guard` report has a `cache:` line
+with the TTL and the time left. Details and an example:
+[Prompt cache](../skills/guide/references/config-reference.md#prompt-cache) and
+[use case 18](use-cases.md#18-stepped-away).
 
 ## What to block
 
@@ -154,7 +180,7 @@ A `deny` takes any main-loop tool by its exact name, built-in or MCP. Rules:
 - Denies apply only once the session has a role.
 - A deny holds while its trigger's condition holds, judged afresh at every call, and lifts by
   itself when the condition stops holding. `/ctx-guard pause` or `blocking: false` lifts it now.
-- A deny cannot share a trigger with `idle`.
+- A deny cannot share a trigger with `idle` or a `cache.*` metric.
 - It fails open: an unknown metric or a failed check denies nothing.
 
 Good candidates, when a usage window runs low:
@@ -223,7 +249,7 @@ time (a lease in `.ctx-guard/<role>.owner`); a second one gets a warning and can
 | `/ctx-guard` | anyone | Report. |
 | `/ctx-guard role <name\|none>` | you | Set this session's role. |
 | `/ctx-guard check` | you | Dry-run the restart verdict. |
-| `/ctx-guard trust` | you | Approve the repo's restart, ready-check and compact settings. |
+| `/ctx-guard trust` | you | Approve the repo's restart, ready-check, compact, ping and prompt settings. |
 | `/ctx-guard trust off` | you | Withdraw that approval. |
 | `/ctx-guard reload` | anyone | Re-read the config files now. |
 | `/ctx-guard pause [30m\|off]` | you | Lift blocks and automatic actions for a while (default 30 min); notes go on. |

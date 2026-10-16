@@ -50,8 +50,8 @@
     },
     "autoActions": {
       "type": "boolean",
-      "title": "Automatic clear and compact",
-      "description": "Let ctx-guard run /clear with a resume, or /compact, when every guard holds. false keeps the notes and leaves restarts to you.",
+      "title": "Automatic actions",
+      "description": "Let ctx-guard run /clear with a resume, /compact, a keep-warm ping or a handoff prompt, when every guard holds. false keeps the notes and leaves these to you.",
       "default": true
     },
     "noteToasts": {

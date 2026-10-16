@@ -2,6 +2,45 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [Unreleased]
+
+### Added
+
+- A prompt cache countdown in the band (`cache 8m`, `cache ~8m` for a guessed TTL, `cache cold`
+  once expired), shown while the session is idle and the time left is within `cache.band.show`
+  (default `25%` of the TTL; the warning colour from `cache.band.warn`, default `10m`). With pings in the period it reads `cache 8m · ping 2/3`.
+- A top-level `cache` config block: `ttl` (`auto`, `5m`, `1h`), `band.show` (a duration, a percent
+  of the TTL, `always` or `false`), `band.warn`, `ping.maxUsage` and `prompt.maxUsage` (no ping, or
+  no prompt from a trigger on a cache metric, while a usage window is at or above it; default
+  `90`). With `ttl: auto` the TTL comes from the session transcript, then from a warm read after a
+  gap of more than 5 minutes, then from a guess (a subscription caches for an hour).
+- Metrics `cache.expiresIn` (holds at or below its threshold), `cache.miss` and `cache.pings`.
+- Actions `ping` and `prompt`. `ping` sends a tool-less model request over the main thread's
+  prefix to keep the cache warm; `prompt` submits a turn that asks the model for a handoff while
+  the user is away. Both need `/ctx-guard trust` and the `autoActions` switch; `/ctx-guard trust`
+  lists their triggers with `times` and the prompt text. A `prompt` is tried up to three times when refused, and a `compact` in
+  the same fire waits for its turn to end.
+- Trigger key `times`: at most that many fires per idle period. A trigger with `ping` or `prompt`
+  must have it, and a `ping` trigger must have `cache.expiresIn` in its `when`.
+- A `cache:` line in the `/ctx-guard` report: the TTL and its source, the time left, pings, a cold
+  ping, the last miss and a pending retry. Trigger lines show `times` and `≤` for
+  `cache.expiresIn`.
+- Quantity kind `count` (a whole number), used by `cache.pings`.
+- Template variables `{idle}` and `{expiresIn}`, and a default text for the `prompt` action.
+- A `cache-miss` toast at 50k tokens in the `solo` and `peers` presets.
+- A `prompt.submit` hook that tells ctx-guard's own prompt from the user's, so the prompt's turn
+  neither starts a new idle period nor resets `idle`.
+- The guide skill tells the model how to answer a prompt that says the user is away: write the
+  handoff, then stop.
+
+### Changed
+
+- The `autoActions` switch, the trust approval, the band's `untrusted` segment and the
+  `/ctx-guard` report cover `ping` and `prompt` as well as clear and compact. The text of a
+  skipped automatic action reads "automatic actions are not approved".
+- The README's section on what ctx-guard runs, reads, writes and sends covers the transcript read,
+  the ping and the prompt.
+
 ## [0.2.0] - 2026-10-15
 
 ### Added

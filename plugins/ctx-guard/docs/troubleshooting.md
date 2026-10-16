@@ -45,6 +45,15 @@ role and a toast, not a fallback); and `CTX_GUARD_ROLE=none` beats `defaultRole`
 | Error on a path | `stateDir`, `handoff.path` and `configPath` must be relative, under the root, letters, digits and `. _ - /` only. | Use e.g. `.ctx-guard/{role}-handoff.md`. |
 | Percents fire too late or too early | `contextWindow: "auto"` counts against the engine's compaction window (or the model window lowered to `autoCompactWindow`). | Set `contextWindow` to a token figure, or use token thresholds ([use case 10](use-cases.md#10-absolute-thresholds-on-a-large-window)). |
 
+### The cache countdown is missing, wrong or says `cold`
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No `cache` segment | It shows only while the session is idle, once the first main-loop request has run, and when the time left is within `cache.band.show` (15 minutes of a 1-hour cache by default). | Wait for the window, or set `cache.band.show` to `"always"`. |
+| `cache ~8m` | The TTL is a guess: the transcript has not told it yet. | Set `cache.ttl` to `"5m"` or `"1h"`. |
+| `cache cold` | The cache expired, or a ping found it already expired. | The next request re-writes the prefix; the band clears then. |
+| A `ping` trigger never pings | It needs a role, `/ctx-guard trust`, `autoActions` on, no pause, `times` and `cache.expiresIn` in its `when`; the threshold must be below the TTL less 90 seconds (under 3m30s for a 5-minute cache), or the trigger pings once and never re-arms; a usage window at `cache.ping.maxUsage` also stops it. | Read `/ctx-guard`; the band shows `untrusted` when approval is missing. |
+
 ### The model says "ready for /clear" instead of restarting
 
 A note promises an automatic restart only when ctx-guard would act on the token. It falls back

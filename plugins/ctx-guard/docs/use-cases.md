@@ -263,7 +263,8 @@ enough for the prompt cache to expire.
 ```
 
 This file has no `defaultRole`: the role comes from the `defaultRole` switch, `CTX_GUARD_ROLE`
-or `/ctx-guard role main`. No trust is needed; nothing here runs on its own.
+or `/ctx-guard role main`. No trust is needed; nothing here runs on its own. To keep the cache
+alive, see [18. Stepped away](#18-stepped-away).
 
 ## 9. Early-spend brake
 
@@ -474,3 +475,47 @@ manual for `lead` and drops the team's note suffix:
 | No role in this session | `/ctx-guard role none`, or start with `CTX_GUARD_ROLE=none`. |
 | Off in one project | `"enabled": false` in that project's config file. |
 | Off everywhere | `/config` → `enabled` off. |
+
+## 18. Stepped away
+
+You leave a large session for lunch, a meeting or the night. The band counts down to the prompt
+cache's expiry. Three cheap pings keep the cache alive; then ctx-guard asks the model for a
+handoff, so the work is saved when you return. A toast flags any request that re-wrote a cache
+that should have been warm.
+
+```json
+{
+  "version": 1,
+  "defaultRole": "main",
+  "roles": {
+    "main": {
+      "triggers": [
+        { "id": "warm", "when": { "cache.expiresIn": "8m", "context": "50k" }, "do": ["ping"], "times": 3 },
+        { "id": "away", "when": { "cache.expiresIn": "8m", "cache.pings": 3 }, "do": ["prompt", "notify"], "times": 1 },
+        { "id": "miss", "when": { "cache.miss": "50k" }, "do": ["toast"] }
+      ],
+      "handoff": { "instructions": "Rewrite the whole file. Sections: Goal, State, Next action." }
+    }
+  }
+}
+```
+
+`triggers` replaces the built-in ladder, so add your context and usage triggers to this list
+(use case 8 has a set). Pings and the prompt need `/ctx-guard trust`, and `autoActions` on in
+`/config`.
+
+Over a four-hour break with a 1-hour cache, `warm` pings about 52 minutes after your last
+request, then at about 1 h 44 min and 2 h 36 min. Each warm ping moves the countdown back to an
+hour, and the band reads `cache 9m · ping 2/3` as the next one nears. At about 3 h 28 min `away`
+fires: it sends an OS notification and submits a turn that tells the model you are away and asks
+it to write the handoff to `.ctx-guard/main-handoff.md` and stop. The model writes the file; an
+hour later the cache expires and the band reads `cache cold`. When you return, the handoff is
+there if you want to `/clear`. A session under 50k tokens gets neither pings nor the prompt: its
+cache is cheap to re-write.
+
+The `8m` threshold is there because Claude Code itself compacts an idle session about 6 minutes
+before a 1-hour cache expires. A threshold of 6 minutes or less acts after that compaction.
+
+With a 5-minute cache (`cache.ttl: "5m"`, or detected), use a `cache.expiresIn` threshold of
+`"2m"` to `"3m"`. A trigger re-arms when the time left rises above its threshold, and ctx-guard
+checks once a minute, so after a ping about 3 m 30 s are left; a threshold above that pings once.

@@ -8,7 +8,7 @@
 |---|---|
 | **Band** | One line of figures above the prompt (or on the status line). Always on unless `display: off`. |
 | **Role** | A named set of settings (`main`, `lead`, `reviewer`, …). A session with no role gets toasts only; notes, blocks, budgets and restarts start once it has one. |
-| **Trigger** | `when` a metric crosses a threshold, `do` actions. Metrics: context fill, 5-hour and weekly usage, time to a window's reset, session cost, idle time. |
+| **Trigger** | `when` a metric crosses a threshold, `do` actions. Metrics: context fill, 5-hour and weekly usage, time to a window's reset, session cost, idle time, prompt cache expiry, misses and pings. |
 | **Note** | A `[ctx-guard]` message to the model. Its wording follows the trigger's `level`: `soft` (plan a handoff), `hard` (wrap up), `stop` (start nothing new). |
 | **Deny** | A trigger action that refuses named tool calls while its condition holds, and lifts by itself once it no longer does. |
 | **Handoff** | A file the model rewrites before a restart: goal, state, next action. The resume reads it back. |

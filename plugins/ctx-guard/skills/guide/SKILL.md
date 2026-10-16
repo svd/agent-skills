@@ -1,6 +1,6 @@
 ---
 name: guide
-description: Protocol for the ctx-guard context and usage guard, and how to configure it. Use whenever a message starting with "[ctx-guard]" arrives (a context or usage note, a refused ready token, a blocked tool, a subagent budget note), when asked to write a ctx-guard handoff or end a reply with the ready token (CTX-READY), and when the user asks to set up, explain or change ctx-guard, a context guard or usage guard, its roles, thresholds, triggers, handoff, auto clear or compact, subagent budgets, trust or the /ctx-guard command.
+description: Protocol for the ctx-guard context and usage guard, and how to configure it. Use whenever a message starting with "[ctx-guard]" arrives (a context or usage note, a prompt turn saying the user is away, a refused ready token, a blocked tool, a subagent budget note), when asked to write a ctx-guard handoff or end a reply with the ready token (CTX-READY), and when the user asks to set up, explain or change ctx-guard, a context guard or usage guard, its roles, thresholds, triggers, handoff, auto clear or compact, subagent budgets, trust or the /ctx-guard command.
 ---
 
 # ctx-guard
@@ -39,6 +39,21 @@ from a subagent, and not without a note asking for it. The token clears the sess
 
 A note may end with a role rule (`notes.suffix`), such as "message the peer session before you
 stop". Do that before the last line.
+
+## When a prompt says the user is away
+
+ctx-guard can submit a prompt of its own while the operator is away, to use the prompt cache's
+last minutes for a handoff. It reads like this:
+
+```text
+[ctx-guard] The user has been away 3h40m; the prompt cache expires in 4m. Write the handoff to .ctx-guard/main-handoff.md and stop; do not start new work.
+```
+
+No one is watching this turn. Write the handoff to the path it names, following the role's
+instructions as for any handoff, then stop. Start no new work, dispatch no subagents and call no
+tool but the one that writes the handoff. Do not send the ready token unless the prompt asks
+for it. The operator reads the handoff on return. A project may word this prompt itself; follow
+its text.
 
 ## When the token is refused
 
@@ -109,8 +124,9 @@ refuses them unless typed in the prompt box. When one is needed, ask the operato
    `/ctx-guard` reports errors, the effective config, the role and the live figures.
 4. Assign roles: `defaultRole` in the file, `CTX_GUARD_ROLE=<role> claude`, or
    `/ctx-guard role <name>` typed by the operator. Without a role ctx-guard only toasts.
-5. Automatic restart (`restart.mode: "auto"`), ready checks and compact actions need trust. After
-   any change to them, the operator runs `/ctx-guard trust` and reads what it prints.
+5. Automatic restart (`restart.mode: "auto"`), ready checks and `compact`, `ping` and `prompt`
+   actions need trust. After any change to them, the operator runs `/ctx-guard trust` and reads
+   what it prints.
 6. `/ctx-guard check` dry-runs the restart guard.
 
 | Command | Does |
@@ -118,7 +134,7 @@ refuses them unless typed in the prompt box. When one is needed, ask the operato
 | `/ctx-guard` | Report. |
 | `/ctx-guard role <name\|none>` | Set this session's role. |
 | `/ctx-guard check` | Dry-run the restart verdict. |
-| `/ctx-guard trust` | Approve the repo's restart, ready-check and compact settings. |
+| `/ctx-guard trust` | Approve the repo's restart, ready-check, compact, ping, prompt and band-probe settings. |
 | `/ctx-guard trust off` | Withdraw that approval. |
 | `/ctx-guard reload` | Re-read the config files. |
 | `/ctx-guard pause [30m\|off]` | Lift blocks and automatic actions for a while; notes go on. |
