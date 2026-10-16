@@ -6,6 +6,10 @@ import { roleSpec, zeroConfigTriggers } from './config'
 export type LimitKind = 'five_hour' | 'seven_day'
 export type LimitReading = { pct: number; resetsAt: string | null }
 
+// The main thread's prompt cache, as cache.ts reads it; null is unknown.
+export type CacheMetrics = { expiresIn: number | null; miss: number | null; missCause: 'model' | 'prefix' | null; pings: number | null }
+export const NO_CACHE: CacheMetrics = { expiresIn: null, miss: null, missCause: null, pings: null }
+
 // One reading of everything a trigger can test; null is unknown.
 export type Metrics = {
   tokens: number | null
@@ -14,6 +18,7 @@ export type Metrics = {
   cost: number | null
   // See idleMs(): 0 while a main turn runs, null before the first main turn ends.
   idleMs: number | null
+  cache: CacheMetrics
   now: number
 }
 
@@ -51,6 +56,10 @@ export type FireVars = {
   limit: LimitInfo | null
   cost: number | null
   idleMs: number | null
+  expiresIn: number | null
+  miss: number | null
+  missCause: 'model' | 'prefix' | null
+  pings: number | null
   now: number
 }
 
@@ -70,6 +79,9 @@ export const METRIC_ORDER: readonly Metric[] = [
   'limit.seven_day.resetsIn',
   'cost',
   'idle',
+  'cache.expiresIn',
+  'cache.miss',
+  'cache.pings',
 ]
 
 // Float slack so 70 + 2 × 5 counts as reaching step 2 at exactly 80.
@@ -124,13 +136,14 @@ export type MetricsSource = {
 }
 
 /** One reading from the engine's figures, against the effective window. */
-export function metricsOf(src: MetricsSource, window: number, idle: number | null, now: number): Metrics {
+export function metricsOf(src: MetricsSource, window: number, idle: number | null, now: number, cache: CacheMetrics = NO_CACHE): Metrics {
   return {
     tokens: count(src.tokens),
     window,
     limits: limitsFrom(src.rateLimits),
     cost: count(src.cost?.usd),
     idleMs: idle,
+    cache,
     now,
   }
 }
@@ -168,6 +181,12 @@ function valueOf(metric: Metric, q: Quantity, m: Metrics, limit: LimitInfo | nul
       return m.cost
     case 'idle':
       return m.idleMs
+    case 'cache.expiresIn':
+      return m.cache.expiresIn
+    case 'cache.miss':
+      return m.cache.miss
+    case 'cache.pings':
+      return m.cache.pings
     case 'limit.five_hour.resetsIn':
     case 'limit.seven_day.resetsIn':
       // A window with no reset time is unknown: the trigger waits, a deny lets the call through.
@@ -177,6 +196,12 @@ function valueOf(metric: Metric, q: Quantity, m: Metrics, limit: LimitInfo | nul
   }
 }
 
+// The one countdown metric: it holds as the figure falls to its threshold.
+const AT_OR_BELOW: ReadonlySet<Metric> = new Set<Metric>(['cache.expiresIn'])
+
+/** True for a metric that holds at or below its threshold; every other holds at or above it. */
+export const holdsBelow = (metric: Metric): boolean => AT_OR_BELOW.has(metric)
+
 /** Each metric of the trigger's AND with its live value. */
 export function conditions(trigger: Trigger, m: Metrics): Condition[] {
   const out: Condition[] = []
@@ -185,7 +210,8 @@ export function conditions(trigger: Trigger, m: Metrics): Condition[] {
     if (!threshold) continue
     const limit = limitFor(metric, m)
     const value = valueOf(metric, threshold, m, limit)
-    out.push({ metric, threshold, value, holds: value !== null && value + EPS >= threshold.value, limit })
+    const holds = value !== null && (holdsBelow(metric) ? value - EPS <= threshold.value : value + EPS >= threshold.value)
+    out.push({ metric, threshold, value, holds, limit })
   }
   return out
 }
@@ -213,6 +239,10 @@ function varsOf(trigger: Trigger, cs: readonly Condition[], step: number, m: Met
     limit: cs.find(c => c.limit)?.limit ?? null,
     cost: m.cost,
     idleMs: m.idleMs,
+    expiresIn: m.cache.expiresIn,
+    miss: m.cache.miss,
+    missCause: m.cache.missCause,
+    pings: m.cache.pings,
     now: m.now,
   }
 }
@@ -286,6 +316,27 @@ export function evaluate(
     if (actions.length) fire.push({ trigger, actions, step, vars: varsOf(trigger, cs, step, metrics) })
   }
   return { fire, marks: { role, byId } }
+}
+
+/**
+ * Holds back the fires of triggers that used up their `times` in this idle
+ * period and counts the rest; uncapped triggers pass and are not counted.
+ */
+export function applyTimes(fire: readonly Fire[], fired: Readonly<Record<string, number>>): { fire: Fire[]; fired: Record<string, number> } {
+  const counts: Record<string, number> = { ...fired }
+  const out: Fire[] = []
+  for (const f of fire) {
+    const cap = f.trigger.times
+    if (cap === null) {
+      out.push(f)
+      continue
+    }
+    const used = Object.hasOwn(counts, f.trigger.id) ? (counts[f.trigger.id] as number) : 0
+    if (used >= cap) continue
+    counts[f.trigger.id] = used + 1
+    out.push(f)
+  }
+  return { fire: out, fired: counts }
 }
 
 /** Whether the trigger's whole AND holds on `m`; null when one of its metrics is unknown. */
@@ -372,12 +423,19 @@ export type ActionPlan = {
   notifies: Fire[]
   // At most one compact per evaluation: the first trigger asking for it.
   compact: Fire | null
+  // At most one warm ping per evaluation, and none beside a prompt.
+  ping: Fire | null
+  // At most one prompt per evaluation: the first trigger asking for it.
+  prompt: Fire | null
 }
 
 /** Groups one evaluation's fires by action, so a burst of crossings costs one note. */
 export function planActions(fire: readonly Fire[]): ActionPlan {
   const by = (a: EdgeAction): Fire[] => fire.filter(f => f.actions.includes(a))
-  return { notes: by('note'), toasts: by('toast'), notifies: by('notify'), compact: by('compact')[0] ?? null }
+  const prompt = by('prompt')[0] ?? null
+  // A prompt's turn warms the cache itself, so a ping beside it is dropped.
+  const ping = prompt ? null : (by('ping')[0] ?? null)
+  return { notes: by('note'), toasts: by('toast'), notifies: by('notify'), compact: by('compact')[0] ?? null, ping, prompt }
 }
 
 /**

@@ -6,7 +6,7 @@ import { parseQuantity, roleSpec, validate } from './config'
 import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
 import { listedRoles } from './roles'
 import type { RoleResolution } from './roles'
-import { METRIC_ORDER, contextPercent } from './triggers'
+import { METRIC_ORDER, contextPercent, holdsBelow } from './triggers'
 import type { DenyEntry, Metrics } from './triggers'
 import type { CheckLine } from './restart'
 import { shortId } from './subagents'
@@ -187,7 +187,7 @@ function whenText(t: Trigger): string {
   const parts: string[] = []
   for (const metric of METRIC_ORDER) {
     const q = t.when[metric]
-    if (q) parts.push(`${metric} ≥ ${humanQuantity(q)}`)
+    if (q) parts.push(`${metric} ${holdsBelow(metric) ? '≤' : '≥'} ${humanQuantity(q)}`)
   }
   if (t.when.every) parts.push(`every ${humanQuantity(t.when.every)}`)
   return parts.join(' and ')
@@ -197,9 +197,9 @@ function doText(t: Trigger): string {
   return t.do.map(a => (typeof a === 'string' ? a : `deny ${a.deny.join(', ')}`)).join(', ')
 }
 
-/** One line per trigger: `id: context ≥ 70% and every 10% → note, deny Agent [stop]`. */
+/** One line per trigger: `id: context ≥ 70% and every 10% → note, deny Agent [stop] (times 2)`. */
 export function triggerLine(t: Trigger): string {
-  return `${t.id}: ${whenText(t)} → ${doText(t)}${t.level ? ` [${t.level}]` : ''}`
+  return `${t.id}: ${whenText(t)} → ${doText(t)}${t.level ? ` [${t.level}]` : ''}${t.times === null ? '' : ` (times ${t.times})`}`
 }
 
 function ago(ms: number): string {

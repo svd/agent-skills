@@ -197,6 +197,23 @@ describe('report', () => {
     expect(lead ? triggerLine(lead.triggers[0] as never) : '').toBe('stop: context ≥ 70% and every 10% → note, deny Agent [stop]')
   })
 
+  test('triggerLine: cache.expiresIn holds at or below its threshold, and times is shown', () => {
+    const r = validate({
+      version: 1,
+      roles: {
+        lead: {
+          triggers: [
+            { id: 'warm', when: { 'cache.expiresIn': '5m', context: '50k' }, do: ['ping'], times: 3 },
+            { id: 'kept', when: { 'cache.expiresIn': '5m', 'cache.pings': 3 }, do: ['toast'] },
+          ],
+        },
+      },
+    })
+    const [warm, kept] = roleSpec(r.config ?? builtInConfig(), 'lead')?.triggers ?? []
+    expect(warm ? triggerLine(warm) : '').toBe('warm: context ≥ 50k and cache.expiresIn ≤ 5m → ping (times 3)')
+    expect(kept ? triggerLine(kept) : '').toBe('kept: cache.expiresIn ≤ 5m and cache.pings ≥ 3 → toast')
+  })
+
   test('the report names role, config, metrics, marks and blocks', () => {
     const input: ReportInput = {
       now: 10_000_000,

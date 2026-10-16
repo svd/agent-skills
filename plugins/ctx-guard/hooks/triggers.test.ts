@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { defaultTriggers, roleSpec, validate } from './config'
-import { CHARS_PER_TOKEN, conditions, crossesGates, deniedBy, evaluate, idleMs, inFlightTokens, limitsFrom, liveDenies, markHeld, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
+import { CHARS_PER_TOKEN, NO_CACHE, applyTimes, conditions, crossesGates, deniedBy, evaluate, idleMs, inFlightTokens, limitsFrom, liveDenies, markHeld, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
 import type { Metrics } from './triggers'
 import type { Config, Marks, Trigger } from '../types'
 
@@ -28,6 +28,7 @@ function m(over: Partial<Metrics> & { five?: number; week?: number } = {}): Metr
     },
     cost: null,
     idleMs: null,
+    cache: NO_CACHE,
     now: 1000,
     ...rest,
   }
@@ -458,7 +459,7 @@ describe('planActions', () => {
     expect(plan.toasts.map(f => f.trigger.id)).toEqual(['b'])
     expect(plan.notifies.map(f => f.trigger.id)).toEqual(['c'])
     expect(plan.compact?.trigger.id).toBe('a')
-    expect(planActions([])).toEqual({ notes: [], toasts: [], notifies: [], compact: null })
+    expect(planActions([])).toEqual({ notes: [], toasts: [], notifies: [], compact: null, ping: null, prompt: null })
   })
 })
 
@@ -486,7 +487,7 @@ describe('stepTokens', () => {
 describe('metricsOf', () => {
   test('absent tokens and cost are unknown', () => {
     const r = metricsOf({ rateLimits: [] }, WINDOW, null, 5)
-    expect(r).toEqual({ tokens: null, window: WINDOW, limits: { five_hour: null, seven_day: null }, cost: null, idleMs: null, now: 5 })
+    expect(r).toEqual({ tokens: null, window: WINDOW, limits: { five_hour: null, seven_day: null }, cost: null, idleMs: null, cache: NO_CACHE, now: 5 })
   })
 
   test('carries tokens, limits, cost and idle', () => {
@@ -549,5 +550,104 @@ describe('markHeld', () => {
     expect(markHeld(marks, 'lead', 'other')).toBe(false)
     expect(markHeld(marks, 'lead', 'bad')).toBe(false)
     expect(markHeld(null, 'lead', 'squeeze')).toBe(false)
+  })
+})
+
+describe('cache metrics', () => {
+  const c = (over: Partial<typeof NO_CACHE>) => m({ cache: { ...NO_CACHE, ...over } })
+
+  test('expiresIn holds at or below its threshold', () => {
+    const t = trigs({ id: 'warm', when: { 'cache.expiresIn': '5m' }, do: ['toast'] })
+    expect(run(t, [c({ expiresIn: 6 * 60_000 }), c({ expiresIn: 5 * 60_000 }), c({ expiresIn: 60_000 })]).fired).toEqual([[], ['warm@0'], []])
+  })
+
+  test('expiry rising again re-arms it, as a warm ping does', () => {
+    const t = trigs({ id: 'warm', when: { 'cache.expiresIn': '5m' }, do: ['toast'] })
+    expect(run(t, [c({ expiresIn: 4 * 60_000 }), c({ expiresIn: 59 * 60_000 }), c({ expiresIn: 4 * 60_000 })]).fired).toEqual([['warm@0'], [], ['warm@0']])
+  })
+
+  test('miss and pings hold at or above', () => {
+    const t = trigs(
+      { id: 'miss', when: { 'cache.miss': '50k' }, do: ['toast'] },
+      { id: 'away', when: { 'cache.expiresIn': '5m', 'cache.pings': 3 }, do: ['toast'] },
+    )
+    expect(run(t, [c({ miss: 40_000 }), c({ miss: 140_000 }), c({ expiresIn: 4 * 60_000, pings: 2 }), c({ expiresIn: 4 * 60_000, pings: 3 })]).fired).toEqual([[], ['miss@0'], [], ['away@0']])
+  })
+
+  test('unknown cache figures fire nothing', () => {
+    const t = trigs({ id: 'warm', when: { 'cache.expiresIn': '5m' }, do: ['toast'] })
+    expect(run(t, [c({ expiresIn: null })]).fired).toEqual([[]])
+  })
+
+  test('fire vars carry the cache figures', () => {
+    const t = trigs({ id: 'miss', when: { 'cache.miss': '50k' }, do: ['toast'] })
+    const e = evaluate(t, c({ miss: 140_000, missCause: 'model' }), null, 'lead')
+    expect(e.fire[0]?.vars).toMatchObject({ metric: 'cache.miss', miss: 140_000, missCause: 'model' })
+  })
+
+  test('metricsOf carries the cache figures it is given', () => {
+    const cache = { ...NO_CACHE, expiresIn: 1000, pings: 1 }
+    expect(metricsOf({}, WINDOW, null, 5, cache).cache).toEqual(cache)
+  })
+})
+
+describe('times', () => {
+  const t = trigs({ id: 'warm', when: { 'cache.expiresIn': '5m' }, do: ['ping'], times: 2 }, { id: 'loud', when: { idle: '5m' }, do: ['toast'] })
+  const fires = (ids: string[]) => evaluate(t, m({ idleMs: 6 * 60_000, cache: { ...NO_CACHE, expiresIn: 60_000 } }), null, 'lead').fire.filter(f => ids.includes(f.trigger.id))
+
+  test('a capped trigger fires up to its times, then not', () => {
+    let fired: Record<string, number> = {}
+    const one = applyTimes(fires(['warm']), fired)
+    expect(one.fire.map(f => f.trigger.id)).toEqual(['warm'])
+    fired = one.fired
+    fired = applyTimes(fires(['warm']), fired).fired
+    expect(fired).toEqual({ warm: 2 })
+    expect(applyTimes(fires(['warm']), fired).fire).toEqual([])
+  })
+
+  test('an id that names an Object.prototype member is counted like any other', () => {
+    const t = trigs({ id: 'constructor', when: { 'cache.expiresIn': '5m' }, do: ['ping'], times: 1 })
+    const f = evaluate(t, m({ cache: { ...NO_CACHE, expiresIn: 60_000 } }), null, 'lead').fire
+    const first = applyTimes(f, {})
+    expect(first.fire.length).toBe(1)
+    expect(first.fired).toEqual({ constructor: 1 })
+    expect(applyTimes(f, first.fired).fire).toEqual([])
+  })
+
+  test('an `every` trigger counts each step it fires and stops at times', () => {
+    const t = trigs({ id: 'step', when: { context: '300k', every: '100k' }, do: ['note'], times: 2 })
+    let marks: Marks | null = null
+    let fired: Record<string, number> = {}
+    const acted: string[] = []
+    for (const tokens of [310_000, 410_000, 510_000]) {
+      const ev = evaluate(t, m({ tokens }), marks, 'lead')
+      marks = ev.marks
+      const r = applyTimes(ev.fire, fired)
+      fired = r.fired
+      acted.push(...r.fire.map(f => `${f.trigger.id}@${f.step}`))
+    }
+    expect(acted).toEqual(['step@0', 'step@1'])
+    expect(fired).toEqual({ step: 2 })
+  })
+
+  test('an uncapped trigger is never held back, and not counted', () => {
+    const r = applyTimes(fires(['loud']), { loud: 99 })
+    expect(r.fire.length).toBe(1)
+    expect(r.fired).toEqual({ loud: 99 })
+  })
+})
+
+describe('plan', () => {
+  const fire = (id: string, actions: string[]) => ({ trigger: { id } as never, actions: actions as never, step: 0, vars: {} as never })
+
+  test('prompt wins over ping in one evaluation', () => {
+    const p = planActions([fire('warm', ['ping']), fire('away', ['prompt', 'notify'])])
+    expect(p.ping).toBeNull()
+    expect(p.prompt?.trigger.id).toBe('away')
+    expect(p.notifies.length).toBe(1)
+  })
+
+  test('one ping per evaluation', () => {
+    expect(planActions([fire('a', ['ping']), fire('b', ['ping'])]).ping?.trigger.id).toBe('a')
   })
 })

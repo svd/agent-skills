@@ -23,7 +23,7 @@ import {
   templateVars,
   toastText,
 } from './messages'
-import { evaluate } from './triggers'
+import { NO_CACHE, evaluate } from './triggers'
 import type { Fire, Metrics } from './triggers'
 import type { RoleSpec } from '../types'
 
@@ -43,6 +43,7 @@ function metrics(over: Partial<Metrics> = {}): Metrics {
     limits: { five_hour: { pct: 82, resetsAt: RESET }, seven_day: { pct: 40, resetsAt: null } },
     cost: 1.5,
     idleMs: null,
+    cache: NO_CACHE,
     now: NOW,
     ...over,
   }
