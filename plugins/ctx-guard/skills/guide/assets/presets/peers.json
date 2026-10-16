@@ -6,7 +6,8 @@
       { "id": "ctx-hard", "when": { "context": "60%" }, "do": ["note"], "level": "hard" },
       { "id": "ctx-stop", "when": { "context": "75%", "every": "5%" }, "do": ["note", "toast"], "level": "stop" },
       { "id": "limit-hard", "when": { "limit.any": 90 }, "do": ["note", "toast"], "level": "hard" },
-      { "id": "limit-brake", "when": { "limit.any": 95 }, "do": ["note", { "deny": ["Agent", "Workflow", "WebSearch", "WebFetch"] }], "level": "stop" }
+      { "id": "limit-brake", "when": { "limit.any": 95 }, "do": ["note", { "deny": ["Agent", "Workflow", "WebSearch", "WebFetch"] }], "level": "stop" },
+      { "id": "cache-miss", "when": { "cache.miss": "50k" }, "do": ["toast"] }
     ],
     "handoff": {
       "instructions": "Rewrite the whole file. Header: when it was written and the git HEAD, if this is a git repo. Sections: Goal, State, Open questions for the peer, Next action."
