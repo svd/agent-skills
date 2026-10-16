@@ -2,7 +2,7 @@
 // this module only reads the engine's figures and acts on their verdicts.
 // Hooks never throw: every piece of I/O is wrapped, and a failure leaves the
 // session as it would be without ctx-guard.
-import type { CommandRunInput, CommandRunResult, EngineInterface, FsStat, RenderSurface, Timer, TurnCompleteInput, TurnStepResult, TurnUsage } from 'claude-code'
+import type { CommandRunInput, CommandRunResult, EngineInterface, FsStat, PromptSubmitInput, PromptSubmitResult, RenderSurface, Timer, TurnCompleteInput, TurnStepResult, TurnUsage } from 'claude-code'
 import type { PluginState, Register } from 'claude-code'
 
 import type {
@@ -275,7 +275,9 @@ type Mod = {
   transcriptPath: string | null
   // A keep-warm ping is in flight.
   pinging: boolean
-  // The next prompt is ctx-guard's own.
+  // The text of the prompt ctx-guard is submitting; null when it submits none.
+  ownText: string | null
+  // The next main turn answers ctx-guard's own prompt.
   ownPrompt: boolean
   // The last reading showed a usage window (a subscription); null before any reading.
   subscribed: boolean | null
@@ -321,6 +323,7 @@ const fresh = (): Mod => ({
   probeResults: new Map(),
   transcriptPath: null,
   pinging: false,
+  ownText: null,
   ownPrompt: false,
   subscribed: null,
 })
@@ -2296,16 +2299,39 @@ async function undoHeldStamp($: EngineInterface): Promise<void> {
   if (cur.kind === 'ok' && cur.owner === held.owner && cur.at === held.at) await $.fs.write(held.path, held.previous ?? stampJson(held.owner, 0))
 }
 
-async function onMainTurnStart($: EngineInterface): Promise<void> {
-  const now = await $.clock.now()
-  await patchActivity($, a => ({ ...a, mainTurnAt: now }))
+// Submits ctx-guard's own prompt; the turn it starts is flagged as ctx-guard's.
+async function submitOwnPrompt($: EngineInterface, text: string): Promise<PromptSubmitResult> {
+  mod.ownText = text
+  try {
+    return await $.prompt.submit({ text })
+  } finally {
+    mod.ownText = null
+  }
 }
 
+// A prompt is ctx-guard's own when ctx-guard submitted this very text; its
+// resume command and every other prompt are not, and clear the flag.
+function noteOwnPrompt(e: PromptSubmitInput): void {
+  const o = e.origin
+  mod.ownPrompt = mod.ownText !== null && o?.kind === 'plugin' && o.name === 'ctx-guard' && e.command === undefined && e.text === mod.ownText
+}
+
+// Every turn start, a subagent's too, marks a turn running; a main one also takes the own-prompt flag.
+async function onMainTurnStart($: EngineInterface, main: boolean): Promise<void> {
+  const now = await $.clock.now()
+  const own = main && mod.ownPrompt
+  if (main) mod.ownPrompt = false
+  await patchActivity($, a => ({ ...a, mainTurnAt: now, ...(main ? { ownTurn: own } : {}) }))
+}
+
+// The end of the operator's turn starts a new idle period; ctx-guard's own
+// prompt turn is not the operator back, so idle and the period go on.
 async function onMainTurnEnd($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
-  await patchActivity($, a => ({ ...a, mainTurnAt: null, lastMainEndAt: now }))
+  const own = activity().ownTurn
+  await patchActivity($, a => ({ ...a, mainTurnAt: null, ownTurn: false, ...(own ? {} : { lastMainEndAt: now }) }))
   // The turn's requests moved the cache in memory only: written now, so a reload keeps the anchor.
-  await setCache($, c => c)
+  await setCache($, c => (own ? c : newPeriod(c)))
 }
 
 // A transcript this long with no cache write is not read again: each read takes the whole file.
@@ -2738,7 +2764,13 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     if (needsReady()) await quietly(() => ready($))
-    await quietly(() => onMainTurnStart($))
+    await quietly(() => onMainTurnStart($, e.agentId === undefined))
+    return next(e)
+  })
+
+  // Who sent the prompt the next main turn answers: ctx-guard itself, or anyone else.
+  on('prompt.submit', async ($, e, next) => {
+    await quietly(async () => noteOwnPrompt(e))
     return next(e)
   })
 

@@ -72,6 +72,8 @@ type World = {
   readHang: Record<string, number>
   // Calls of $.session.usage().
   usageCalls: number
+  // The text of each prompt that reached the bottom.
+  prompts: string[]
   clock?: MockClock
 }
 
@@ -110,6 +112,7 @@ function newWorld(over: Partial<World> = {}): World {
     reads: {},
     readHang: {},
     usageCalls: 0,
+    prompts: [],
     ...over,
   }
 }
@@ -142,6 +145,10 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('prompt.submit', ($, e) => {
+    w.prompts.push(e.text)
+    return { text: e.text }
+  })
   on('session.root', () => ({ value: ROOT }))
   on('session.cwd', () => ({ value: ROOT }))
   on('session.surfaces', () => ({ value: ['terminal'] as const }))
@@ -3818,4 +3825,56 @@ test('a main step reads no usage for the cache once a reading is known', async (
   await step($, clock)
   await step($, clock)
   expect(w.usageCalls).toBe(before)
+})
+
+// ---- idle periods ---------------------------------------------------------------
+
+const CTX_GUARD = { kind: 'plugin', name: 'ctx-guard' } as const
+
+test('the operator\'s turn starts a new idle period: times counts start over', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([{ id: 'idle', when: { idle: '5m' }, do: ['notify'], times: 1 }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(6 * 60 * 1000)
+  await $.prompt.submit({ text: 'hi', origin: { kind: 'composer' } } as never)
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(6 * 60 * 1000)
+  expect(w.notifies.length).toBe(2)
+  expect(w.prompts).toEqual(['hi'])
+})
+
+test('the turn of ctx-guard\'s resume command starts a new idle period', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([{ id: 'idle', when: { idle: '5m' }, do: ['notify'], times: 1 }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(6 * 60 * 1000)
+  // The prompt ctx-guard's $.command.run of its resume command raises.
+  const line = '/ctx-guard:resume role=lead handoff=.ctx-guard/lead-handoff.md'
+  await $.prompt.submit({ text: line, origin: CTX_GUARD, command: { name: 'ctx-guard:resume', args: 'role=lead handoff=.ctx-guard/lead-handoff.md' } } as never)
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(6 * 60 * 1000)
+  expect(w.notifies.length).toBe(2)
+})
+
+test('a prompt under ctx-guard\'s name that ctx-guard did not send starts a new idle period', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([{ id: 'idle', when: { idle: '5m' }, do: ['notify'], times: 1 }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(6 * 60 * 1000)
+  await $.prompt.submit({ text: '[ctx-guard] x', origin: CTX_GUARD } as never)
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(6 * 60 * 1000)
+  expect(w.notifies.length).toBe(2)
 })
