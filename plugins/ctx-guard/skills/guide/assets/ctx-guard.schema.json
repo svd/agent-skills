@@ -271,6 +271,23 @@
               ]
             }
           }
+        },
+        "prompt": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxUsage": {
+              "description": "No prompt from a trigger on a cache metric while any usage window is at or above this percent. Default 90.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/percent"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
         }
       }
     }

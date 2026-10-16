@@ -116,6 +116,17 @@ export function promptText(fire: Fire, ctx: NoteContext): string {
   return render(fire.trigger.message ?? DEFAULT_PROMPT, templateVars(fire.vars, ctx))
 }
 
+/**
+ * Whether a prompt a `prompt.submit` hook sees is the one ctx-guard is
+ * submitting (`ownText` non-null while it does): origin ctx-guard and no slash
+ * command. The text is not compared, as a hook above may have rewritten it;
+ * ctx-guard's resume command and every other prompt are not its own.
+ */
+export function isOwnPrompt(e: { origin?: { kind: string; name?: string }; command?: unknown }, ownText: string | null): boolean {
+  const o = e.origin
+  return ownText !== null && o?.kind === 'plugin' && o.name === 'ctx-guard' && e.command === undefined
+}
+
 const MISS_CAUSE = { model: 'model switch', prefix: 'prefix changed: CLAUDE.md, tools or MCP?' } as const
 
 // " (model switch)" for a miss with a known cause; empty otherwise.

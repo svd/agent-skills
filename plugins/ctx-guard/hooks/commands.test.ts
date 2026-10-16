@@ -4,6 +4,7 @@ import {
   DEFAULT_PAUSE_MS,
   PRESETS,
   PRESET_DIR,
+  cacheLine,
   collidingCommand,
   gitignoreWith,
   isPaused,
@@ -16,7 +17,7 @@ import {
   versionBelow,
   wantsTrust,
 } from './commands'
-import type { ReportInput, RestartReport } from './commands'
+import type { CacheReport, ReportInput, RestartReport } from './commands'
 import { BUILTIN_LAYER, builtInConfig, mergeLayers, roleSpec, validate } from './config'
 import { metricsOf } from './triggers'
 
@@ -159,6 +160,37 @@ describe('report', () => {
     expect(text).toContain('probe git: not run (untrusted)')
     expect(reportText({ ...base, probes: [] })).toContain('band probes: none')
     expect(reportText(base)).not.toContain('band probes')
+  })
+
+  test('the cache line: TTL and its source, time left, pings, cold, the last miss and a retry', () => {
+    const c: CacheReport = { ttl: 3_600_000, source: 'observed', expiresIn: 12 * 60_000, busy: false, pings: { n: 1, cap: 3 }, cold: false, miss: 0, missCause: null, retry: null }
+    expect(cacheLine(c)).toBe('cache: TTL 1h (observed); expires in 12m; pings 1/3')
+    expect(cacheLine({ ...c, ttl: 300_000, source: 'guess', expiresIn: null, pings: null })).toBe('cache: TTL 5m (a guess); no main request yet')
+    expect(cacheLine({ ...c, busy: true })).toBe('cache: TTL 1h (observed); in use by the running turn; pings 1/3')
+    expect(
+      cacheLine({ ...c, source: 'config', expiresIn: 0, pings: { n: 2, cap: null }, cold: true, miss: 140_000, missCause: 'prefix', retry: { kind: 'prompt', triggerId: 'away', tries: 2 } }),
+    ).toBe('cache: TTL 1h (from config); expired; pings 2; cold (a ping found it gone); last miss 140k (prefix changed); prompt of "away" waits for its retry (try 2)')
+    expect(cacheLine({ ...c, source: 'transcript', miss: 50_000, missCause: 'model' })).toBe('cache: TTL 1h (from the transcript); expires in 12m; pings 1/3; last miss 50k (model switch)')
+    const base: ReportInput = {
+      now: 0,
+      interactive: true,
+      off: null,
+      pause: null,
+      role: { role: 'lead', source: 'env', problem: null },
+      configState: null,
+      config: builtInConfig(),
+      switches: { blocking: true, autoActions: true, noteToasts: true, display: 'band' },
+      windowSource: 'model window',
+      mode: null,
+      metrics: metricsOf({}, 1_000_000, null, 0),
+      marks: null,
+      triggers: [],
+      denies: [],
+      lastClearAt: null,
+    }
+    const lines = reportText({ ...base, cache: c }).split('\n')
+    expect(lines[lines.findIndex(l => l.startsWith('idle:')) + 1]).toBe('cache: TTL 1h (observed); expires in 12m; pings 1/3')
+    expect(reportText(base)).not.toContain('cache:')
   })
 
   test('the bare built-in main is left out of the roles, unless the session runs it', () => {

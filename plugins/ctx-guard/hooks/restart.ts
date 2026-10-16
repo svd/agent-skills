@@ -451,7 +451,7 @@ export type CompactGate = { code: 'autoActions' | 'untrusted' | 'paused'; text: 
 /** Why ctx-guard may not compact on its own now, or null when it may. */
 export function compactGate(g: CompactGates): CompactGate | null {
   if (!g.autoActions) return { code: 'autoActions', text: 'autoActions is off in /config' }
-  if (!g.trusted) return { code: 'untrusted', text: `this repo's compact settings are not approved (${g.untrustedWhy}); the operator runs /ctx-guard trust` }
+  if (!g.trusted) return { code: 'untrusted', text: `this repo's automatic actions are not approved (${g.untrustedWhy}); the operator runs /ctx-guard trust` }
   if (g.paused) return { code: 'paused', text: 'ctx-guard is paused' }
   return null
 }

@@ -598,11 +598,12 @@ export const DEFAULT_CACHE: CacheConfig = {
   ttl: 'auto',
   band: { show: { kind: 'percent', value: 25 }, warn: { kind: 'duration', value: 10 * MINUTE } },
   ping: { maxUsage: 90 },
+  prompt: { maxUsage: 90 },
 }
 
 function normalizeCache(ctx: Ctx, path: string, v: unknown): CacheConfig {
   const o = objAt(ctx, path, v)
-  checkKeys(ctx, path, o, ['ttl', 'band', 'ping'])
+  checkKeys(ctx, path, o, ['ttl', 'band', 'ping', 'prompt'])
   let ttl: CacheConfig['ttl'] = DEFAULT_CACHE.ttl
   if (o.ttl !== undefined && o.ttl !== 'auto') {
     const key = typeof o.ttl === 'string' ? o.ttl.trim() : ''
@@ -618,14 +619,18 @@ function normalizeCache(ctx: Ctx, path: string, v: unknown): CacheConfig {
   else if (band.show !== undefined) show = qtyAt(ctx, join(path, 'band.show'), band.show, ['duration', 'percent']) ?? DEFAULT_CACHE.band.show
   const warn =
     band.warn === undefined ? DEFAULT_CACHE.band.warn : (qtyAt(ctx, join(path, 'band.warn'), band.warn, ['duration', 'percent']) ?? DEFAULT_CACHE.band.warn)
-  const ping = objAt(ctx, join(path, 'ping'), o.ping)
-  checkKeys(ctx, join(path, 'ping'), ping, ['maxUsage'])
-  const maxUsage =
-    ping.maxUsage === undefined
-      ? DEFAULT_CACHE.ping.maxUsage
-      : (qtyAt(ctx, join(path, 'ping.maxUsage'), ping.maxUsage, ['percent'], 'percent')?.value ?? DEFAULT_CACHE.ping.maxUsage)
-  return { ttl, band: { show, warn }, ping: { maxUsage } }
+  const maxUsage = (key: 'ping' | 'prompt'): number => {
+    const block = objAt(ctx, join(path, key), o[key])
+    checkKeys(ctx, join(path, key), block, ['maxUsage'])
+    const fallback = DEFAULT_CACHE[key].maxUsage
+    if (block.maxUsage === undefined) return fallback
+    return qtyAt(ctx, join(path, `${key}.maxUsage`), block.maxUsage, ['percent'], 'percent')?.value ?? fallback
+  }
+  return { ttl, band: { show, warn }, ping: { maxUsage: maxUsage('ping') }, prompt: { maxUsage: maxUsage('prompt') } }
 }
+
+/** A trigger with a cache metric in its `when`: its prompt keeps the cache warm, and stops at cache.prompt.maxUsage. */
+export const onCacheMetric = (t: Trigger): boolean => CACHE_METRICS.some(m => t.when[m] != null)
 
 function handoffPathAt(ctx: Ctx, path: string, v: unknown, fallback: string): string {
   const p = pathAt(ctx, path, v, fallback, true)
@@ -1035,14 +1040,15 @@ const isProbeShape = (p: unknown): boolean =>
 const isStoredQuantity = (q: unknown): boolean => isObj(q) && typeof q.kind === 'string' && typeof q.value === 'number' && q.value > 0
 
 function isCacheShape(c: unknown): boolean {
-  if (!isObj(c) || !isObj(c.band) || !isObj(c.ping)) return false
+  if (!isObj(c) || !isObj(c.band) || !isObj(c.ping) || !isObj(c.prompt)) return false
   const { ttl } = c
   const { show, warn } = c.band
   return (
     (ttl === 'auto' || (typeof ttl === 'number' && ttl > 0)) &&
     (show === 'always' || show === 'off' || isStoredQuantity(show)) &&
     isStoredQuantity(warn) &&
-    typeof c.ping.maxUsage === 'number'
+    typeof c.ping.maxUsage === 'number' &&
+    typeof c.prompt.maxUsage === 'number'
   )
 }
 

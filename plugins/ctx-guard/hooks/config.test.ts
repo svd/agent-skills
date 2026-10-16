@@ -1014,16 +1014,18 @@ describe('cache config', () => {
       ttl: 'auto',
       band: { show: { kind: 'percent', value: 25 }, warn: { kind: 'duration', value: 600_000 } },
       ping: { maxUsage: 90 },
+      prompt: { maxUsage: 90 },
     })
   })
 
   test('ttl, show and warn forms', () => {
-    const r = validate({ version: 1, cache: { ttl: '1h', band: { show: '30m', warn: '10%' }, ping: { maxUsage: 80 } } })
+    const r = validate({ version: 1, cache: { ttl: '1h', band: { show: '30m', warn: '10%' }, ping: { maxUsage: 80 }, prompt: { maxUsage: 70 } } })
     expect(r.errors).toEqual([])
     expect(r.config?.cache).toEqual({
       ttl: 3_600_000,
       band: { show: { kind: 'duration', value: 1_800_000 }, warn: { kind: 'percent', value: 10 } },
       ping: { maxUsage: 80 },
+      prompt: { maxUsage: 70 },
     })
     expect(validate({ version: 1, cache: { band: { show: 'always' } } }).config?.cache.band.show).toBe('always')
     expect(validate({ version: 1, cache: { band: { show: false } } }).config?.cache.band.show).toBe('off')
@@ -1034,6 +1036,8 @@ describe('cache config', () => {
     expect(validate({ version: 1, cache: { band: { show: '5k' } } }).errors.join()).toContain('cache.band.show')
     expect(validate({ version: 1, cache: { band: { show: 'off' } } }).errors.join()).toContain('cache.band.show')
     expect(validate({ version: 1, cache: { ping: { maxUsage: 120 } } }).errors.join()).toContain('cache.ping.maxUsage')
+    expect(validate({ version: 1, cache: { prompt: { maxUsage: '5m' } } }).errors.join()).toContain('cache.prompt.maxUsage')
+    expect(validate({ version: 1, cache: { prompt: { nope: 1 } } }).errors.join()).toContain('nope')
     expect(validate({ version: 1, cache: { nope: 1 } }).errors.join()).toContain('nope')
   })
 
@@ -1047,7 +1051,7 @@ describe('cache config', () => {
     const c = validate({ version: 1, cache: { ttl: '1h', band: { show: false } } }).config as Config
     expect(asConfig(c)?.cache).toEqual(c.cache)
     expect(asConfig(c)?.cache.band.show).toBe('off')
-    for (const bad of [{}, { ttl: 'auto' }, { ...c.cache, ttl: '1h' }, { ...c.cache, band: { show: 'x', warn: c.cache.band.warn } }, { ...c.cache, ping: {} }, 'x']) {
+    for (const bad of [{}, { ttl: 'auto' }, { ...c.cache, ttl: '1h' }, { ...c.cache, band: { show: 'x', warn: c.cache.band.warn } }, { ...c.cache, ping: {} }, { ...c.cache, prompt: undefined }, 'x']) {
       expect(asConfig({ ...c, cache: bad })?.cache).toEqual(validate({ version: 1 }).config?.cache)
     }
   })

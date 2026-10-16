@@ -486,7 +486,7 @@ describe('compact', () => {
     expect(compactGate({ ...gates, autoActions: false, trusted: false })?.code).toBe('autoActions')
     expect(compactGate({ ...gates, trusted: false, paused: true })).toEqual({
       code: 'untrusted',
-      text: "this repo's compact settings are not approved (never approved); the operator runs /ctx-guard trust",
+      text: "this repo's automatic actions are not approved (never approved); the operator runs /ctx-guard trust",
     })
     expect(compactGate({ ...gates, paused: true })?.code).toBe('paused')
   })

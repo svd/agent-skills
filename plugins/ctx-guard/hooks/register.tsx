@@ -34,7 +34,7 @@ import type {
   Work,
 } from '../types'
 import { bandLags, bandOf, bandSegments, bandText, sameBand, untrustedText } from './band'
-import { asCache, cacheSegment, effectiveTtl, emptyCache, expiresInMs, newPeriod, onMainRequest, startOver, ttlFromTranscript, withTtl } from './cache'
+import { asCache, cacheSegment, effectiveTtl, emptyCache, expiresInMs, newPeriod, onMainRequest, onPing, pingVerdict, startOver, ttlFromTranscript, withTtl } from './cache'
 import {
   ARGUMENT_HINT,
   INIT_TRUST_HINT,
@@ -52,7 +52,7 @@ import {
   wantsTrust,
   versionBelow,
 } from './commands'
-import type { Preset, RestartReport, SubagentReport } from './commands'
+import type { CacheReport, Preset, RestartReport, SubagentReport } from './commands'
 import {
   DEFAULT_CACHE,
   DEFAULT_SELF_GAP,
@@ -65,6 +65,7 @@ import {
   confinePath,
   effectiveConfig,
   localPathFor,
+  onCacheMetric,
   readSwitches,
   resolveWindow,
   roleSpec,
@@ -84,7 +85,9 @@ import {
   handoffPathFor,
   humanDuration,
   humanQuantity,
+  isOwnPrompt,
   noteToastText,
+  promptText,
   refusalNote,
   subagentDenyReason,
   subagentStopText,
@@ -206,6 +209,9 @@ type Reading = {
 // How an evaluation treats the band: written always, only when its figures changed, or not at all.
 type BandWrite = 'always' | 'changed' | 'never'
 
+// A failed ping or prompt and the tries made so far.
+type Retry = { kind: 'ping' | 'prompt'; fire: Fire; tries: number }
+
 // Module state: lost on a hot reload, which fires session.start again and
 // rebuilds it. Whatever must outlive a reload is in `$.state`, which `mem` (see state below) writes through to.
 type Mod = {
@@ -275,6 +281,12 @@ type Mod = {
   transcriptPath: string | null
   // A keep-warm ping is in flight.
   pinging: boolean
+  // Counts /clears, so a ping that was in flight across one drops its answer.
+  clears: number
+  // A ping or prompt that failed, tried again on each idle tick while its trigger holds.
+  retry: Retry | null
+  // The `at` of the queued compact that waits for the end of ctx-guard's prompt turn.
+  compactAfter: number | null
   // The text of the prompt ctx-guard is submitting; null when it submits none.
   ownText: string | null
   // The next main turn answers ctx-guard's own prompt.
@@ -323,6 +335,9 @@ const fresh = (): Mod => ({
   probeResults: new Map(),
   transcriptPath: null,
   pinging: false,
+  clears: 0,
+  retry: null,
+  compactAfter: null,
   ownText: null,
   ownPrompt: false,
   subscribed: null,
@@ -815,7 +830,26 @@ async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean, metr
   }
   for (const text of new Set(plan.toasts.filter(f => !shown.has(f)).map(f => toastText(f.vars, role)))) $.ui.toast(text)
   for (const text of new Set(plan.notifies.map(f => toastText(f.vars, role)))) await quietly(() => $.ui.notify(text))
-  if (plan.compact && role !== null && spec) await quietly(() => requestCompact($, plan.compact as Fire, role, isPaused))
+  // Ping and prompt act on their own, as compact does: trust, autoActions and no pause. The first
+  // prompt not skipped at cache.prompt.maxUsage goes; a ping goes only without one, as a prompt's
+  // turn warms the cache itself.
+  let prompt: PromptOutcome | null = null
+  if (role !== null && spec && (plan.ping || plan.prompts.length)) {
+    const gate = compactGateNow(isPaused)
+    if (gate) await noticeOnce($, `auto-skip:${gate.code}`, `ctx-guard: ping and prompt actions skipped: ${gate.text}.`)
+    else {
+      for (const f of plan.prompts) {
+        prompt = await runPrompt($, f, role, spec, metrics, 1)
+        if (prompt !== 'skipped') break
+      }
+      if (plan.ping && (prompt === null || prompt === 'skipped')) runPing($, plan.ping, metrics, 1)
+    }
+  }
+  // Beside a prompt that went in or waits for a retry, the compact waits for that prompt's turn to end.
+  if (plan.compact && role !== null && spec && prompt !== 'gave-up') {
+    const afterPrompt = prompt === 'went' || prompt === 'retry'
+    await quietly(() => requestCompact($, plan.compact as Fire, role, isPaused, afterPrompt))
+  }
 }
 
 async function setBand($: EngineInterface, metrics: Metrics, isPaused: boolean, write: BandWrite): Promise<void> {
@@ -1196,8 +1230,8 @@ async function readTrust($: EngineInterface, root: string): Promise<TrustState |
 
 const trusted = (): boolean => mod.trust?.trusted === true
 
-// The band's trust segment: only a repo with something trust gates (an automatic restart, a compact trigger, a probe) shows one.
-// True when an approval would turn something on: an automatic restart, a compact trigger, a probe.
+// The band's trust segment: only a repo with something trust gates (an automatic restart, a compact, ping or prompt trigger, a probe) shows one.
+// True when an approval would turn something on: an automatic restart, a compact, ping or prompt trigger, a probe.
 function trustWanted(): boolean {
   const eff = mod.eff
   return eff !== null && (wantsTrust(eff.config) || configuredProbes().length > 0)
@@ -1732,6 +1766,7 @@ async function noteCompact($: EngineInterface, outcome: LastCompact['outcome'], 
 }
 
 async function dropCompact($: EngineInterface, p: PendingCompact, text: string, toast: boolean): Promise<void> {
+  mod.compactAfter = null
   await put($, 'pendingCompact', null)
   await noteCompact($, 'dropped', p.triggerId, text)
   if (toast) $.ui.toast(`ctx-guard: the queued /compact for trigger "${p.triggerId}" was dropped: ${text}.`)
@@ -1774,9 +1809,11 @@ function scheduleCompact($: EngineInterface, delay = 0): void {
  * and tried at once when no main turn runs, else at the next main-loop turn
  * end. Auto actions off, an untrusted repo or a pause leave it blocked, with
  * one toast per reason, until that lifts. One already waiting wins; one right
- * after a compact ran is held until the quiet period ends.
+ * after a compact ran is held until the quiet period ends. `afterPrompt`: the
+ * fire's prompt went in, so it waits for that prompt's turn to end, and the
+ * re-arm that turn brings does not drop it.
  */
-async function requestCompact($: EngineInterface, fire: Fire, role: string, isPaused: boolean): Promise<void> {
+async function requestCompact($: EngineInterface, fire: Fire, role: string, isPaused: boolean, afterPrompt = false): Promise<void> {
   const id = fire.trigger.id
   const now = await $.clock.now()
   const r = compactRequest(getPendingCompact(), mem.lastCompact, now)
@@ -1790,8 +1827,15 @@ async function requestCompact($: EngineInterface, fire: Fire, role: string, isPa
     return
   }
   if (r.notBefore !== null) await noteCompact($, 'held', id, `held until ${humanDuration(COMPACT_QUIET_MS)} after the last compact`)
+  if (afterPrompt) {
+    mod.compactAfter = p.at
+    return
+  }
   if (!(await turnRunning($, now))) scheduleCompact($)
 }
+
+// The compact waiting for ctx-guard's prompt turn to end: its trigger's mark does not decide it meanwhile.
+const afterPromptTurn = (p: PendingCompact): boolean => mod.compactAfter === p.at
 
 /** A blocked compact whose gate lifted (trust approved, a pause over, auto actions on) is queued again. */
 async function unblockCompact($: EngineInterface, isPaused: boolean): Promise<void> {
@@ -1805,7 +1849,7 @@ async function unblockCompact($: EngineInterface, isPaused: boolean): Promise<vo
 // The marks just moved: a waiting compact whose trigger re-armed has nothing left to do.
 async function dropRearmedCompact($: EngineInterface, marks: Marks): Promise<void> {
   const p = getPendingCompact()
-  if (p && p.step !== 'sent' && !markHeld(marks, p.role, p.triggerId)) await dropCompact($, p, rearmedText(p.triggerId), p.step === 'queued')
+  if (p && p.step !== 'sent' && !afterPromptTurn(p) && !markHeld(marks, p.role, p.triggerId)) await dropCompact($, p, rearmedText(p.triggerId), p.step === 'queued')
 }
 
 /** `/compact {instructions}`; the fill it leaves is unknown until the next reading. Throws when it did not run. */
@@ -1845,7 +1889,12 @@ async function tryCompact($: EngineInterface): Promise<void> {
       await noteCompact($, 'skipped', p.triggerId, gate.text)
       return await noticeOnce($, `compact-skip:${gate.code}`, `ctx-guard: /compact for trigger "${p.triggerId}" skipped: ${gate.text}.`)
     }
-    if (!markHeld(mem.marks, role, p.triggerId)) return await dropCompact($, p, rearmedText(p.triggerId), true)
+    // A compact behind ctx-guard's prompt skips the mark check; tried with no turn running, that turn is over and the exemption spent.
+    const afterPrompt = afterPromptTurn(p)
+    // Its prompt has not gone in yet: the compact waits for that prompt's turn.
+    if (afterPrompt && mod.retry?.kind === 'prompt') return
+    if (afterPrompt && !(await turnRunning($, now))) mod.compactAfter = null
+    if (!afterPrompt && !markHeld(mem.marks, role, p.triggerId)) return await dropCompact($, p, rearmedText(p.triggerId), true)
     if (p.notBefore !== null && now < p.notBefore) {
       const held = `held until ${humanDuration(COMPACT_QUIET_MS)} after the last compact (${humanDuration(p.notBefore - now)} more)`
       await movePending($, p, 'queued', cur => ({ ...cur, waiting: held }))
@@ -2008,6 +2057,147 @@ async function finishPending($: EngineInterface): Promise<void> {
   }
 }
 
+// ---- keep-warm: ping and prompt ---------------------------------------------------
+
+const PING_PROMPT = 'Reply with OK.'
+const PING_TIMEOUT_MS = 2 * 60 * 1000
+// A refused prompt is tried this many times in all.
+const PROMPT_TRIES = 3
+
+// The highest usage window, in percent; 0 with none.
+const usageHigh = (m: Metrics): number => Math.max(m.limits.five_hour?.pct ?? 0, m.limits.seven_day?.pct ?? 0)
+
+// No ping now: one is in flight, a main turn runs, the period went cold, the cache
+// expired or a usage window is at ping.maxUsage. The caller checked role, trust and pause.
+const pingSkipped = (m: Metrics): boolean =>
+  mod.pinging ||
+  turnRunningIn(activity(), m.now) ||
+  cacheState().cold ||
+  (m.cache.expiresIn ?? 0) <= 0 ||
+  usageHigh(m) >= cacheConfig().ping.maxUsage
+
+/**
+ * A fork over the main thread's own prefix: the model never sees it, and a
+ * warm read keeps the cache alive. It runs off `serial`, one at a time, so a
+ * /clear, a measure or a command never waits on it; its answer is applied in
+ * `serial`, and dropped when a /clear or a reload came meanwhile. An error or
+ * a timeout leaves a retry for the next idle tick.
+ */
+function runPing($: EngineInterface, fire: Fire, m: Metrics, tries: number): void {
+  if (pingSkipped(m)) return
+  const gen = mod
+  const clears = mod.clears
+  gen.pinging = true
+  void quietly(async () => {
+    try {
+      const fork = $.model.fork({ prompt: PING_PROMPT }).catch(() => null)
+      let expire = (): void => {}
+      const timeout = new Promise<'timeout'>(resolve => {
+        expire = () => resolve('timeout')
+      })
+      const timer = $.clock.after(PING_TIMEOUT_MS, expire)
+      const r = await Promise.race([fork, timeout])
+      timer.cancel()
+      await serial(async () => {
+        if (gen !== mod || clears !== mod.clears) return
+        if (r === 'timeout' || r === null || !r.isAnswered) {
+          // A prompt waiting for its retry keeps the slot: a compact may wait behind it.
+          if (mod.retry?.kind !== 'prompt') mod.retry = { kind: 'ping', fire, tries: tries + 1 }
+          $.ui.log(`ctx-guard: ping failed (${r === 'timeout' ? 'timeout' : r === null ? 'error' : r.reason})`, { to: 'debug' })
+          return
+        }
+        if (mod.retry?.kind === 'ping') mod.retry = null
+        const now = await $.clock.now()
+        await setCache($, c => onPing(c, pingVerdict(r.usage), now))
+        $.ui.log(`ctx-guard: ping read ${r.usage.cache_read_input_tokens}, wrote ${r.usage.cache_creation_input_tokens}`, { to: 'debug' })
+        await refreshBand($, 'changed')
+      })
+      // One request at a time: a timed-out fork still holds the slot until it is over.
+      await fork
+    } finally {
+      gen.pinging = false
+    }
+  })
+}
+
+// A prompt went in, waits for a retry, gave up, or was skipped at cache.prompt.maxUsage.
+type PromptOutcome = 'went' | 'retry' | 'gave-up' | 'skipped'
+
+/**
+ * A real turn: the model reads the text and answers, and its turn warms the
+ * cache too. While a main turn runs it is put off to the next idle tick, no
+ * try spent. A refusal (a hook's `drop`, or a throw) leaves a retry while
+ * tries remain; after the last, a compact waiting behind it is dropped. Idle,
+ * a prompt from a trigger on a cache metric is skipped while a usage window
+ * is at cache.prompt.maxUsage.
+ */
+async function runPrompt($: EngineInterface, fire: Fire, role: string, spec: RoleSpec, m: Metrics, tries: number): Promise<PromptOutcome> {
+  if (turnRunningIn(activity(), await $.clock.now())) {
+    mod.retry = { kind: 'prompt', fire, tries }
+    return 'retry'
+  }
+  if (onCacheMetric(fire.trigger) && usageHigh(m) >= cacheConfig().prompt.maxUsage) return 'skipped'
+  const text = promptText(fire, { role, handoffPath: handoffPathFor(spec, role), readyToken: mod.eff?.config.readyToken ?? '' })
+  let went = false
+  await quietly(async () => {
+    const r = await submitOwnPrompt($, text)
+    went = r.drop === undefined
+  })
+  if (went) {
+    if (mod.retry?.kind === 'prompt') mod.retry = null
+    return 'went'
+  }
+  if (tries < PROMPT_TRIES) {
+    mod.retry = { kind: 'prompt', fire, tries: tries + 1 }
+    return 'retry'
+  }
+  await giveUpPrompt($, `its prompt was refused ${PROMPT_TRIES} times`)
+  return 'gave-up'
+}
+
+// A prompt that will not go in: its retry ends, and so does a compact waiting behind it.
+async function giveUpPrompt($: EngineInterface, why: string): Promise<void> {
+  if (mod.retry?.kind === 'prompt') mod.retry = null
+  const p = getPendingCompact()
+  if (p && afterPromptTurn(p)) await dropCompact($, p, why, true)
+}
+
+// A retried prompt skipped at cache.prompt.maxUsage: its retry ends, and a compact waiting behind it
+// goes ahead as an ordinary one, its trigger's mark deciding it again.
+async function skipPromptRetry($: EngineInterface): Promise<void> {
+  if (mod.retry?.kind === 'prompt') mod.retry = null
+  const p = getPendingCompact()
+  if (!p || !afterPromptTurn(p)) return
+  mod.compactAfter = null
+  if (!(await turnRunning($, await $.clock.now()))) scheduleCompact($)
+}
+
+/**
+ * On an idle tick: a failed or put-off ping or prompt is tried again while
+ * its trigger still holds (a ping also only while the cache is unexpired); the
+ * trigger does not fire again for it. Trust lost, a pause or the role gone
+ * drops it; a dropped prompt takes the compact waiting behind it along.
+ */
+async function retryAuto($: EngineInterface): Promise<void> {
+  const r = mod.retry
+  if (!r) return
+  const role = mod.role.role
+  const spec = role === null || !mod.eff ? null : roleSpec(mod.eff.config, role)
+  const now = await $.clock.now()
+  const drop = async (why: string): Promise<void> => {
+    if (r.kind === 'prompt') await giveUpPrompt($, why)
+    else mod.retry = null
+  }
+  if (!active() || role === null || !spec) return await drop('ctx-guard is off')
+  const gate = compactGateNow(paused(now))
+  if (gate) return await drop(gate.text)
+  const m = await metricsFor($, await currentReading($), now)
+  const expired = r.kind === 'ping' && (m.cache.expiresIn ?? 0) <= 0
+  if (expired || triggerHolds(r.fire.trigger, m) !== true) return await drop(`trigger "${r.fire.trigger.id}" no longer holds`)
+  if (r.kind === 'ping') runPing($, r.fire, m, r.tries)
+  else if ((await runPrompt($, r.fire, role, spec, m, r.tries)) === 'skipped') await skipPromptRetry($)
+}
+
 // ---- session ----------------------------------------------------------------
 
 function disarm(): void {
@@ -2132,7 +2322,17 @@ async function syncActive($: EngineInterface): Promise<void> {
     // A compact held for the quiet period lost its timer with the disarm.
     void quietly(() => rearmCompactHold($))
     // 'changed': the cache countdown moves each minute; an unchanged band is not written.
-    mod.timers.push($.clock.every(IDLE_TICK_MS, () => void serial(() => timed($, () => evaluateCurrent($, 'changed')))))
+    // A failed ping or prompt is tried again first, so the evaluation draws its outcome.
+    mod.timers.push(
+      $.clock.every(IDLE_TICK_MS, () =>
+        void serial(() =>
+          timed($, async () => {
+            await quietly(() => retryAuto($))
+            await evaluateCurrent($, 'changed')
+          }),
+        ),
+      ),
+    )
     mod.timers.push(
       $.clock.every(BAND_TICK_MS, () =>
         void serial(async () => {
@@ -2257,6 +2457,10 @@ async function onClear($: EngineInterface): Promise<void> {
   await patchActivity($, a => ({ ...a, mainTurnAt: null, lastMain: reading }))
   // The next request writes a new prefix, in a new transcript that may tell the TTL.
   mod.transcriptPath = null
+  // A ping in flight was for the old prefix; a pending retry is for the old period.
+  mod.clears += 1
+  mod.retry = null
+  mod.compactAfter = null
   await setCache($, c => ({ ...freshCache(c), sessionId: null }))
   const queued = getPendingCompact()
   if (queued && queued.step !== 'sent') await dropCompact($, queued, 'a /clear came first', false)
@@ -2299,25 +2503,36 @@ async function undoHeldStamp($: EngineInterface): Promise<void> {
   if (cur.kind === 'ok' && cur.owner === held.owner && cur.at === held.at) await $.fs.write(held.path, held.previous ?? stampJson(held.owner, 0))
 }
 
-// Submits ctx-guard's own prompt; the turn it starts is flagged as ctx-guard's.
+/**
+ * Submits ctx-guard's own prompt; the turn it starts is flagged as ctx-guard's.
+ * The flag is set here, before the call: ctx-guard's own `prompt.submit` hook
+ * is not run for a prompt raised beneath its own call. A refused prompt (a
+ * hook's `drop`, or a throw) clears it, so the next turn is not taken for
+ * ctx-guard's.
+ */
 async function submitOwnPrompt($: EngineInterface, text: string): Promise<PromptSubmitResult> {
   mod.ownText = text
+  mod.ownPrompt = true
   try {
-    return await $.prompt.submit({ text })
+    const r = await $.prompt.submit({ text })
+    if (r.drop !== undefined) mod.ownPrompt = false
+    return r
+  } catch (e) {
+    mod.ownPrompt = false
+    throw e
   } finally {
     mod.ownText = null
   }
 }
 
-// A prompt is ctx-guard's own when ctx-guard submitted this very text; its
-// resume command and every other prompt are not, and clear the flag.
+// A prompt the hook sees keeps the flag only when it is the one ctx-guard is
+// submitting; its resume command and every other prompt clear it.
 function noteOwnPrompt(e: PromptSubmitInput): void {
-  const o = e.origin
-  mod.ownPrompt = mod.ownText !== null && o?.kind === 'plugin' && o.name === 'ctx-guard' && e.command === undefined && e.text === mod.ownText
+  mod.ownPrompt = isOwnPrompt(e, mod.ownText)
 }
 
 // Every turn start, a subagent's too, marks a turn running; a main one also takes the own-prompt flag.
-async function onMainTurnStart($: EngineInterface, main: boolean): Promise<void> {
+async function onTurnStart($: EngineInterface, main: boolean): Promise<void> {
   const now = await $.clock.now()
   const own = main && mod.ownPrompt
   if (main) mod.ownPrompt = false
@@ -2410,7 +2625,27 @@ async function report($: EngineInterface): Promise<string> {
     restart: await restartReport($, role, spec, now),
     subagents: subagentReport(config, eff?.blocking ?? true, isPausedNow),
     probes: configuredProbes().map(p => ({ id: p.id, state: probeState(mod.probeResults.get(p.id) ?? null, now, probesOff()) })),
+    cache: cacheReport(metrics),
   })
+}
+
+// The report's cache line, from the same TTL and running turn as the band.
+function cacheReport(m: Metrics): CacheReport {
+  const c = cacheState()
+  const ttl = cacheTtl(subscribedIn(m))
+  const pinger = roleTriggers().find(t => t.do.includes('ping'))
+  const r = mod.retry
+  return {
+    ttl: ttl.ms,
+    source: ttl.source,
+    expiresIn: m.cache.expiresIn,
+    busy: turnRunningIn(activity(), m.now),
+    pings: pinger ? { n: c.pings, cap: pinger.times } : null,
+    cold: c.cold,
+    miss: c.miss,
+    missCause: c.missCause,
+    retry: r ? { kind: r.kind, triggerId: r.fire.trigger.id, tries: r.tries } : null,
+  }
 }
 
 async function restartReport($: EngineInterface, role: string | null, spec: RoleSpec | null, now: number): Promise<RestartReport> {
@@ -2627,6 +2862,12 @@ async function trustCommand($: EngineInterface): Promise<string> {
     if (spec.compact.instructions !== null) lines.push(`    compact.instructions: ${q(spec.compact.instructions)}`)
     const compactTriggers = spec.triggers.filter(t => t.do.includes('compact')).map(t => t.id)
     if (compactTriggers.length) lines.push(`    compact triggers: ${compactTriggers.join(', ')}`)
+    for (const t of spec.triggers) {
+      const kinds = (['ping', 'prompt'] as const).filter(k => t.do.includes(k))
+      if (!kinds.length) continue
+      const prompt = kinds.includes('prompt') ? `, prompt ${t.message === null ? 'default' : q(t.message)}` : ''
+      lines.push(`    ${kinds.join(' and ')} trigger ${t.id}: ${t.times === null ? 'no times cap' : `times ${t.times}`}${prompt}`)
+    }
   }
   lines.push(
     'Trusting a ready check trusts what its script does: a script under the project root is hashed, so editing it withdraws the approval; ' +
@@ -2646,7 +2887,7 @@ async function trustOffCommand($: EngineInterface): Promise<string> {
   armProbes($)
   await serial(() => evaluateCurrent($, 'always'))
   return had
-    ? `${PREFIX} trust withdrawn for ${root}; automatic clear and compact, ready checks and probes are off until you run /ctx-guard trust.`
+    ? `${PREFIX} trust withdrawn for ${root}; automatic clear, compact, ping and prompt, ready checks and probes are off until you run /ctx-guard trust.`
     : `${PREFIX} ${root} has no approval to withdraw.`
 }
 
@@ -2764,7 +3005,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     if (needsReady()) await quietly(() => ready($))
-    await quietly(() => onMainTurnStart($, e.agentId === undefined))
+    await quietly(() => onTurnStart($, e.agentId === undefined))
     return next(e)
   })
 

@@ -74,6 +74,10 @@ type World = {
   usageCalls: number
   // The text of each prompt that reached the bottom.
   prompts: string[]
+  // Why the bottom refuses a prompt (it answers `{ drop }`); null lets it in.
+  dropPrompt: string | null
+  // Each `$.ui.log` line, `to: text`.
+  logs: string[]
   clock?: MockClock
 }
 
@@ -113,6 +117,8 @@ function newWorld(over: Partial<World> = {}): World {
     readHang: {},
     usageCalls: 0,
     prompts: [],
+    dropPrompt: null,
+    logs: [],
     ...over,
   }
 }
@@ -147,7 +153,12 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('prompt.submit', ($, e) => {
     w.prompts.push(e.text)
+    if (w.dropPrompt !== null) return { drop: w.dropPrompt }
     return { text: e.text }
+  })
+  on('ui.log', ($, e) => {
+    w.logs.push(`${e.to}: ${e.text}`)
+    return { value: undefined }
   })
   on('session.root', () => ({ value: ROOT }))
   on('session.cwd', () => ({ value: ROOT }))
@@ -1469,7 +1480,7 @@ test('a role with nothing automatic needs no trust: the report says so and the b
   const w = restartWorld()
   world(on, w, { CTX_GUARD_ROLE: 'main' })
   await start($)
-  expect(await ctxGuard($, '')).toContain('trust: not needed (nothing automatic: no auto restart, compact trigger or probe)')
+  expect(await ctxGuard($, '')).toContain('trust: not needed (nothing automatic: no auto restart, compact, ping or prompt trigger, or probe)')
   expect((await peekRestart($)).band?.untrusted ?? null).toBeNull()
 })
 
@@ -2238,7 +2249,7 @@ test('compact action: untrusted, it is skipped with one toast and a report line'
   await clock.settle()
   expect(w.ran).toEqual([])
   expect(w.toasts.filter(t => t.includes('/compact for trigger "squeeze" skipped')).length).toBe(1)
-  expect(w.toasts.find(t => t.includes('skipped'))).toContain("this repo's compact settings are not approved (never approved)")
+  expect(w.toasts.find(t => t.includes('skipped'))).toContain("this repo's automatic actions are not approved (never approved)")
   expect(await ctxGuard($, '')).toContain('last compact: skipped 0s ago (squeeze)')
 })
 
@@ -3877,4 +3888,427 @@ test('a prompt under ctx-guard\'s name that ctx-guard did not send starts a new 
   await turn($, 'end')
   await clock.advance(6 * 60 * 1000)
   expect(w.notifies.length).toBe(2)
+})
+
+// ---- keep-warm: ping and prompt ---------------------------------------------------
+
+const KEEP_WARM_TRIGGERS = [
+  { id: 'warm', when: { 'cache.expiresIn': '5m', context: '50k' }, do: ['ping'], times: 3 },
+  { id: 'away', when: { 'cache.expiresIn': '5m', 'cache.pings': 3 }, do: ['prompt', 'notify'], times: 1 },
+]
+const KEEP_WARM = CACHE_ROLE(KEEP_WARM_TRIGGERS)
+
+const WARM_READ = { read: 150_000, write: 0 }
+const NO_USAGE = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+// What the fork bottom answers: a read and a write, after `hang` ms when given, or an API error.
+type ForkAnswer = { read: number; write: number; hang?: number } | 'error'
+
+// The fork bottom answers each call with the next of `answers`, recording its prompt.
+function forkBottom(on: On, clock: MockClock, answers: () => ForkAnswer, calls: string[]): void {
+  on('model.fork', async ($, e) => {
+    calls.push(e.prompt)
+    const a = answers()
+    if (a === 'error') return { value: { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: NO_USAGE } } as never
+    if (a.hang) await clock.sleep(a.hang)
+    return { value: { isAnswered: true, text: 'OK', usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: a.read, cache_creation_input_tokens: a.write } } } as never
+  })
+}
+
+type KeepWarm = { config?: unknown; answers?: () => ForkAnswer; trust?: boolean }
+
+// A keep-warm session: the config approved (unless `trust` is false), one main turn with a warm request, then idle.
+async function trustedKeepWarm($: Engine, on: On, w: World, o: KeepWarm = {}): Promise<{ clock: MockClock; forks: string[] }> {
+  writeConfig(w, o.config ?? KEEP_WARM)
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  usageBottom(on, [WARM_READ])
+  const forks: string[] = []
+  forkBottom(on, clock, o.answers ?? (() => WARM_READ), forks)
+  await start($, 'vscode')
+  if (o.trust !== false) await ctxGuard($, 'trust')
+  await turn($, 'start')
+  await step($, clock)
+  await turn($, 'end')
+  return { clock, forks }
+}
+
+const ownPrompts = (w: World): string[] => w.prompts.filter(p => p.startsWith('[ctx-guard]'))
+const compacts = (w: World): string[] => w.ran.filter(r => r.startsWith('compact'))
+
+test('keep-warm: three pings, then one prompt and a notify, then nothing', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  const { clock, forks } = await trustedKeepWarm($, on, w)
+  await clock.advance(55 * MIN)
+  expect(forks).toEqual(['Reply with OK.'])
+  expect(w.logs).toContain('debug: ctx-guard: ping read 150000, wrote 0')
+  await clock.advance(55 * MIN)
+  await clock.advance(55 * MIN)
+  expect(forks.length).toBe(3)
+  expect(w.prompts).toEqual([])
+  await clock.advance(55 * MIN)
+  expect(w.prompts.length).toBe(1)
+  expect(w.prompts[0]).toContain('Write the handoff to .ctx-guard/lead-handoff.md')
+  // The notify is about the trigger's first metric, cache.expiresIn.
+  expect(w.notifies.some(n => n.includes('prompt cache expires in'))).toBe(true)
+  await clock.advance(3 * HOUR)
+  expect([forks.length, w.prompts.length]).toEqual([3, 1])
+})
+
+test('keep-warm: a cold ping stops the series for the period', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  const { clock, forks } = await trustedKeepWarm($, on, w, { answers: () => ({ read: 10_000, write: 140_000 }) })
+  await clock.advance(4 * HOUR)
+  expect(forks.length).toBe(1)
+})
+
+test('keep-warm: after a cold ping, ctx-guard\'s prompt turn warms the cache but sends no ping in that period', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  const config = CACHE_ROLE([KEEP_WARM_TRIGGERS[0], { id: 'away', when: { idle: '58m' }, do: ['prompt'], times: 1 }])
+  const { clock, forks } = await trustedKeepWarm($, on, w, { config, answers: () => ({ read: 10_000, write: 140_000 }) })
+  // The cold ping at 55m, the prompt at 58m.
+  await clock.advance(58 * MIN)
+  expect([forks.length, ownPrompts(w).length]).toEqual([1, 1])
+  await turn($, 'start')
+  await step($, clock)
+  await turn($, 'end')
+  // The prompt turn's request anchors a fresh countdown, and `warm` fires again at 113m; the period stays cold.
+  await clock.advance(62 * MIN)
+  expect(forks.length).toBe(1)
+})
+
+test('keep-warm: a failed ping is retried on the next tick, not fired again', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  let n = 0
+  const { clock, forks } = await trustedKeepWarm($, on, w, { answers: () => (n++ === 0 ? 'error' : WARM_READ) })
+  await clock.advance(55 * MIN)
+  expect(forks.length).toBe(1)
+  expect(await ctxGuard($, '')).toContain('cache: TTL 1h (from config); expires in 4m; pings 0/3; ping of "warm" waits for its retry (try 2)')
+  await clock.advance(MIN)
+  expect(forks.length).toBe(2)
+  expect(await ctxGuard($, '')).toContain('cache: TTL 1h (from config); expires in 59m; pings 1/3\n')
+  // The retry was warm: the next ping comes a full TTL later, and only two fires of `warm` remain.
+  await clock.advance(2 * 55 * MIN)
+  expect(forks.length).toBe(4)
+})
+
+test('keep-warm: a failing ping is retried on every tick until the cache expires, then dropped', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  const { clock, forks } = await trustedKeepWarm($, on, w, { answers: () => 'error' })
+  // Fired at 55m; retried at 56, 57, 58 and 59m; expired at 59m 30s.
+  await clock.advance(60 * MIN)
+  expect(forks.length).toBe(5)
+  await clock.advance(3 * HOUR)
+  expect(forks.length).toBe(5)
+})
+
+test('keep-warm: a ping that times out is retried once the request is over, one at a time', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  let n = 0
+  const config = CACHE_ROLE([{ id: 'warm', when: { 'cache.expiresIn': '10m' }, do: ['ping'], times: 3 }])
+  const { clock, forks } = await trustedKeepWarm($, on, w, { config, answers: () => (n++ === 0 ? { ...WARM_READ, hang: 3.5 * MIN } : WARM_READ) })
+  // Fired at 50m; timed out at 52m; the request itself answers at 53m 30s.
+  await clock.advance(53 * MIN + 15_000)
+  expect(forks.length).toBe(1)
+  expect(w.logs).toContain('debug: ctx-guard: ping failed (timeout)')
+  await clock.advance(MIN)
+  expect(forks.length).toBe(2)
+})
+
+test('keep-warm: a ping in flight never holds up a /clear, and its answer after one is dropped', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  const config = CACHE_ROLE(KEEP_WARM_TRIGGERS, { ttl: '1h', band: { show: 'always' } })
+  const { clock, forks } = await trustedKeepWarm($, on, w, { config, answers: () => ({ ...WARM_READ, hang: MIN }) })
+  await clock.advance(55 * MIN)
+  expect(forks.length).toBe(1)
+  // Resolves with the fork still out: the clock has not moved.
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await clock.advance(2 * MIN)
+  // A warm answer applied would anchor the new, empty context: `cache 59m · ping 1/3`.
+  expect(bandOfWorld(w)).not.toContain('cache')
+})
+
+test('keep-warm: nothing is sent without trust, the band says untrusted, notify still runs', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  const config = CACHE_ROLE([
+    KEEP_WARM_TRIGGERS[0],
+    { id: 'away', when: { idle: '50m' }, do: ['prompt', 'notify'], times: 1 },
+    { id: 'gone', when: { 'cache.expiresIn': '2m', idle: '70m' }, do: ['ping', 'prompt'], times: 2, message: 'Away {idle}.' },
+  ])
+  const { clock, forks } = await trustedKeepWarm($, on, w, { config, trust: false })
+  expect(bandOfWorld(w)).toContain('untrusted')
+  await clock.advance(4 * HOUR)
+  expect(forks).toEqual([])
+  expect(w.prompts).toEqual([])
+  expect(w.notifies.length).toBe(1)
+  expect(w.toasts.filter(t => t.startsWith('ctx-guard: ping and prompt actions skipped'))).toEqual([
+    "ctx-guard: ping and prompt actions skipped: this repo's automatic actions are not approved (never approved); the operator runs /ctx-guard trust.",
+  ])
+  // Each ping and prompt trigger with its times and the text its prompt sends.
+  expect(await ctxGuard($, 'trust')).toContain(
+    '    ping trigger warm: times 3\n    prompt trigger away: times 1, prompt default\n    ping and prompt trigger gone: times 2, prompt "Away {idle}."\n',
+  )
+})
+
+test('keep-warm: no ping while a usage window is at maxUsage', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, limits: [{ kind: 'five_hour', percentUsed: 92 }] })
+  const { clock, forks } = await trustedKeepWarm($, on, w)
+  await clock.advance(55 * MIN)
+  expect(forks).toEqual([])
+})
+
+test('keep-warm: no prompt from a cache trigger while a usage window is at cache.prompt.maxUsage; one on idle goes', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, limits: [{ kind: 'seven_day', percentUsed: 92 }] })
+  const config = CACHE_ROLE([
+    { id: 'away', when: { 'cache.expiresIn': '5m' }, do: ['prompt', 'notify'], times: 1 },
+    { id: 'idle', when: { idle: '57m' }, do: ['prompt'], times: 1 },
+  ])
+  const { clock } = await trustedKeepWarm($, on, w, { config })
+  await clock.advance(55 * MIN)
+  expect([ownPrompts(w).length, w.notifies.length]).toEqual([0, 1])
+  await clock.advance(2 * MIN)
+  expect(ownPrompts(w).length).toBe(1)
+})
+
+test('keep-warm: cache.prompt.maxUsage moves the line', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, limits: [{ kind: 'five_hour', percentUsed: 92 }] })
+  const config = CACHE_ROLE([{ id: 'away', when: { 'cache.expiresIn': '5m' }, do: ['prompt'], times: 1 }], { ttl: '1h', prompt: { maxUsage: 95 } })
+  const { clock } = await trustedKeepWarm($, on, w, { config })
+  await clock.advance(55 * MIN)
+  expect(ownPrompts(w).length).toBe(1)
+})
+
+test('keep-warm: a prompt skipped at cache.prompt.maxUsage leaves the ping beside it to go', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, limits: [{ kind: 'five_hour', percentUsed: 85 }] })
+  const config = CACHE_ROLE(
+    [
+      { id: 'warm', when: { 'cache.expiresIn': '5m' }, do: ['ping'], times: 1 },
+      { id: 'away', when: { 'cache.expiresIn': '5m' }, do: ['prompt'], times: 1 },
+    ],
+    { ttl: '1h', prompt: { maxUsage: 80 } },
+  )
+  const { clock, forks } = await trustedKeepWarm($, on, w, { config })
+  await clock.advance(55 * MIN)
+  expect([ownPrompts(w).length, forks.length]).toEqual([0, 1])
+})
+
+test('keep-warm: a prompt skipped at cache.prompt.maxUsage leaves another prompt in the same fire to go', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, limits: [{ kind: 'five_hour', percentUsed: 92 }] })
+  const config = CACHE_ROLE([
+    { id: 'away', when: { 'cache.expiresIn': '5m' }, do: ['prompt'], times: 1 },
+    { id: 'idle', when: { idle: '55m' }, do: ['prompt'], times: 1, message: 'Idle.' },
+  ])
+  const { clock } = await trustedKeepWarm($, on, w, { config })
+  await clock.advance(54 * MIN)
+  expect(w.prompts).toEqual([])
+  // Both cross on the 55m tick: `away` is skipped, `idle` goes.
+  await clock.advance(MIN)
+  expect(w.prompts).toEqual(['Idle.'])
+})
+
+test('prompt then compact on a cache trigger: at cache.prompt.maxUsage the prompt is skipped and the compact runs', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, limits: [{ kind: 'five_hour', percentUsed: 92 }] })
+  const config = CACHE_ROLE([{ id: 'away', when: { 'cache.expiresIn': '5m' }, do: ['prompt', 'compact'], times: 1 }])
+  const { clock } = await trustedKeepWarm($, on, w, { config })
+  // A Stop that lists no background tasks: a compact let through runs at once.
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await clock.advance(55 * MIN)
+  expect([ownPrompts(w), compacts(w)]).toEqual([[], ['compact']])
+})
+
+test('prompt then compact on a cache trigger: a refused prompt\'s retry at cache.prompt.maxUsage is skipped, and the compact runs', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, dropPrompt: 'refused by another plugin' })
+  const config = CACHE_ROLE([{ id: 'away', when: { 'cache.expiresIn': '5m' }, do: ['prompt', 'compact'], times: 1 }])
+  const { clock } = await trustedKeepWarm($, on, w, { config })
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await clock.advance(55 * MIN)
+  expect([w.prompts.length, compacts(w).length]).toEqual([1, 0])
+  w.dropPrompt = null
+  w.limits.push({ kind: 'five_hour', percentUsed: 92 })
+  await clock.advance(MIN)
+  expect([w.prompts.length, compacts(w)]).toEqual([1, ['compact']])
+})
+
+test('prompt then compact: /compact runs at the prompt turn\'s end', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  writeConfig(w, CACHE_ROLE([{ id: 'away', when: { idle: '50m' }, do: ['prompt', 'compact'], times: 1 }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ctxGuard($, 'trust')
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(51 * MIN)
+  expect(w.prompts.length).toBe(1)
+  expect(compacts(w)).toEqual([])
+  await turn($, 'start')
+  await mainTurnEnd($, clock)
+  expect(compacts(w)).toEqual(['compact'])
+})
+
+test('prompt then compact on cache.expiresIn: the compact outlives the re-arm of the prompt turn', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  const config = CACHE_ROLE([{ id: 'away', when: { 'cache.expiresIn': '5m' }, do: ['prompt', 'compact'], times: 1 }])
+  const { clock } = await trustedKeepWarm($, on, w, { config })
+  await clock.advance(55 * MIN)
+  expect(w.prompts.length).toBe(1)
+  await turn($, 'start')
+  await step($, clock)
+  // A tick in the turn: the cache is in use, so `away` re-arms.
+  await clock.advance(MIN)
+  expect(compacts(w)).toEqual([])
+  await mainTurnEnd($, clock)
+  expect(compacts(w)).toEqual(['compact'])
+})
+
+test('ctx-guard\'s prompt turn keeps the idle period; the operator\'s next turn starts one', async ($, on) => {
+  const w = newWorld({ tokens: 150_000 })
+  const config = CACHE_ROLE([
+    { id: 'warm', when: { 'cache.expiresIn': '5m' }, do: ['ping'], times: 1 },
+    { id: 'away', when: { idle: '58m', 'cache.pings': 1 }, do: ['prompt'], times: 1 },
+    { id: 'idle', when: { idle: '5m' }, do: ['notify'] },
+  ])
+  const { clock, forks } = await trustedKeepWarm($, on, w, { config })
+  // The notify at 5m, the ping at 55m, the prompt at 58m.
+  await clock.advance(58 * MIN)
+  expect([w.notifies.length, forks.length, ownPrompts(w).length]).toEqual([1, 1, 1])
+  await turn($, 'start')
+  await step($, clock)
+  // A subagent's turn inside the prompt turn.
+  await $.turn.start({ text: '', turnId: 't2', agentId: 'sub' })
+  await clock.advance(MIN)
+  await turn($, 'end')
+  // Idle counts on from the operator's turn, and the ping and times stay spent: no second notify, ping or prompt.
+  await clock.advance(57 * MIN)
+  expect([w.notifies.length, forks.length, ownPrompts(w).length]).toEqual([1, 1, 1])
+  expect(bandOfWorld(w)).toContain('ping 1/1')
+  await $.prompt.submit({ text: 'back', origin: { kind: 'composer' } } as never)
+  await turn($, 'start')
+  await step($, clock)
+  await turn($, 'end')
+  // A new period: the notify, the ping and the prompt each come again.
+  await clock.advance(59 * MIN)
+  expect([w.notifies.length, forks.length, ownPrompts(w).length]).toEqual([2, 2, 2])
+})
+
+test('a refused prompt is tried three times in all; the next turn is the operator\'s', async ($, on) => {
+  const w = newWorld({ dropPrompt: 'refused by another plugin' })
+  writeConfig(w, CACHE_ROLE([{ id: 'away', when: { idle: '5m' }, do: ['prompt'], times: 1 }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ctxGuard($, 'trust')
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(5 * MIN)
+  expect(w.prompts.length).toBe(1)
+  await clock.advance(MIN)
+  expect(w.prompts.length).toBe(2)
+  await clock.advance(10 * MIN)
+  expect(w.prompts.length).toBe(3)
+  w.dropPrompt = null
+  // A turn that no prompt.submit announced: the refused prompt's flag must not make it ctx-guard's.
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(5 * MIN)
+  expect(w.prompts.length).toBe(4)
+})
+
+const AWAY_COMPACT = CACHE_ROLE([{ id: 'away', when: { idle: '50m' }, do: ['prompt', 'compact'], times: 1 }])
+
+async function awayCompact($: Engine, on: On, w: World): Promise<MockClock> {
+  writeConfig(w, AWAY_COMPACT)
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ctxGuard($, 'trust')
+  await turn($, 'start')
+  // A Stop that lists no background tasks: a compact let through would run at once.
+  await mainTurnEnd($, clock)
+  return clock
+}
+
+test('prompt then compact: a refused prompt holds the compact until its retry\'s turn ends', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, dropPrompt: 'refused by another plugin' })
+  const clock = await awayCompact($, on, w)
+  await clock.advance(51 * MIN)
+  expect([w.prompts.length, compacts(w).length]).toEqual([2, 0])
+  w.dropPrompt = null
+  await clock.advance(MIN)
+  expect([w.prompts.length, compacts(w).length]).toEqual([3, 0])
+  await turn($, 'start')
+  await mainTurnEnd($, clock)
+  expect(compacts(w)).toEqual(['compact'])
+})
+
+test('prompt then compact: a prompt refused three times drops its compact', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, dropPrompt: 'refused by another plugin' })
+  const clock = await awayCompact($, on, w)
+  await clock.advance(60 * MIN)
+  expect(w.prompts.length).toBe(3)
+  expect(w.toasts).toContain('ctx-guard: the queued /compact for trigger "away" was dropped: its prompt was refused 3 times.')
+  // The operator's next turn end finds nothing queued.
+  w.dropPrompt = null
+  await turn($, 'start')
+  await mainTurnEnd($, clock)
+  expect(compacts(w)).toEqual([])
+})
+
+test('a prompt that fires while a main turn runs waits for the next idle tick, no try spent', async ($, on) => {
+  const w = newWorld({ dropPrompt: null })
+  writeConfig(w, CACHE_ROLE([
+    { id: 'away', when: { idle: '5m' }, do: ['prompt'], times: 1 },
+    { id: 'later', when: { idle: '7m' }, do: ['prompt'], times: 1 },
+  ]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ctxGuard($, 'trust')
+  await turn($, 'start')
+  await turn($, 'end')
+  await clock.advance(5 * MIN)
+  expect(w.prompts.length).toBe(1)
+  // ctx-guard's own turn runs, and idle counts on: `later` fires inside it at 7m and waits through three ticks.
+  await turn($, 'start')
+  await clock.advance(4 * MIN + 30_000)
+  expect(w.prompts.length).toBe(1)
+  await turn($, 'end')
+  await clock.advance(MIN)
+  expect(w.prompts.length).toBe(2)
+})
+
+test('prompt then compact: the operator back before the refused prompt went in: no compact', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, dropPrompt: 'refused by another plugin' })
+  const clock = await awayCompact($, on, w)
+  await clock.advance(50 * MIN)
+  expect(w.prompts.length).toBe(1)
+  w.dropPrompt = null
+  await $.prompt.submit({ text: 'back', origin: { kind: 'composer' } } as never)
+  await turn($, 'start')
+  await mainTurnEnd($, clock)
+  expect(compacts(w)).toEqual([])
+  // The retry's trigger no longer holds: the prompt and its compact are given up.
+  await clock.advance(MIN)
+  expect(ownPrompts(w)).toEqual([w.prompts[0]])
+  expect(w.toasts.some(t => t.includes('/compact for trigger "away" was dropped'))).toBe(true)
+})
+
+test('prompt then compact on a cache trigger: the operator back before a refused prompt\'s retry, at cache.prompt.maxUsage: no compact', async ($, on) => {
+  const w = newWorld({ tokens: 150_000, dropPrompt: 'refused by another plugin' })
+  const config = CACHE_ROLE([
+    { id: 'warm', when: { 'cache.expiresIn': '5m' }, do: ['ping'], times: 1 },
+    { id: 'away', when: { 'cache.pings': 1 }, do: ['prompt', 'compact'], times: 1 },
+  ])
+  const { clock, forks } = await trustedKeepWarm($, on, w, { config })
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  // The ping at 55m; `away` at 56m, refused.
+  await clock.advance(56 * MIN)
+  expect([forks.length, ownPrompts(w).length, compacts(w).length]).toEqual([1, 1, 0])
+  w.dropPrompt = null
+  w.limits.push({ kind: 'five_hour', percentUsed: 92 })
+  await $.prompt.submit({ text: 'back', origin: { kind: 'composer' } } as never)
+  await turn($, 'start')
+  // A tick in the operator's turn puts the retry off; the usage cap is read only idle.
+  await clock.advance(MIN)
+  await mainTurnEnd($, clock)
+  expect(compacts(w)).toEqual([])
+  // The operator's turn began a new period: `away` no longer holds, and its prompt and compact are given up.
+  await clock.advance(MIN)
+  expect([ownPrompts(w).length, compacts(w)]).toEqual([1, []])
+  expect(w.toasts.some(t => t.includes('/compact for trigger "away" was dropped'))).toBe(true)
 })

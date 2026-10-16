@@ -423,19 +423,16 @@ export type ActionPlan = {
   notifies: Fire[]
   // At most one compact per evaluation: the first trigger asking for it.
   compact: Fire | null
-  // At most one warm ping per evaluation, and none beside a prompt.
+  // The first trigger asking for a warm ping; the caller sends it only when no prompt goes.
   ping: Fire | null
-  // At most one prompt per evaluation: the first trigger asking for it.
-  prompt: Fire | null
+  // Every trigger asking for a prompt, in order; the caller sends at most one.
+  prompts: Fire[]
 }
 
 /** Groups one evaluation's fires by action, so a burst of crossings costs one note. */
 export function planActions(fire: readonly Fire[]): ActionPlan {
   const by = (a: EdgeAction): Fire[] => fire.filter(f => f.actions.includes(a))
-  const prompt = by('prompt')[0] ?? null
-  // A prompt's turn warms the cache itself, so a ping beside it is dropped.
-  const ping = prompt ? null : (by('ping')[0] ?? null)
-  return { notes: by('note'), toasts: by('toast'), notifies: by('notify'), compact: by('compact')[0] ?? null, ping, prompt }
+  return { notes: by('note'), toasts: by('toast'), notifies: by('notify'), compact: by('compact')[0] ?? null, ping: by('ping')[0] ?? null, prompts: by('prompt') }
 }
 
 /**

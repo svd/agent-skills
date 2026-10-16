@@ -1,7 +1,7 @@
 // ctx-guard's `/ctx-guard` command and start-up checks: argument parsing, the
 // pause, `init` presets and .gitignore lines, the report text, the engine
 // version gate and the command-collision check. Pure: no `$`, never throws.
-import type { Action, Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger } from '../types'
+import type { Action, Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger, TtlSource } from '../types'
 import { parseQuantity, roleSpec, validate } from './config'
 import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
 import { listedRoles } from './roles'
@@ -241,6 +241,39 @@ export type ReportInput = {
   subagents?: SubagentReport
   // Band probes and their last run; absent leaves the lines out.
   probes?: { id: string; state: string }[]
+  // The main thread's prompt cache; absent leaves its line out.
+  cache?: CacheReport
+}
+
+export type CacheReport = {
+  ttl: number
+  source: TtlSource
+  // Time left before expiry, less the margin; null before the first main request.
+  expiresIn: number | null
+  // A main turn runs: the cache is in use.
+  busy: boolean
+  // Warm pings in this idle period and the pinging trigger's `times` (null: no cap); null without a pinging trigger.
+  pings: { n: number; cap: number | null } | null
+  // A ping in this idle period found the cache gone.
+  cold: boolean
+  miss: number
+  missCause: 'model' | 'prefix' | null
+  // A failed or put-off ping or prompt, tried again on the next idle tick.
+  retry: { kind: 'ping' | 'prompt'; triggerId: string; tries: number } | null
+}
+
+const TTL_SOURCE: Record<TtlSource, string> = { config: 'from config', transcript: 'from the transcript', observed: 'observed', guess: 'a guess' }
+
+/** `cache: TTL 1h (observed); expires in 12m; pings 1/3; last miss 140k (prefix changed)`. */
+export function cacheLine(c: CacheReport): string {
+  const left =
+    c.expiresIn === null ? 'no main request yet' : c.busy ? 'in use by the running turn' : c.expiresIn <= 0 ? 'expired' : `expires in ${humanDuration(c.expiresIn)}`
+  const parts = [`TTL ${humanDuration(c.ttl)} (${TTL_SOURCE[c.source]})`, left]
+  if (c.pings) parts.push(`pings ${c.pings.n}${c.pings.cap === null ? '' : `/${c.pings.cap}`}`)
+  if (c.cold) parts.push('cold (a ping found it gone)')
+  if (c.miss > 0) parts.push(`last miss ${humanTokens(c.miss)}${c.missCause === 'model' ? ' (model switch)' : c.missCause === 'prefix' ? ' (prefix changed)' : ''}`)
+  if (c.retry) parts.push(`${c.retry.kind} of "${c.retry.triggerId}" waits for its retry (try ${c.retry.tries})`)
+  return `cache: ${parts.join('; ')}`
 }
 
 export type SubagentRow = {
@@ -284,9 +317,9 @@ export type RestartReport = {
 
 function trustLine(t: RestartReport, now: number): string {
   if (t.trusted) return `trust: approved${t.approvedAt === null ? '' : ` ${ago(now - t.approvedAt)}`}`
-  if (t.wanted === false) return 'trust: not needed (nothing automatic: no auto restart, compact trigger or probe)'
+  if (t.wanted === false) return 'trust: not needed (nothing automatic: no auto restart, compact, ping or prompt trigger, or probe)'
   const what = t.changed.length ? ` (needs approval: ${t.changed.join(', ')})` : ''
-  return `trust: not approved${what}; automatic clear and compact and ready checks stay off until the operator runs /ctx-guard trust`
+  return `trust: not approved${what}; automatic clear, compact, ping, prompt and ready checks stay off until the operator runs /ctx-guard trust`
 }
 
 // How long the ready token stays refused as too-soon, mirroring restart.ts's check.
@@ -373,6 +406,7 @@ export function reportText(r: ReportInput): string {
   }
   if (m.cost !== null) lines.push(`cost: ${humanUsd(m.cost)}`)
   lines.push(`idle: ${m.idleMs === null ? 'no turn has ended yet' : m.idleMs === 0 ? 'a turn is running' : humanDuration(m.idleMs)}`)
+  if (r.cache) lines.push(cacheLine(r.cache))
   if (r.lastClearAt !== null) lines.push(`last /clear: ${ago(r.now - r.lastClearAt)}`)
 
   const marks = Object.entries(r.marks?.byId ?? {})

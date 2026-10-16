@@ -459,7 +459,7 @@ describe('planActions', () => {
     expect(plan.toasts.map(f => f.trigger.id)).toEqual(['b'])
     expect(plan.notifies.map(f => f.trigger.id)).toEqual(['c'])
     expect(plan.compact?.trigger.id).toBe('a')
-    expect(planActions([])).toEqual({ notes: [], toasts: [], notifies: [], compact: null, ping: null, prompt: null })
+    expect(planActions([])).toEqual({ notes: [], toasts: [], notifies: [], compact: null, ping: null, prompts: [] })
   })
 })
 
@@ -640,10 +640,10 @@ describe('times', () => {
 describe('plan', () => {
   const fire = (id: string, actions: string[]) => ({ trigger: { id } as never, actions: actions as never, step: 0, vars: {} as never })
 
-  test('prompt wins over ping in one evaluation', () => {
-    const p = planActions([fire('warm', ['ping']), fire('away', ['prompt', 'notify'])])
-    expect(p.ping).toBeNull()
-    expect(p.prompt?.trigger.id).toBe('away')
+  test('a ping and every prompt are planned, in order; the caller picks', () => {
+    const p = planActions([fire('warm', ['ping']), fire('away', ['prompt', 'notify']), fire('gone', ['prompt'])])
+    expect(p.ping?.trigger.id).toBe('warm')
+    expect(p.prompts.map(f => f.trigger.id)).toEqual(['away', 'gone'])
     expect(p.notifies.length).toBe(1)
   })
 

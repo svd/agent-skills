@@ -81,6 +81,8 @@ export type CacheConfig = {
   band: { show: CacheShow; warn: Quantity }
   // No ping while any usage window is at or above this percent.
   ping: { maxUsage: number }
+  // No prompt from a trigger on a cache metric while any usage window is at or above this percent.
+  prompt: { maxUsage: number }
 }
 
 export type RoleSpec = {

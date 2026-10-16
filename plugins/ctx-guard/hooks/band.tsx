@@ -84,7 +84,7 @@ export function bandOf(role: string | null, m: Metrics, denies: readonly DenyEnt
 
 /**
  * The band's trust segment: `untrusted` while a repo that wants trust (an automatic
- * restart, a compact trigger, a probe) has none, `untrusted (changed)` once an approval no longer matches.
+ * restart, a compact, ping or prompt trigger, a probe) has none, `untrusted (changed)` once an approval no longer matches.
  */
 export function untrustedText(t: TrustState | null, wanted: boolean): string | null {
   if (!wanted || !t || t.trusted) return null

@@ -16,6 +16,7 @@ import {
   levelText,
   noteText,
   noteToastText,
+  isOwnPrompt,
   promptText,
   refusalNote,
   render,
@@ -546,6 +547,17 @@ describe('cache texts', () => {
     )
     expect(DEFAULT_PROMPT).toContain('{idle}')
     expect(promptText(f('Away {idle}. Note it in {handoffPath}.'), ctx)).toBe('Away 55m. Note it in .ctx-guard/main-handoff.md.')
+  })
+
+  test('own prompt: origin ctx-guard while it submits, no command; the text may have been rewritten', () => {
+    const ctxGuard = { kind: 'plugin', name: 'ctx-guard' }
+    expect(isOwnPrompt({ origin: ctxGuard }, '[ctx-guard] away')).toBe(true)
+    expect(isOwnPrompt({ origin: ctxGuard, text: '[ctx-guard] away, rewritten' } as never, '[ctx-guard] away')).toBe(true)
+    expect(isOwnPrompt({ origin: ctxGuard }, null)).toBe(false)
+    expect(isOwnPrompt({ origin: ctxGuard, command: { name: 'ctx-guard:resume' } }, '[ctx-guard] away')).toBe(false)
+    expect(isOwnPrompt({ origin: { kind: 'plugin', name: 'other' } }, '[ctx-guard] away')).toBe(false)
+    expect(isOwnPrompt({ origin: { kind: 'composer' } }, '[ctx-guard] away')).toBe(false)
+    expect(isOwnPrompt({}, '[ctx-guard] away')).toBe(false)
   })
 
   describe('notes for a cache trigger', () => {
