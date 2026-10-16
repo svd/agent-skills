@@ -187,6 +187,8 @@ export type Band = {
   tokens: number | null
   percent: number | null
   window: number | null
+  // The prompt cache countdown as last drawn; null when hidden.
+  cache: BandCache | null
   limits: BandLimit[]
   // Band probe segments in config order, as last drawn.
   probes: BandProbe[]

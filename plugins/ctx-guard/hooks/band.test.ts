@@ -8,7 +8,7 @@ const NOW = Date.parse('2026-10-13T12:00:00Z')
 const HOUR = 60 * 60 * 1000
 const at = (ms: number): string => new Date(NOW + ms).toISOString()
 
-const base: Band = { role: null, tokens: null, percent: null, window: null, limits: [], probes: [], subagentsOver: 0, denies: [], restartFailed: null, untrusted: null, now: NOW }
+const base: Band = { role: null, tokens: null, percent: null, window: null, limits: [], probes: [], subagentsOver: 0, denies: [], restartFailed: null, untrusted: null, cache: null, now: NOW }
 
 describe('band text', () => {
   test('the full line', () => {
@@ -63,6 +63,7 @@ describe('bandOf', () => {
       tokens: 250_000,
       percent: 50,
       window: 500_000,
+      cache: null,
       limits: [{ kind: 'seven_day', percentUsed: 61, resetsAt: at(HOUR) }],
       probes: [],
       subagentsOver: 2,
@@ -147,5 +148,34 @@ describe('band lag', () => {
     expect(bandLags({ ...base, tokens: 150_000 }, 150_200)).toBe(false)
     expect(bandLags({ ...base, tokens: 9_400 }, 9_420)).toBe(false)
     expect(bandLags({ ...base, tokens: 9_400 }, 9_600)).toBe(true)
+  })
+})
+
+describe('cache segment', () => {
+  test('right after the context figure', () => {
+    const b: Band = { ...base, role: 'lead', tokens: 312_000, percent: 31.2, window: 1_000_000, limits: [{ kind: 'five_hour', percentUsed: 42, resetsAt: null }], cache: { text: 'cache 8m', color: null, dim: false } }
+    expect(bandText(b)).toBe('lead · 312k (31%) · cache 8m · 5h 42%')
+  })
+
+  test('colour and dim carry to the segment', () => {
+    const segs = bandSegments({ ...base, cache: { text: 'cache cold', color: null, dim: true } })
+    expect(segs).toContainEqual({ text: 'cache cold', dim: true })
+    expect(bandSegments({ ...base, cache: { text: 'cache 2m', color: 'warning', dim: false } })).toContainEqual({ text: 'cache 2m', color: 'warning' })
+  })
+
+  test('a band stored before the cache segment existed draws', () => {
+    const { cache: _drop, ...old } = { ...base, tokens: 1000 }
+    expect(bandText(old as Band)).toBe('1k')
+  })
+
+  test('a changed countdown is a changed band', () => {
+    expect(sameBand({ ...base, cache: { text: 'cache 8m', color: null, dim: false } }, { ...base, cache: { text: 'cache 7m', color: null, dim: false } })).toBe(false)
+  })
+
+  test('bandOf keeps the previous cache segment', () => {
+    const prev: Band = { ...base, cache: { text: 'cache 8m', color: null, dim: false } }
+    const m = metricsOf({ tokens: 1000 }, 1_000_000, null, NOW)
+    expect(bandOf('lead', m, [], prev).cache).toEqual(prev.cache)
+    expect(bandOf('lead', m, [], null).cache).toBeNull()
   })
 })

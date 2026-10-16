@@ -1274,7 +1274,7 @@ async function patchBand<K extends 'restartFailed' | 'subagentsOver'>($: EngineI
   const now = await $.clock.now()
   // Read after the await: a band written meanwhile is the base.
   const prev = mem.band
-  const base: Band = prev ?? { role: mod.role.role, tokens: null, percent: null, window: null, limits: [], probes: [], subagentsOver: 0, denies: [], restartFailed: null, untrusted: null, now }
+  const base: Band = prev ?? { role: mod.role.role, tokens: null, percent: null, window: null, cache: null, limits: [], probes: [], subagentsOver: 0, denies: [], restartFailed: null, untrusted: null, now }
   const band: Band = { ...base, [key]: value }
   await drawBand($, band)
 }

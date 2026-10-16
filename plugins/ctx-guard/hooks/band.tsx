@@ -25,7 +25,7 @@ function limitSegment(l: BandLimit, now: number): Segment {
 }
 
 /**
- * `lead · 312k (31%) · 5h 42% (2h10m) · wk 61% (3d4h) · step 03 · untrusted · sub 1! · deny Agent`;
+ * `lead · 312k (31%) · cache 8m · 5h 42% (2h10m) · wk 61% (3d4h) · step 03 · untrusted · sub 1! · deny Agent`;
  * figures that are unknown are left out, so a fresh session shows little.
  */
 export function bandSegments(b: Band): Segment[] {
@@ -37,6 +37,9 @@ export function bandSegments(b: Band): Segment[] {
     const color = pct === null ? undefined : level(pct, 50, 75)
     out.push(color ? { text, color } : { text })
   }
+  // A band another version stored may have none.
+  const c = b.cache ?? null
+  if (c) out.push(c.dim ? { text: c.text, dim: true } : c.color ? { text: c.text, color: c.color } : { text: c.text })
   for (const l of b.limits) out.push(limitSegment(l, b.now))
   // A band another version stored may have none.
   for (const p of b.probes ?? []) out.push(p.color ? { text: p.text, color: p.color } : { text: p.text })
@@ -58,7 +61,7 @@ export function bandText(b: Band): string {
     .join('')
 }
 
-/** The band for a reading; the subagent count and restart failure carry over from `prev`. */
+/** The band for a reading; the cache segment, subagent count and restart failure carry over from `prev`. */
 export function bandOf(role: string | null, m: Metrics, denies: readonly DenyEntry[], prev: Band | null): Band {
   const limits: BandLimit[] = []
   if (m.limits.five_hour) limits.push({ kind: 'five_hour', percentUsed: m.limits.five_hour.pct, resetsAt: m.limits.five_hour.resetsAt })
@@ -68,6 +71,7 @@ export function bandOf(role: string | null, m: Metrics, denies: readonly DenyEnt
     tokens: m.tokens,
     percent: contextPercent(m),
     window: m.window > 0 ? m.window : null,
+    cache: prev?.cache ?? null,
     limits,
     probes: prev?.probes ?? [],
     subagentsOver: prev?.subagentsOver ?? 0,
