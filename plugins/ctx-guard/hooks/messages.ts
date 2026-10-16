@@ -9,7 +9,9 @@ export const PREFIX = '[ctx-guard]'
 
 // ---- templates and figures ---------------------------------------------------
 
-export const TEMPLATE_VARS = ['role', 'tokens', 'percent', 'threshold', 'window', 'limit', 'resetsIn', 'handoffPath', 'readyToken'] as const
+export const TEMPLATE_VARS = ['role', 'tokens', 'percent', 'threshold', 'window', 'limit', 'resetsIn', 'handoffPath', 'readyToken', 'idle', 'expiresIn'] as const
+
+export const DEFAULT_PROMPT = `${PREFIX} The user has been away {idle}; the prompt cache expires in {expiresIn}. Write the handoff to {handoffPath} and stop; do not start new work.`
 
 /** Fills `{name}` from `vars`; an unknown `{x}` stays as written. */
 export function render(template: string, vars: Readonly<Record<string, string>>): string {
@@ -104,8 +106,22 @@ export function templateVars(vars: FireVars, ctx: NoteContext): Record<string, s
     resetsIn: resetsText(vars.limit, vars.now),
     handoffPath: ctx.handoffPath ?? UNKNOWN,
     readyToken: ctx.readyToken,
+    idle: vars.idleMs === null ? UNKNOWN : humanDuration(vars.idleMs),
+    expiresIn: vars.expiresIn === null ? UNKNOWN : humanDuration(vars.expiresIn),
   }
 }
+
+/** What a `prompt` action submits: the trigger's message, else the default, with template variables filled. */
+export function promptText(fire: Fire, ctx: NoteContext): string {
+  return render(fire.trigger.message ?? DEFAULT_PROMPT, templateVars(fire.vars, ctx))
+}
+
+const MISS_CAUSE = { model: 'model switch', prefix: 'prefix changed: CLAUDE.md, tools or MCP?' } as const
+
+// " (model switch)" for a miss with a known cause; empty otherwise.
+const missWhy = (v: FireVars): string => (v.missCause ? ` (${MISS_CAUSE[v.missCause]})` : '')
+
+const missTokens = (v: FireVars): string => (v.miss === null ? UNKNOWN : humanTokens(v.miss))
 
 // ---- notes -------------------------------------------------------------------
 
@@ -125,6 +141,12 @@ function head(vars: FireVars): string {
   if (vars.metric === 'cost') return `Session cost is ${vars.cost === null ? UNKNOWN : humanUsd(vars.cost)}, past ${v.threshold}.`
   if (vars.metric === 'idle') {
     return `The session has been idle for ${vars.idleMs === null ? UNKNOWN : humanDuration(vars.idleMs)}, past ${v.threshold}.`
+  }
+  if (vars.metric === 'cache.miss') {
+    return `A request rewrote ${missTokens(vars)} tokens of a prompt cache that should have been warm${missWhy(vars)}.`
+  }
+  if (vars.metric === 'cache.expiresIn' || vars.metric === 'cache.pings') {
+    return `The prompt cache expires in ${v.expiresIn}; the session has been idle for ${v.idle}.`
   }
   return `Context is at ${v.tokens} (${v.percent} of ${v.window}), past ${v.threshold}.`
 }
@@ -248,6 +270,9 @@ export function noteText(input: NoteInput): string {
   return collapseNotes([{ trigger, vars, step: 0, actions: ['note'] }], opts) as string
 }
 
+// "1 ping", "3 pings".
+const pingsText = (n: number | null): string => `${n ?? 0} ${n === 1 ? 'ping' : 'pings'}`
+
 /** A short toast or OS notice for a fired trigger (also the zero-config toasts). */
 export function toastText(vars: FireVars, role: string | null): string {
   const v = templateVars(vars, { role, handoffPath: null, readyToken: '' })
@@ -258,6 +283,9 @@ export function toastText(vars: FireVars, role: string | null): string {
     what = `${vars.limit ? `${windowName(vars.limit.kind)} usage ${humanPercent(vars.limit.pct)}` : 'usage'} (past ${v.threshold})${reset}`
   } else if (vars.metric === 'cost') what = `cost ${vars.cost === null ? UNKNOWN : humanUsd(vars.cost)} (past ${v.threshold})`
   else if (vars.metric === 'idle') what = `idle ${vars.idleMs === null ? UNKNOWN : humanDuration(vars.idleMs)} with context at ${v.tokens}`
+  else if (vars.metric === 'cache.miss') what = `cache miss, ${missTokens(vars)} re-written${missWhy(vars)}`
+  else if (vars.metric === 'cache.expiresIn') what = `prompt cache expires in ${v.expiresIn}, idle ${v.idle}`
+  else if (vars.metric === 'cache.pings') what = `prompt cache kept warm by ${pingsText(vars.pings)}, expires in ${v.expiresIn}`
   else what = `context ${v.tokens} (${v.percent} of ${v.window})`
   return `ctx-guard: ${who}${what}`
 }
@@ -277,6 +305,9 @@ function crossedText(vars: FireVars): string {
   if (isLimit(vars.metric)) what = vars.limit ? `${windowName(vars.limit.kind)} usage ${humanPercent(vars.limit.pct)}` : `usage ${UNKNOWN}`
   else if (vars.metric === 'cost') what = `session cost ${vars.cost === null ? UNKNOWN : humanUsd(vars.cost)}`
   else if (vars.metric === 'idle') what = `idle ${vars.idleMs === null ? UNKNOWN : humanDuration(vars.idleMs)}`
+  else if (vars.metric === 'cache.miss') return `cache miss ${missTokens(vars)}${missWhy(vars)} past ${v.threshold}`
+  else if (vars.metric === 'cache.expiresIn') return `prompt cache expires in ${v.expiresIn}, within ${v.threshold}`
+  else if (vars.metric === 'cache.pings') return `prompt cache kept warm by ${pingsText(vars.pings)}, at least ${v.threshold}`
   else what = `context ${v.tokens}`
   return `${what} past ${v.threshold}`
 }

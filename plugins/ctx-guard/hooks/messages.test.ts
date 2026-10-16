@@ -2,6 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { defaultTriggers, roleSpec, validate } from './config'
 import {
+  DEFAULT_PROMPT,
+  TEMPLATE_VARS,
   collapseNotes,
   denyReason,
   effectiveMode,
@@ -14,6 +16,7 @@ import {
   levelText,
   noteText,
   noteToastText,
+  promptText,
   refusalNote,
   render,
   restartTail,
@@ -24,7 +27,7 @@ import {
   toastText,
 } from './messages'
 import { NO_CACHE, evaluate } from './triggers'
-import type { Fire, Metrics } from './triggers'
+import type { Fire, FireVars, Metrics } from './triggers'
 import type { RoleSpec } from '../types'
 
 const NOW = Date.parse('2026-10-13T10:00:00Z')
@@ -98,7 +101,7 @@ describe('humanize', () => {
 })
 
 describe('template vars', () => {
-  test('all nine, humanized', () => {
+  test('every variable, humanized', () => {
     const s = spec({ triggers: [{ id: '5h', when: { 'limit.five_hour': 80 }, do: ['note'] }] })
     const f = fires(s)[0] as Fire
     expect(templateVars(f.vars, { role: 'lead', handoffPath: '.ctx-guard/lead-handoff.md', readyToken: 'CTX-READY' })).toEqual({
@@ -111,6 +114,8 @@ describe('template vars', () => {
       resetsIn: '2h10m',
       handoffPath: '.ctx-guard/lead-handoff.md',
       readyToken: 'CTX-READY',
+      idle: 'unknown',
+      expiresIn: 'unknown',
     })
   })
 
@@ -482,5 +487,101 @@ describe('note toasts', () => {
       'ctx-guard → model: idle 55m past 50m — back from a break: 312k in context; reread the plan',
     )
     expect(noteToastText([], { role: 'lead', spec: s, readyToken: 'R' })).toBeNull()
+  })
+})
+
+describe('cache texts', () => {
+  const vars = (over: Partial<FireVars>): FireVars => ({
+    metric: 'cache.miss',
+    threshold: { kind: 'tokens', value: 50_000 },
+    tokens: 150_000,
+    percent: 15,
+    window: 1_000_000,
+    limit: null,
+    cost: null,
+    idleMs: 55 * 60_000,
+    now: 0,
+    expiresIn: 4 * 60_000,
+    miss: null,
+    missCause: null,
+    pings: 0,
+    ...over,
+  })
+  const ctx = { role: 'main', handoffPath: '.ctx-guard/main-handoff.md', readyToken: 'CTX-READY' }
+
+  test('toasts', () => {
+    expect(toastText(vars({ miss: 140_000, missCause: 'model' }), 'main')).toBe('ctx-guard: main: cache miss, 140k re-written (model switch)')
+    expect(toastText(vars({ miss: 140_000, missCause: 'prefix' }), 'main')).toBe(
+      'ctx-guard: main: cache miss, 140k re-written (prefix changed: CLAUDE.md, tools or MCP?)',
+    )
+    expect(toastText(vars({ metric: 'cache.expiresIn', threshold: { kind: 'duration', value: 300_000 } }), 'main')).toBe(
+      'ctx-guard: main: prompt cache expires in 4m, idle 55m',
+    )
+    expect(toastText(vars({ metric: 'cache.pings', threshold: { kind: 'count', value: 3 }, pings: 3 }), null)).toBe(
+      'ctx-guard: prompt cache kept warm by 3 pings, expires in 4m',
+    )
+    expect(toastText(vars({ metric: 'cache.pings', threshold: { kind: 'count', value: 1 }, pings: 1 }), null)).toBe(
+      'ctx-guard: prompt cache kept warm by 1 ping, expires in 4m',
+    )
+  })
+
+  test('template variables idle and expiresIn', () => {
+    const v = templateVars(vars({}), ctx)
+    expect([v.idle, v.expiresIn]).toEqual(['55m', '4m'])
+    expect(TEMPLATE_VARS).toContain('idle')
+    expect(TEMPLATE_VARS).toContain('expiresIn')
+    const unknown = templateVars(vars({ idleMs: null, expiresIn: null }), ctx)
+    expect([unknown.idle, unknown.expiresIn]).toEqual(['unknown', 'unknown'])
+  })
+
+  test('the prompt text, default and from the trigger message', () => {
+    const f = (message: string | null) => ({
+      trigger: { id: 'away', message } as never,
+      actions: ['prompt'] as never,
+      step: 0,
+      vars: vars({ metric: 'cache.expiresIn' }),
+    })
+    expect(promptText(f(null), ctx)).toBe(
+      '[ctx-guard] The user has been away 55m; the prompt cache expires in 4m. Write the handoff to .ctx-guard/main-handoff.md and stop; do not start new work.',
+    )
+    expect(DEFAULT_PROMPT).toContain('{idle}')
+    expect(promptText(f('Away {idle}. Note it in {handoffPath}.'), ctx)).toBe('Away 55m. Note it in .ctx-guard/main-handoff.md.')
+  })
+
+  describe('notes for a cache trigger', () => {
+    const trigger = (id: string, when: Record<string, unknown>) => {
+      const s = spec({ restart: { mode: 'off' }, triggers: [{ id, when, do: ['note'] }] })
+      return { s, trigger: s.triggers[0] as never }
+    }
+    const opts = (s: RoleSpec) => ({ role: 'lead', spec: s, readyToken: 'CTX-READY' })
+
+    test('the note head names the rewrite', () => {
+      const { s, trigger: t } = trigger('miss', { 'cache.miss': '50k' })
+      const fire = { trigger: t, actions: ['note'] as never, step: 0, vars: vars({ miss: 140_000, missCause: 'prefix' }) }
+      expect(collapseNotes([fire], opts(s))).toContain(
+        'A request rewrote 140k tokens of a prompt cache that should have been warm (prefix changed: CLAUDE.md, tools or MCP?).',
+      )
+    })
+
+    test('the note head for an expiring cache', () => {
+      const { s, trigger: t } = trigger('soon', { 'cache.expiresIn': '5m' })
+      const fire = { trigger: t, actions: ['note'] as never, step: 0, vars: vars({ metric: 'cache.expiresIn', threshold: { kind: 'duration', value: 300_000 } }) }
+      expect(collapseNotes([fire], opts(s))).toContain('The prompt cache expires in 4m; the session has been idle for 55m.')
+    })
+
+    test('the operator toast words the crossing for each cache metric', () => {
+      const miss = trigger('miss', { 'cache.miss': '50k' })
+      const missFire = { trigger: miss.trigger, actions: ['note'] as never, step: 0, vars: vars({ miss: 140_000, missCause: 'model' }) }
+      expect(noteToastText([missFire], opts(miss.s))).toBe('ctx-guard → model: cache miss 140k (model switch) past 50k — keep this in mind as you plan the next steps')
+      const soon = trigger('soon', { 'cache.expiresIn': '5m' })
+      const soonFire = { trigger: soon.trigger, actions: ['note'] as never, step: 0, vars: vars({ metric: 'cache.expiresIn', threshold: { kind: 'duration', value: 300_000 } }) }
+      expect(noteToastText([soonFire], opts(soon.s))).toBe('ctx-guard → model: prompt cache expires in 4m, within 5m — keep this in mind as you plan the next steps')
+      const pings = trigger('kept', { 'cache.pings': 3 })
+      const pingsFire = { trigger: pings.trigger, actions: ['note'] as never, step: 0, vars: vars({ metric: 'cache.pings', threshold: { kind: 'count', value: 3 }, pings: 3 }) }
+      expect(noteToastText([pingsFire], opts(pings.s))).toBe('ctx-guard → model: prompt cache kept warm by 3 pings, at least 3 — keep this in mind as you plan the next steps')
+      const one = trigger('kept', { 'cache.pings': 1 })
+      const oneFire = { trigger: one.trigger, actions: ['note'] as never, step: 0, vars: vars({ metric: 'cache.pings', threshold: { kind: 'count', value: 1 }, pings: 1 }) }
+      expect(noteToastText([oneFire], opts(one.s))).toBe('ctx-guard → model: prompt cache kept warm by 1 ping, at least 1 — keep this in mind as you plan the next steps')
+    })
   })
 })
