@@ -67,6 +67,11 @@ type World = {
   presets: Record<string, string>
   // What a tool's result reads as for the model, by tool name.
   toolText: Record<string, string>
+  // Reads per path, and how long a read of a path takes before it answers.
+  reads: Record<string, number>
+  readHang: Record<string, number>
+  // Calls of $.session.usage().
+  usageCalls: number
   clock?: MockClock
 }
 
@@ -102,6 +107,9 @@ function newWorld(over: Partial<World> = {}): World {
     window: WINDOW,
     presets: { ...PRESET_TEXT },
     toolText: {},
+    reads: {},
+    readHang: {},
+    usageCalls: 0,
     ...over,
   }
 }
@@ -135,8 +143,10 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('session.root', () => ({ value: ROOT }))
+  on('session.cwd', () => ({ value: ROOT }))
   on('session.surfaces', () => ({ value: ['terminal'] as const }))
   on('session.usage', ($, e) => {
+    w.usageCalls += 1
     if (w.failUsage) throw new Error('usage unavailable')
     const u = usageOf(w)
     if (!e?.breakdown || w.rawMax === null) return { value: u }
@@ -211,7 +221,10 @@ function world(on: On, w: World, env: Record<string, string> = {}): { clock: Moc
   })
   on('fs.exists', ($, e) => ({ value: e.path in w.files || dirsOf(w).has(e.path) || e.path in w.links }))
   on('classic.Stop', () => ({}))
-  on('fs.read', ($, e) => {
+  on('fs.read', async ($, e) => {
+    w.reads[e.path] = (w.reads[e.path] ?? 0) + 1
+    const hang = w.readHang[e.path] ?? 0
+    if (hang > 0) await clock.sleep(hang)
     const f = w.files[e.path]
     const preset = /\/skills\/guide\/assets\/presets\/([a-z]+)\.json$/.exec(e.path)?.[1]
     if (!f && preset !== undefined && preset in w.presets) return { value: w.presets[preset] as never }
@@ -470,7 +483,7 @@ test('a rising edge held across measures toasts once', async ($, on) => {
 
 const run = ($: Engine, command: string) => $.command.run({ command, args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
 
-const STATE_KEYS = ['band', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity']
+const STATE_KEYS = ['band', 'cache', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity']
 
 // A test plugin's register sees nothing of this file's scope: what it needs is written inside it.
 // The engine empties ctx-guard's $.state right after a /clear's session.end; the kit
@@ -481,7 +494,7 @@ const STATE_KEYS = ['band', 'marks', 'roleClaim', 'config', 'pendingResume', 'pe
 const WIPE: Plugin = {
   name: 'wipe',
   register: on => {
-    const keys = ['band', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity']
+    const keys = ['band', 'cache', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity']
     const wiped = new Set<string>()
     let hold = false
     let sets: Record<string, number> = {}
@@ -3512,4 +3525,297 @@ test('a probe removed from the config, or its script edited, stops drawing', asy
   expect(status(w)).not.toContain('step 03')
   expect(status(w)).toContain('untrusted (changed)')
   expect(await ctxGuard($, '')).toContain('probe run: not run (untrusted)')
+})
+
+// ---- the prompt cache ---------------------------------------------------------
+
+// The step bottom answers each call with the next usage in `usages` (the last one repeats).
+function usageBottom(on: On, usages: { read: number; write: number; model?: string }[]): void {
+  let i = 0
+  on('turn.step', async function* ($, e) {
+    const u = usages[Math.min(i++, usages.length - 1)] as { read: number; write: number; model?: string }
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'end_turn' as never,
+      usage: { input_tokens: 10, cache_read_input_tokens: u.read, cache_creation_input_tokens: u.write, output_tokens: 50, model: u.model ?? 'm' },
+    }
+  })
+}
+
+const CACHE_ROLE = (triggers: unknown[], cache: unknown = { ttl: '1h' }) => ({ version: 1, cache, roles: { lead: { triggers } } })
+
+// Where the transcript of session `s1` in ROOT lies for HOME=/home/u.
+const TRANSCRIPT = '/home/u/.claude/projects/-repo/s1.jsonl'
+const HOUR_ROW = '{"message":{"usage":{"cache_creation":{"ephemeral_1h_input_tokens":25528,"ephemeral_5m_input_tokens":0}}}}\n'
+
+// The band as the stand-in status line drew it last (these tests start with surface 'vscode').
+const bandOfWorld = (w: World): string => w.statuses.at(-1) ?? ''
+
+const missToasts = (w: World): string[] => w.toasts.filter(t => t.includes('cache miss'))
+
+const MISS_TOAST = 'ctx-guard: lead: cache miss, 140k re-written (prefix changed: CLAUDE.md, tools or MCP?)'
+
+test('the band counts down the prompt cache once idle', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($, 'vscode')
+  await turn($, 'start')
+  await step($, clock)
+  await turn($, 'end')
+  await clock.advance(40 * 60 * 1000)
+  expect(bandOfWorld(w)).not.toContain('cache')
+  await clock.advance(11 * 60 * 1000)
+  expect(bandOfWorld(w)).toContain('cache 8m')
+  await clock.advance(10 * 60 * 1000)
+  expect(bandOfWorld(w)).toContain('cache cold')
+})
+
+test('a long step anchors the cache when it opens, not when its answer arrives', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  // The answer streams for 3m.
+  on('turn.step', async function* ($, e) {
+    await clock.sleep(3 * 60 * 1000)
+    const usage = { input_tokens: 10, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 0, output_tokens: 50, model: 'm' }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as never, usage }
+  })
+  await start($, 'vscode')
+  await turn($, 'start')
+  const stepped = step($, clock)
+  await clock.settle()
+  await clock.advance(3 * 60 * 1000)
+  await stepped
+  await turn($, 'end')
+  // Opened at 0 and answered at 3m: at 51m the 1h cache has 9m left, less the margin, as when the answer is at once.
+  await clock.advance(48 * 60 * 1000)
+  expect(bandOfWorld(w)).toContain('cache 8m')
+})
+
+test('a rewrite of a warm cache fires a cache.miss toast; the first request after a /clear does not', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([{ id: 'miss', when: { 'cache.miss': '50k' }, do: ['toast'] }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  usageBottom(on, [
+    { read: 50_000, write: 100_000 },
+    { read: 150_000, write: 0 },
+    { read: 10_000, write: 140_000 },
+    { read: 150_000, write: 0 },
+    // At least half the old fill: only the /clear tells this rewrite from a miss.
+    { read: 0, write: 100_000 },
+  ])
+  await start($)
+  await step($, clock)
+  await step($, clock)
+  expect(missToasts(w)).toEqual([])
+  await step($, clock)
+  expect(missToasts(w)).toEqual([MISS_TOAST])
+  // A warm request re-arms the trigger, so a miss after the /clear would toast again.
+  await step($, clock)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await step($, clock)
+  expect(missToasts(w)).toEqual([MISS_TOAST])
+})
+
+test('the first request after a compact is no cache miss', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([{ id: 'miss', when: { 'cache.miss': '50k' }, do: ['toast'] }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  // The last request fills at least half the old fill: only the measure tells it from a miss.
+  usageBottom(on, [{ read: 50_000, write: 100_000 }, { read: 150_000, write: 0 }, { read: 0, write: 100_000 }])
+  await start($)
+  await step($, clock)
+  await step($, clock)
+  // The context started over, as a measure reports it after /compact.
+  await measure($, w, undefined)
+  await step($, clock)
+  expect(missToasts(w)).toEqual([])
+})
+
+test('a reload keeps the idle period: a trigger that used up its times stays held', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([{ id: 'miss', when: { 'cache.miss': '50k' }, do: ['toast'], times: 1 }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  usageBottom(on, [
+    { read: 50_000, write: 100_000 },
+    { read: 150_000, write: 0 },
+    { read: 10_000, write: 140_000 },
+    { read: 150_000, write: 0 },
+    { read: 10_000, write: 140_000 },
+  ])
+  await start($)
+  await step($, clock)
+  await step($, clock)
+  await step($, clock)
+  await step($, clock)
+  expect(missToasts(w)).toEqual([MISS_TOAST])
+  // A hot reload fires session.start again; the miss that cleared stays cleared.
+  await start($)
+  await clock.settle()
+  expect(missToasts(w)).toEqual([MISS_TOAST])
+  await step($, clock)
+  expect(missToasts(w)).toEqual([MISS_TOAST])
+})
+
+test('a miss that cleared stays cleared across a reload', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([{ id: 'miss', when: { 'cache.miss': '50k' }, do: ['toast'] }]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  usageBottom(on, [{ read: 50_000, write: 100_000 }, { read: 150_000, write: 0 }, { read: 10_000, write: 140_000 }, { read: 150_000, write: 0 }])
+  await start($)
+  await turn($, 'start')
+  for (let i = 0; i < 3; i++) await step($, clock)
+  // The turn end writes the cache, miss and all.
+  await turn($, 'end')
+  expect(missToasts(w)).toEqual([MISS_TOAST])
+  await turn($, 'start')
+  await step($, clock)
+  // The warm request re-armed the trigger; a reload mid-turn must not read the old miss back.
+  await start($)
+  await clock.settle()
+  expect(missToasts(w)).toEqual([MISS_TOAST])
+})
+
+test('the ttl comes from the transcript at the session\'s own path after a turn', async ($, on) => {
+  const w = newWorld({ limits: [] })
+  writeConfig(w, CACHE_ROLE([], {}))
+  w.files[TRANSCRIPT] = { text: HOUR_ROW, mtimeMs: NOW }
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead', HOME: '/home/u' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($, 'vscode')
+  await turn($, 'start')
+  await step($, clock)
+  // The engine stamps an empty transcript_path where it has none.
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await turn($, 'end')
+  await clock.settle()
+  // No rate limits would guess five minutes; the transcript says one hour, so 51 min idle is still warm.
+  await clock.advance(51 * 60 * 1000)
+  expect(bandOfWorld(w)).toContain('cache 8m')
+  expect(bandOfWorld(w)).not.toContain('~')
+})
+
+test('a transcript with no cache write yet is read again after the next turn', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([], {}))
+  w.files[TRANSCRIPT] = { text: '{"message":{"usage":{"input_tokens":3}}}\n', mtimeMs: NOW }
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead', HOME: '/home/u' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($, 'vscode')
+  await turn($, 'start')
+  await step($, clock)
+  await turn($, 'end')
+  await clock.settle()
+  w.files[TRANSCRIPT] = { text: `${w.files[TRANSCRIPT]?.text ?? ''}${HOUR_ROW}`, mtimeMs: NOW }
+  await turn($, 'start')
+  await step($, clock)
+  await turn($, 'end')
+  await clock.settle()
+  await clock.advance(51 * 60 * 1000)
+  expect(bandOfWorld(w)).toContain('cache 8m')
+})
+
+test('without HOME the ttl comes from the transcript the Stop hook names', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([], {}))
+  const path = '/elsewhere/s1.jsonl'
+  w.files[path] = { text: HOUR_ROW, mtimeMs: NOW }
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($, 'vscode')
+  await turn($, 'start')
+  await step($, clock)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [], transcript_path: path })
+  await turn($, 'end')
+  await clock.settle()
+  await clock.advance(51 * 60 * 1000)
+  expect(bandOfWorld(w)).toContain('cache 8m')
+})
+
+async function mainTurn($: Engine, clock: MockClock): Promise<void> {
+  await turn($, 'start')
+  await step($, clock)
+  await turn($, 'end')
+  await clock.settle()
+}
+
+test('a session start keeps a stored cache only when it is this session\'s', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($, 'vscode')
+  await mainTurn($, clock)
+  // A hot reload of the same session keeps the anchor.
+  await start($, 'vscode')
+  await clock.advance(51 * 60 * 1000)
+  expect(bandOfWorld(w)).toContain('cache 8m')
+  // $.state still holding another session's cache: its anchor is not this session's.
+  w.sessionId = 's2'
+  await start($, 'vscode')
+  expect(bandOfWorld(w)).not.toContain('cache')
+})
+
+test('a refused transcript read is not tried again until /clear', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([], {}))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead', HOME: '/home/u' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($)
+  // No such file: the read is refused.
+  await mainTurn($, clock)
+  expect((w.reads[TRANSCRIPT] ?? 0)).toBe(1)
+  await mainTurn($, clock)
+  expect((w.reads[TRANSCRIPT] ?? 0)).toBe(1)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await mainTurn($, clock)
+  expect((w.reads[TRANSCRIPT] ?? 0)).toBe(2)
+})
+
+test('a transcript past 1 MiB with no cache write is not read again', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([], {}))
+  w.files[TRANSCRIPT] = { text: `${'{"message":{"usage":{"input_tokens":3}}}\n'.repeat(30_000)}`, mtimeMs: NOW }
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead', HOME: '/home/u' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($)
+  await mainTurn($, clock)
+  await mainTurn($, clock)
+  expect((w.reads[TRANSCRIPT] ?? 0)).toBe(1)
+})
+
+test('a transcript read that a /clear overtakes leaves the new session free to read', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([], {}))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead', HOME: '/home/u' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($)
+  w.readHang[TRANSCRIPT] = 1000
+  // The read is under way, and will be refused, when the /clear comes.
+  await mainTurn($, clock)
+  expect((w.reads[TRANSCRIPT] ?? 0)).toBe(1)
+  const cleared = $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await clock.advance(1000)
+  await cleared
+  w.readHang[TRANSCRIPT] = 0
+  await mainTurn($, clock)
+  expect((w.reads[TRANSCRIPT] ?? 0)).toBe(2)
+})
+
+test('a main step reads no usage for the cache once a reading is known', async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, CACHE_ROLE([]))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  await start($)
+  await step($, clock)
+  const before = w.usageCalls
+  await step($, clock)
+  await step($, clock)
+  expect(w.usageCalls).toBe(before)
 })

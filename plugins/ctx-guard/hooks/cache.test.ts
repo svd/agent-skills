@@ -120,6 +120,18 @@ describe('main requests', () => {
     expect(onMainRequest(c, u(0, 40_000), HOUR, NOW + MIN).miss).toBe(0)
   })
 
+  test('a fill far below the last one is a start-over whose measure has not come yet: no miss, a new baseline', () => {
+    const c: CacheState = { ...emptyCache(), anchor: NOW, prevFill: 150_000, warmSeen: true, model: 'm' }
+    // The first request after a compact: a summary of under half the old fill, all of it written.
+    let next = onMainRequest(c, u(0, 40_000), HOUR, NOW + MIN)
+    expect([next.miss, next.missCause, next.prevFill, next.warmSeen, next.anchor]).toEqual([0, null, 40_010, false, NOW + MIN])
+    // A rewrite of the new prefix before any warm request is still no miss.
+    next = onMainRequest(next, u(0, 41_000), HOUR, NOW + 2 * MIN)
+    expect(next.miss).toBe(0)
+    // Half the fill or more is the same context: a rewrite of it is a miss.
+    expect(onMainRequest(c, u(0, 75_000), HOUR, NOW + MIN).miss).toBe(150_000)
+  })
+
   test('a warm request after more than five minutes proves a one-hour ttl', () => {
     const c: CacheState = { ...emptyCache(), anchor: NOW, prevFill: 150_000, warmSeen: true, model: 'm' }
     const next = onMainRequest(c, u(150_000, 500), FIVE_MIN, NOW + 20 * MIN)
@@ -180,4 +192,5 @@ test('asCache keeps what it can read of another version\'s value', () => {
   expect(asCache({ anchor: 5, pings: 2, fired: { a: 1, b: 'x' }, ttl: 3_600_000, ttlSource: 'observed' })).toMatchObject({ anchor: 5, pings: 2, fired: { a: 1 }, ttl: 3_600_000, ttlSource: 'observed' })
   expect(asCache({ coldShown: true, pings: -2, miss: -5 })).toMatchObject({ coldShown: true, pings: 0, miss: 0 })
   expect(asCache({ ttlSource: 'nonsense', ttl: 3_600_000 })).toMatchObject({ ttl: null, ttlSource: null })
+  expect([asCache({ sessionId: 's1' }).sessionId, asCache({ sessionId: 7 }).sessionId]).toEqual(['s1', null])
 })

@@ -2,15 +2,18 @@
 // this module only reads the engine's figures and acts on their verdicts.
 // Hooks never throw: every piece of I/O is wrapped, and a failure leaves the
 // session as it would be without ctx-guard.
-import type { CommandRunInput, CommandRunResult, EngineInterface, FsStat, RenderSurface, Timer, TurnCompleteInput, TurnStepResult } from 'claude-code'
+import type { CommandRunInput, CommandRunResult, EngineInterface, FsStat, RenderSurface, Timer, TurnCompleteInput, TurnStepResult, TurnUsage } from 'claude-code'
 import type { PluginState, Register } from 'claude-code'
 
 import type {
   Activity,
   AgentKind,
   Band,
+  BandCache,
   BandProbe,
   BandProbeSpec,
+  CacheConfig,
+  CacheState,
   Config,
   HeldStamp,
   ConfigFile,
@@ -27,9 +30,11 @@ import type {
   SubagentMark,
   Switches,
   Trigger,
+  TtlSource,
   Work,
 } from '../types'
 import { bandLags, bandOf, bandSegments, bandText, sameBand, untrustedText } from './band'
+import { asCache, cacheSegment, effectiveTtl, emptyCache, expiresInMs, newPeriod, onMainRequest, startOver, ttlFromTranscript, withTtl } from './cache'
 import {
   ARGUMENT_HINT,
   INIT_TRUST_HINT,
@@ -49,6 +54,7 @@ import {
 } from './commands'
 import type { Preset, RestartReport, SubagentReport } from './commands'
 import {
+  DEFAULT_CACHE,
   DEFAULT_SELF_GAP,
   DEFAULT_SWITCHES,
   asConfigState,
@@ -118,6 +124,7 @@ import type { CheckRun, Facts, HandoffFact, RefusalCode, StampRead, Verdict } fr
 import { claimFromResume, heartbeatDue, leasePath, leaseState, ownerJson, parseOwner, parseResumeArgs, parseRoleArg, resolveRole, roleForCommand, roleProblem } from './roles'
 import type { Lease, ResumeClaim, RoleResolution } from './roles'
 import {
+  applyTimes,
   contextFloor,
   crossesGates,
   deniedBy,
@@ -135,7 +142,7 @@ import {
   triggerHolds,
   triggersFor,
 } from './triggers'
-import type { ActionPlan, Fire, Metrics, TokenGates } from './triggers'
+import type { ActionPlan, CacheMetrics, Fire, Metrics, TokenGates } from './triggers'
 import {
   PRUNE_AFTER_MS,
   asMarks,
@@ -175,6 +182,7 @@ const PENDING_COMPACT = { plugin: 'ctx-guard', key: 'pendingCompact' } as const
 const LAST_COMPACT = { plugin: 'ctx-guard', key: 'lastCompact' } as const
 const SUBAGENTS = { plugin: 'ctx-guard', key: 'subagents' } as const
 const SPAWNED = { plugin: 'ctx-guard', key: 'spawned' } as const
+const CACHE = { plugin: 'ctx-guard', key: 'cache' } as const
 // A /clear this soon after a not-cleared restart was dropped is that restart's, landing late.
 const LATE_CLEAR_MS = 60 * 1000
 
@@ -263,6 +271,14 @@ type Mod = {
   probeRunning: Set<string>
   // The last run of each probe, for the band and the report.
   probeResults: Map<string, ProbeRun>
+  // The transcript path the last classic Stop named; null when none did.
+  transcriptPath: string | null
+  // A keep-warm ping is in flight.
+  pinging: boolean
+  // The next prompt is ctx-guard's own.
+  ownPrompt: boolean
+  // The last reading showed a usage window (a subscription); null before any reading.
+  subscribed: boolean | null
 }
 
 const fresh = (): Mod => ({
@@ -303,6 +319,10 @@ const fresh = (): Mod => ({
   probeKey: '',
   probeRunning: new Set(),
   probeResults: new Map(),
+  transcriptPath: null,
+  pinging: false,
+  ownPrompt: false,
+  subscribed: null,
 })
 
 let mod: Mod = fresh()
@@ -345,6 +365,7 @@ function asActivity(v: unknown): Activity {
   return {
     lastMainEndAt: num(o.lastMainEndAt),
     mainTurnAt: num(o.mainTurnAt),
+    ownTurn: o.ownTurn === true,
     lastMain: lm && at !== null ? { tokens: num(lm.tokens), at } : null,
     shown: Array.isArray(o.shown) ? o.shown.filter((x): x is string => typeof x === 'string') : [],
   }
@@ -382,6 +403,7 @@ const emptyMem = (): Stored => ({
   spawned: null,
   stamp: null,
   activity: null,
+  cache: null,
 })
 
 let mem: Stored = emptyMem()
@@ -437,6 +459,8 @@ function stateSet($: EngineInterface, key: Key, value: unknown): Promise<unknown
       return $.state.set(STAMP, value as Stored['stamp'])
     case 'activity':
       return $.state.set(ACTIVITY, value as Stored['activity'])
+    case 'cache':
+      return $.state.set(CACHE, value as Stored['cache'])
   }
 }
 
@@ -465,7 +489,7 @@ const writesSettled = (): Promise<unknown> => Promise.all(Object.values(writing)
 
 // Shape-checked, as another version may have written them; a key never written is its default.
 async function readStored($: EngineInterface): Promise<Stored> {
-  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, lastVerdict, lease, work, subagents, spawned, stamp, activity] = await Promise.all([
+  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache] = await Promise.all([
     $.state.get(BAND),
     $.state.get(MARKS),
     $.state.get(ROLE_CLAIM),
@@ -483,6 +507,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     $.state.get(SPAWNED),
     $.state.get(STAMP),
     $.state.get(ACTIVITY),
+    $.state.get(CACHE),
   ])
   const opt = <T,>(v: unknown, as: (v: unknown) => T): T | null => (v === undefined || v === null ? null : as(v))
   return {
@@ -503,6 +528,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     spawned: opt(spawned.value, asSpawned),
     stamp: asHeldStamp(stamp.value),
     activity: opt(activity.value, asActivity),
+    cache: opt(cache.value, asCache),
   }
 }
 
@@ -566,6 +592,17 @@ const activity = (): Activity => mem.activity ?? asActivity(null)
 
 async function patchActivity($: EngineInterface, fn: (a: Activity) => Activity): Promise<void> {
   await change($, 'activity', a => fn(a ?? asActivity(null)))
+}
+
+const cacheState = (): CacheState => mem.cache ?? emptyCache()
+
+// Memory on every call; `$.state` only when `persist`, so a step costs no write.
+async function setCache($: EngineInterface, fn: (c: CacheState) => CacheState, persist = true): Promise<void> {
+  const next = fn(cacheState())
+  if (persist) return put($, 'cache', next)
+  mem.cache = next
+  // A hydrate under way keeps memory's value, as it does for a put.
+  putSince?.add('cache')
 }
 
 // A toast once per session for `key`, reloads included.
@@ -684,13 +721,33 @@ function windowFor(modelWindow: number): WindowInfo {
   return resolveWindow(config.contextWindow, modelWindow, mod.engineWindow, mod.autoCompactWindow)
 }
 
+// A turn start with no end for hours is a lost turn.complete, not a running turn.
+const turnRunningIn = (a: Activity, now: number): boolean => a.mainTurnAt !== null && now - a.mainTurnAt < STALE_TURN_MS
+
+const cacheConfig = (): CacheConfig => mod.eff?.config.cache ?? DEFAULT_CACHE
+
+// A reading with a usage window is a subscription's.
+const subscribedIn = (m: Metrics): boolean => m.limits.five_hour !== null || m.limits.seven_day !== null
+
+// The TTL in force.
+function cacheTtl(subscribed: boolean): { ms: number; source: TtlSource } {
+  return effectiveTtl(cacheState(), cacheConfig(), subscribed)
+}
+
+// A new prefix in a new idle period: after /clear, and for a session the stored record is not of.
+const freshCache = (c: CacheState): CacheState => newPeriod(startOver({ ...c, transcriptTried: false }))
+
 async function metricsFor($: EngineInterface, reading: Reading, now: number): Promise<Metrics> {
   const a = activity()
-  // A turn start with no end for hours is a lost turn.complete, not a running turn.
-  const busy = a.mainTurnAt !== null && now - a.mainTurnAt < STALE_TURN_MS
-  const idle = idleMs(a.lastMainEndAt, busy, now)
+  const running = turnRunningIn(a, now)
+  // ctx-guard's own prompt turn keeps the idle clock running: it is not the operator back.
+  const idle = idleMs(a.lastMainEndAt, running && !a.ownTurn, now)
   const window = windowFor(reading.context.window).tokens
-  return metricsOf({ tokens: reading.context.tokens, rateLimits: reading.rateLimits, cost: reading.cost }, window, idle, now)
+  const m = metricsOf({ tokens: reading.context.tokens, rateLimits: reading.rateLimits, cost: reading.cost }, window, idle, now)
+  mod.subscribed = subscribedIn(m)
+  const c = cacheState()
+  const cache: CacheMetrics = { expiresIn: expiresInMs(c, cacheTtl(mod.subscribed).ms, running, now), miss: c.miss, missCause: c.missCause, pings: c.pings }
+  return { ...m, cache }
 }
 
 // usage() can lag the newest main step mid-turn; the step's fill wins. While a
@@ -728,7 +785,7 @@ async function rememberMain($: EngineInterface, tokens: number | null, now: numb
 
 const roleTriggers = (): Trigger[] => (mod.eff ? triggersFor(mod.eff.config, mod.role.role) : [])
 
-async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean): Promise<void> {
+async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean, metrics: Metrics): Promise<void> {
   const eff = mod.eff
   const role = mod.role.role
   if (!eff) return
@@ -764,9 +821,28 @@ async function setBand($: EngineInterface, metrics: Metrics, isPaused: boolean, 
   const denies =
     eff && mod.role.role !== null ? liveDenies(roleTriggers(), metrics, { blocking: eff.blocking, paused: isPaused }) : []
   const prev = mem.band
-  const band: Band = { ...bandOf(mod.role.role, metrics, denies, prev), subagentsOver: subagentsOver(), probes: probeSegments(), untrusted: bandUntrusted() }
+  const band: Band = { ...bandOf(mod.role.role, metrics, denies, prev), subagentsOver: subagentsOver(), probes: probeSegments(), untrusted: bandUntrusted(), cache: cacheBand(metrics) }
   if (write === 'changed' && sameBand(prev, band)) return
   await drawBand($, band)
+}
+
+// The countdown, from the same TTL and running turn as the cache.expiresIn metric.
+function cacheBand(m: Metrics): BandCache | null {
+  const cfg = cacheConfig()
+  const c = cacheState()
+  const ttl = cacheTtl(subscribedIn(m))
+  const pinger = roleTriggers().find(t => t.do.includes('ping'))
+  return cacheSegment({
+    expiresIn: m.cache.expiresIn,
+    ttl: ttl.ms,
+    guessed: ttl.source === 'guess',
+    busy: turnRunningIn(activity(), m.now),
+    cold: c.coldShown,
+    show: cfg.band.show,
+    warn: cfg.band.warn,
+    pings: c.pings,
+    cap: pinger?.times ?? null,
+  })
 }
 
 // Memory first, so the redraw shows it; `$.state` follows, and its write redraws the band too.
@@ -791,9 +867,13 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
     await put($, 'marks', ev.marks)
     await quietly(() => dropRearmedCompact($, ev.marks))
   }
+  // Counted before acting too: a fire counts toward its trigger's `times` whether or not its actions succeed.
+  const fired = cacheState().fired
+  const capped = applyTimes(ev.fire, fired)
+  if (JSON.stringify(capped.fired) !== JSON.stringify(fired)) await setCache($, c => ({ ...c, fired: capped.fired }))
   mod.gates = tokenGates(triggers, ev.marks, role, metrics.window)
   const isPaused = paused(now)
-  await act($, planActions(ev.fire), isPaused)
+  await act($, planActions(capped.fire), isPaused, metrics)
   // A pause that ran out frees a blocked compact here.
   await quietly(() => unblockCompact($, isPaused))
   await setBand($, metrics, isPaused, write)
@@ -820,11 +900,39 @@ async function onMainStep($: EngineInterface, tokens: number, model: string | nu
   await evaluateNow($, { ...u, context: { window: u.context.window, tokens } }, 'changed')
 }
 
+// The clock, read at once without holding up the caller; null when the read fails.
+function clockRead($: EngineInterface): Promise<number | null> {
+  let at: number | null = null
+  return quietly(async () => {
+    at = await $.clock.now()
+  }).then(() => at)
+}
+
+// A main request: miss, anchor, observed TTL. A miss, or one clearing, is kept in `$.state` and evaluated at once.
+// The request reads or writes the cache when it is sent: the step's open time is its anchor, now when that is unknown.
+async function onCacheRequest($: EngineInterface, usage: TurnUsage, sentAt: Promise<number | null> | null): Promise<void> {
+  if (!active()) return
+  const now = await $.clock.now()
+  const at = Math.min((await sentAt) ?? now, now)
+  // The last reading tells a subscription; the usage is read only when there was none.
+  const subscribed = mod.subscribed ?? subscribedIn(await metricsFor($, await currentReading($), now))
+  const ttl = cacheTtl(subscribed).ms
+  // After /clear the record takes the new session's id from its first request.
+  const sid = cacheState().sessionId ?? (await $.session.id().catch(() => null))
+  const before = cacheState().miss
+  await setCache($, c => ({ ...onMainRequest(c, usage, ttl, at), sessionId: c.sessionId ?? sid }), false)
+  if (cacheState().miss === 0 && before === 0) return
+  await setCache($, c => c)
+  await evaluateNow($, await currentReading($), 'changed')
+}
+
 async function onMeasure($: EngineInterface, e: Reading & { changed: readonly string[] }): Promise<void> {
   if (!active()) return
   mod.measures += 1
   // Another model, every Nth measure, or a context that started over (clear, compact).
   const startedOver = e.changed.includes('context') && e.context.tokens === undefined
+  // The next request writes a new prefix: it is no miss against the old one.
+  if (startedOver) await setCache($, startOver)
   if (e.context.window !== mod.engineModelWindow || mod.measures % ENGINE_WINDOW_EVERY === 0 || startedOver) {
     await readEngineWindow($)
   }
@@ -1609,8 +1717,6 @@ async function onReadyToken($: EngineInterface, e: TurnCompleteInput): Promise<b
 
 // ---- compact ------------------------------------------------------------------
 
-const turnRunningIn = (a: Activity, now: number): boolean => a.mainTurnAt !== null && now - a.mainTurnAt < STALE_TURN_MS
-
 async function turnRunning($: EngineInterface, now: number): Promise<boolean> {
   return turnRunningIn(activity(), now)
 }
@@ -2022,7 +2128,8 @@ async function syncActive($: EngineInterface): Promise<void> {
   if (!mod.timers.length) {
     // A compact held for the quiet period lost its timer with the disarm.
     void quietly(() => rearmCompactHold($))
-    mod.timers.push($.clock.every(IDLE_TICK_MS, () => void serial(() => timed($, () => evaluateCurrent($, 'never')))))
+    // 'changed': the cache countdown moves each minute; an unchanged band is not written.
+    mod.timers.push($.clock.every(IDLE_TICK_MS, () => void serial(() => timed($, () => evaluateCurrent($, 'changed')))))
     mod.timers.push(
       $.clock.every(BAND_TICK_MS, () =>
         void serial(async () => {
@@ -2076,6 +2183,13 @@ async function start($: EngineInterface, isInteractive: boolean, surface: Render
   }
   if (commandProblem) await quietly(() => noticeOnce($, 'command', `ctx-guard: the /ctx-guard command is unavailable (${commandProblem}); notes, blocks and the band still work.`))
   mod.env = await $.env.get('CTX_GUARD_ROLE')
+  // A hot reload keeps `$.state`: the cache stored for this session is kept, idle period and all. One
+  // of another session starts over; one with no id yet is this session's since its /clear.
+  if (hydrated) {
+    const sid = await $.session.id().catch(() => null)
+    const stored = mem.cache
+    if (stored === null || (stored.sessionId !== null && stored.sessionId !== sid)) await setCache($, c => ({ ...freshCache(c), sessionId: sid }))
+  }
   // A failed read leaves memory empty: the next hook reads again and this part runs again then.
   recoverOwed = !hydrated
   await fromMemory($)
@@ -2138,6 +2252,9 @@ async function onClear($: EngineInterface): Promise<void> {
   const reading: MainReading = { tokens: null, at: now }
   mod.lastMain = reading
   await patchActivity($, a => ({ ...a, mainTurnAt: null, lastMain: reading }))
+  // The next request writes a new prefix, in a new transcript that may tell the TTL.
+  mod.transcriptPath = null
+  await setCache($, c => ({ ...freshCache(c), sessionId: null }))
   const queued = getPendingCompact()
   if (queued && queued.step !== 'sent') await dropCompact($, queued, 'a /clear came first', false)
   const late = dropped
@@ -2187,6 +2304,45 @@ async function onMainTurnStart($: EngineInterface): Promise<void> {
 async function onMainTurnEnd($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await patchActivity($, a => ({ ...a, mainTurnAt: null, lastMainEndAt: now }))
+  // The turn's requests moved the cache in memory only: written now, so a reload keeps the anchor.
+  await setCache($, c => c)
+}
+
+// A transcript this long with no cache write is not read again: each read takes the whole file.
+const TRANSCRIPT_SCAN_MAX = 1024 * 1024
+
+// The transcript's newest cache write tells the TTL. Read after each main turn
+// until it does, early while the file is small; after a refused read, or one
+// past TRANSCRIPT_SCAN_MAX with no cache write, not again until /clear or a
+// new session.
+async function detectTtl($: EngineInterface): Promise<void> {
+  if (!active()) return
+  const c = cacheState()
+  if (c.transcriptTried || c.ttlSource === 'transcript' || cacheConfig().ttl !== 'auto') return
+  const derived = await transcriptPathOf($).catch(() => null)
+  const paths = [...new Set([derived, mod.transcriptPath].filter((p): p is string => p !== null))]
+  for (const path of paths) {
+    let text: string
+    try {
+      text = await $.fs.read(path)
+    } catch {
+      continue
+    }
+    const ttl = ttlFromTranscript(text)
+    if (ttl !== null) await setCache($, x => withTtl(x, ttl, 'transcript'))
+    else if (text.length > TRANSCRIPT_SCAN_MAX) await setCache($, x => ({ ...x, transcriptTried: true }))
+    return
+  }
+  await setCache($, x => ({ ...x, transcriptTried: true }))
+}
+
+// Where the engine keeps this session's transcript: classic hooks, which also name it, may not run.
+async function transcriptPathOf($: EngineInterface): Promise<string | null> {
+  const home = await $.env.get('HOME')
+  const dir = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : null)
+  if (!dir) return null
+  const cwd = await $.session.cwd()
+  return `${dir}/projects/${cwd.replace(/[^A-Za-z0-9]/g, '-')}/${await $.session.id()}.jsonl`
 }
 
 // ---- the command ------------------------------------------------------------
@@ -2594,6 +2750,8 @@ export const register: Register = (on, options) => {
     if (needsReady()) await quietly(() => ready($))
     const main = e.agentId === undefined
     const gen = main ? openMainStep() : 0
+    // Read as the request goes out, for the cache anchor; the step does not wait on it.
+    const sentAt = main && active() ? clockRead($) : null
     let r: TurnStepResult
     try {
       r = yield* next(e)
@@ -2606,6 +2764,9 @@ export const register: Register = (on, options) => {
       if (budgetsOn()) subagentStep($, e.agentId, stepTokens(r.usage))
     }
     if (e.agentId === undefined && active()) {
+      const usage = r.usage
+      // Queued first, so the step's evaluation reads this request's cache figures.
+      if (usage) $.clock.after(0, () => void serial(() => timed($, () => onCacheRequest($, usage, sentAt))))
       const tokens = stepTokens(r.usage)
       if (tokens !== null) {
         mod.lastMain = { tokens, at: mod.lastMain?.at ?? 0 }
@@ -2627,6 +2788,8 @@ export const register: Register = (on, options) => {
     if (needsReady()) await quietly(() => ready($))
     if (e.agentId === undefined) {
       await quietly(() => onMainTurnEnd($))
+      // Off the hook's path, as the transcript can be large; in the chain, so a /clear never lands mid-read.
+      $.clock.after(0, () => void serial(() => timed($, () => detectTtl($))))
       let restarting = false
       await quietly(async () => {
         restarting = await onReadyToken($, e)
@@ -2649,6 +2812,8 @@ export const register: Register = (on, options) => {
       ? e.background_tasks.map(t => ({ type: String(t.type), description: String(t.description ?? '') }))
       : null
     await quietly(() => change($, 'work', v => ({ ...(v ?? asWork(null)), background: list })))
+    // An empty path is the engine's stamp for none.
+    if (typeof e.transcript_path === 'string' && e.transcript_path !== '') mod.transcriptPath = e.transcript_path
     return next(e)
   })
 

@@ -155,6 +155,8 @@ export type TtlSource = 'config' | 'transcript' | 'observed' | 'guess'
 
 // The main thread's prompt cache, as last observed.
 export type CacheState = {
+  // The session the record belongs to; null after /clear until a main request reads the new id.
+  sessionId: string | null
   // Detected TTL in ms and where it came from; null until detected (a guess is not stored).
   ttl: number | null
   ttlSource: TtlSource | null
@@ -283,6 +285,8 @@ export type Activity = {
   lastMainEndAt: number | null
   // When the running main-loop turn started; null between turns.
   mainTurnAt: number | null
+  // The running main turn is ctx-guard's own prompt: idle keeps counting through it.
+  ownTurn: boolean
   // Newer than `$.session.usage()` can be mid-turn, so evaluations off a step read it first.
   lastMain: MainReading | null
   // One-time notices already toasted (version, collision, a role problem), so a reload does not repeat them.
@@ -341,6 +345,8 @@ declare module 'claude-code' {
       spawned: { [agentId: string]: SpawnedAgent } | null
       stamp: HeldStamp | null
       activity: Activity | null
+      // The main thread's prompt cache: TTL, anchor, misses and this idle period's pings and fire counts.
+      cache: CacheState | null
     }
   }
 }

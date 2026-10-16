@@ -12,12 +12,14 @@ export const MISS_FLOOR = 2_000
 const WARM_COVER = 0.9
 // A ping writing more than this share of what it read found the prefix gone.
 const PING_WRITE_LIMIT = 0.1
+// A request filling less than this share of the previous fill sends a context that started over.
+const SHRUNK = 0.5
 
 const RANK: Record<TtlSource, number> = { guess: 0, observed: 1, transcript: 2, config: 3 }
 const SOURCES = Object.keys(RANK) as TtlSource[]
 
 export function emptyCache(): CacheState {
-  return { ttl: null, ttlSource: null, transcriptTried: false, anchor: null, prevFill: null, warmSeen: false, model: null, miss: 0, missCause: null, pings: 0, cold: false, coldShown: false, fired: {} }
+  return { sessionId: null, ttl: null, ttlSource: null, transcriptTried: false, anchor: null, prevFill: null, warmSeen: false, model: null, miss: 0, missCause: null, pings: 0, cold: false, coldShown: false, fired: {} }
 }
 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
@@ -32,6 +34,7 @@ export function asCache(v: unknown): CacheState {
     for (const [k, n] of Object.entries(o.fired as Record<string, unknown>)) if (num(n) !== null) fired[k] = n as number
   }
   return {
+    sessionId: typeof o.sessionId === 'string' ? o.sessionId : null,
     ttl: source && ttl !== null ? ttl : null,
     ttlSource: source && ttl !== null ? source : null,
     transcriptTried: o.transcriptTried === true,
@@ -105,11 +108,16 @@ const fillOf = (u: CacheUsage): number => u.input_tokens + u.cache_read_input_to
  * One main-thread request: the miss against the previous fill when the cache
  * was expected warm (unexpired, with a baseline), a one-hour TTL proved by a
  * warm read after more than five minutes, and the new anchor and baseline. The
- * first request after a cold ping has no baseline, so it counts no miss.
+ * first request after a cold ping has no baseline, so it counts no miss. A
+ * fill under half the previous one is a context that started over (a compact
+ * whose measure has not come yet): a start-over with this request as the
+ * new baseline.
  */
 export function onMainRequest(c: CacheState, u: CacheUsage, ttl: number, now: number): CacheState {
   const read = u.cache_read_input_tokens
   const model = u.model ?? c.model
+  const fill = fillOf(u)
+  if (c.prevFill !== null && fill < SHRUNK * c.prevFill) return { ...startOver(c), anchor: now, prevFill: fill, model }
   const expectedWarm = c.anchor !== null && c.prevFill !== null && now - c.anchor < ttl - MARGIN_MS
   const warm = c.prevFill !== null && c.prevFill > 0 && read >= WARM_COVER * c.prevFill
   let miss = 0
@@ -122,7 +130,7 @@ export function onMainRequest(c: CacheState, u: CacheUsage, ttl: number, now: nu
       missCause = switched ? 'model' : 'prefix'
     }
   }
-  let next: CacheState = { ...c, anchor: now, prevFill: fillOf(u), warmSeen: c.warmSeen || warm, model, miss, missCause, coldShown: false }
+  let next: CacheState = { ...c, anchor: now, prevFill: fill, warmSeen: c.warmSeen || warm, model, miss, missCause, coldShown: false }
   if (warm && c.anchor !== null && now - c.anchor > FIVE_MIN) next = withTtl(next, HOUR, 'observed')
   return next
 }
