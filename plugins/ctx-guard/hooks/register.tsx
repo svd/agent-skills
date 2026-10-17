@@ -614,10 +614,10 @@ async function patchActivity($: EngineInterface, fn: (a: Activity) => Activity):
 
 const cacheState = (): CacheState => mem.cache ?? emptyCache()
 
-// Memory on every call; `$.state` only when `persist`, so a step costs no write.
-async function setCache($: EngineInterface, fn: (c: CacheState) => CacheState, persist = true): Promise<void> {
+// Memory on every call; `$.state` only when `durable`, so a step costs no write.
+async function setCache($: EngineInterface, fn: (c: CacheState) => CacheState, durable = true): Promise<void> {
   const next = fn(cacheState())
-  if (persist) return put($, 'cache', next)
+  if (durable) return put($, 'cache', next)
   mem.cache = next
   // A hydrate under way keeps memory's value, as it does for a put.
   putSince?.add('cache')
