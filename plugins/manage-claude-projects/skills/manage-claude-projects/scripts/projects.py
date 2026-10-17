@@ -49,6 +49,11 @@ PRICING = {
     "mythos":   {"input": 10.0, "output": 50.0,  "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00},
     # Opus 5.5 and Sonnet 5.5 cache reads are 0.05x base input, not 0.1x.
     "opus-5-5": {"input": 4.0,  "output": 20.0,  "cache_write": 5.00,  "cache_write_1h": 8.00,  "cache_read": 0.20},
+    # Opus 4 and 4.1 (retired on the Claude API) cost 3x the later Opus 4.x rate.
+    "opus-4-1": {"input": 15.0, "output": 75.0,  "cache_write": 18.75, "cache_write_1h": 30.00, "cache_read": 1.50},
+    "opus-4-0": {"input": 15.0, "output": 75.0,  "cache_write": 18.75, "cache_write_1h": 30.00, "cache_read": 1.50},
+    "opus-4-2025": {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_write_1h": 30.00, "cache_read": 1.50},
+    "opus-4@":    {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_write_1h": 30.00, "cache_read": 1.50},
     "opus":     {"input": 5.0,  "output": 25.0,  "cache_write": 6.25,  "cache_write_1h": 10.00, "cache_read": 0.50},
     "sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.10},
     "sonnet-5": {"input": 2.0,  "output": 10.0,  "cache_write": 2.50,  "cache_write_1h": 4.00,  "cache_read": 0.20},
@@ -57,6 +62,7 @@ PRICING = {
     # bill every token type at 5x ($0.50 / $2.50).
     "haiku-5-5": {"input": 0.10, "output": 0.50, "cache_write": 0.125, "cache_write_1h": 0.20,  "cache_read": 0.01,
                   "long_context_multiplier": 5},
+    "3-5-haiku": {"input": 0.80, "output": 4.0,  "cache_write": 1.00,  "cache_write_1h": 1.60,  "cache_read": 0.08},
     "haiku":    {"input": 1.0,  "output": 5.0,   "cache_write": 1.25,  "cache_write_1h": 2.00,  "cache_read": 0.10},
 }
 

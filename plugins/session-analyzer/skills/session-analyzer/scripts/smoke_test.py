@@ -568,9 +568,23 @@ def main():
     expect = {"claude-sonnet-5-5": "sonnet-5-5", "claude-sonnet-5": "sonnet-5",
               "claude-sonnet-4-6": "sonnet", "claude-haiku-5-5": "haiku-5-5",
               "claude-haiku-4-5": "haiku", "claude-opus-5-5": "opus-5-5",
-              "claude-fable-5-1": "fable-5-1"}
+              "claude-fable-5-1": "fable-5-1", "claude-opus-4-1-20250805": "opus-4-1",
+              "claude-opus-4-0": "opus-4-0", "claude-opus-4-20250514": "opus-4-2025",
+              "claude-opus-4-5-20251101": "opus", "claude-3-5-haiku-20241022": "3-5-haiku"}
     got = {mid: next((k for k in ps.PRICING if k in mid), None) for mid in expect}
     check("pricing: model ids match their specific PRICING key", got == expect, str(got))
+    # Vertex AI ids end in "@<date>", Bedrock ids in "-<date>-v1:0".
+    expect = {"claude-opus-4@20250514": "opus-4@", "claude-opus-4-1@20250805": "opus-4-1",
+              "claude-opus-4-5@20251101": "opus", "claude-3-5-haiku@20241022": "3-5-haiku",
+              "anthropic.claude-opus-4-20250514-v1:0": "opus-4-2025",
+              "us.anthropic.claude-opus-4-1-20250805-v1:0": "opus-4-1",
+              "anthropic.claude-opus-4-5-20251101-v1:0": "opus",
+              "anthropic.claude-3-5-haiku-20241022-v1:0": "3-5-haiku"}
+    got = {mid: next((k for k in ps.PRICING if k in mid), None) for mid in expect}
+    check("pricing: Vertex and Bedrock ids match their specific PRICING key",
+          got == expect, str(got))
+    cvx = ps.estimate_cost({**base, "input_tokens": M}, "claude-opus-4@20250514")
+    check("pricing: Vertex Opus 4 id priced at $15 input", cvx == 15.0, str(cvx))
 
     # ---------------------------------------------------------------
     # Haiku 5.5 long-context tier: requests with prompt > 100K bill at 5x.

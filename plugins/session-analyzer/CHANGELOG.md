@@ -2,6 +2,16 @@
 
 All notable changes to the `session-analyzer` plugin are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- Claude Opus 4 and Opus 4.1 pricing (`opus-4-1`, `opus-4-0`, `opus-4-2025`, `opus-4@`: $15 / $75
+  per MTok, cache read $1.50). These sessions were matched by the generic `opus` row and understated
+  3x.
+- Claude Haiku 3.5 pricing (`3-5-haiku`: $0.80 / $4 per MTok, cache read $0.08). These sessions
+  were matched by the generic `haiku` row and overstated 25%.
+
 ## [0.7.0] - 2026-10-08
 
 ### Added
