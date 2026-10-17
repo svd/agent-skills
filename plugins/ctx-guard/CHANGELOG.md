@@ -2,6 +2,14 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [0.3.1] - 2026-10-17
+
+### Fixed
+
+- The plugin passes the claude.ai plugin directory's check on `$` use (`MOD_CAPABILITY_USE_NOT_PLAIN`):
+  a `setCache` parameter no longer shares its name with the top-level `persist` function that
+  receives `$`.
+
 ## [0.3.0] - 2026-10-17
 
 ### Added

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "ctx-guard",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Configurable context and usage guard: per-role notes, tool blocks, guarded handoff with clear-and-resume or compact, and subagent context budgets.",
   "author": {
     "name": "Sviatoslav Sviridov",
