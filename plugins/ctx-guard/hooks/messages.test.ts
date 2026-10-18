@@ -3,6 +3,8 @@ import { describe, expect, test } from 'claude-code/testing'
 import { defaultTriggers, roleSpec, validate } from './config'
 import {
   DEFAULT_PROMPT,
+  DEFAULT_WAKE_PROMPT,
+  NOT_WOKEN,
   TEMPLATE_VARS,
   collapseNotes,
   denyReason,
@@ -14,6 +16,11 @@ import {
   humanTokens,
   humanUsd,
   levelText,
+  liftCheckFailedText,
+  liftNoteText,
+  liftNotifyText,
+  liftReason,
+  liftToastText,
   noteText,
   noteToastText,
   isOwnPrompt,
@@ -26,6 +33,7 @@ import {
   subagentWarnText,
   templateVars,
   toastText,
+  wakePromptText,
 } from './messages'
 import { NO_CACHE, evaluate } from './triggers'
 import type { Fire, FireVars, Metrics } from './triggers'
@@ -105,7 +113,11 @@ describe('template vars', () => {
   test('every variable, humanized', () => {
     const s = spec({ triggers: [{ id: '5h', when: { 'limit.five_hour': 80 }, do: ['note'] }] })
     const f = fires(s)[0] as Fire
-    expect(templateVars(f.vars, { role: 'lead', handoffPath: '.ctx-guard/lead-handoff.md', readyToken: 'CTX-READY' })).toEqual({
+    expect(templateVars(f.vars, { role: 'lead', handoffPath: '.ctx-guard/lead-handoff.md', readyToken: 'CTX-READY' }, f.trigger)).toEqual({
+      id: '5h',
+      tools: 'unknown',
+      // The reset plus the 1-minute roll-over grace.
+      liftsIn: '2h11m',
       role: 'lead',
       tokens: '312k',
       percent: '31%',
@@ -377,6 +389,105 @@ describe('deny reason', () => {
         'ctx-guard config, or turns blocking off in /config. If you need Agent now, ask the operator.',
     )
   })
+
+  test('names when the tool comes free, and whether ctx-guard prompts then', () => {
+    const s = spec({ triggers: [{ id: 'brake', when: { 'limit.any': 80 }, do: [{ deny: ['Agent'] }] }] })
+    const t = s.triggers[0] as NonNullable<RoleSpec['triggers'][0]>
+    const tail = (lift: { liftsIn: number | null; wakes: boolean }) => denyReason('Agent', t, metrics(), lift).split('/config.')[1]
+    expect(tail({ liftsIn: 5 * 3_600_000, wakes: false })).toBe(' Agent comes free in 5h. If you need Agent now, ask the operator.')
+    expect(tail({ liftsIn: 5 * 3_600_000, wakes: true })).toBe(
+      ' Agent comes free in 5h; ctx-guard is set to prompt you when the tool comes free. If you need Agent now, ask the operator.',
+    )
+    expect(tail({ liftsIn: null, wakes: false })).toBe(' Agent comes free at a time not known yet. If you need Agent now, ask the operator.')
+  })
+})
+
+describe('lift texts', () => {
+  const H = 3_600_000
+  const DAY = 24 * H
+  const iso = (ms: number): string => new Date(ms).toISOString()
+  const ctx = { role: 'lead', handoffPath: '.ctx-guard/lead-handoff.md', readyToken: 'CTX-READY' }
+  const brake = (raw: Record<string, unknown>) => spec({ triggers: [{ do: ['note', { deny: ['Agent', 'Workflow'] }], ...raw }] }).triggers[0] as NonNullable<RoleSpec['triggers'][0]>
+  const at = (five: { pct: number; resetsAt: string | null; estimated?: true } | null, week: { pct: number; resetsAt: string | null; estimated?: true } | null) =>
+    metrics({ limits: { five_hour: five, seven_day: week } })
+  const stop = brake({ id: 'limit-stop', when: { 'limit.any': 95 }, lift: { do: ['note'] } })
+  const w60 = brake({ id: 'week-60-early', when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '4d' }, lift: { do: ['note'] } })
+
+  test('liftReason: a window reset, a reported percent, a .resetsIn, limit.any and a context trigger', () => {
+    expect(liftReason(brake({ id: 'f', when: { 'limit.five_hour': 90 } }), at({ pct: 0, resetsAt: null, estimated: true }, null))).toBe('the 5-hour usage window reset')
+    expect(liftReason(w60, at(null, { pct: 0, resetsAt: null, estimated: true }))).toBe('the weekly usage window reset')
+    expect(liftReason(w60, at(null, { pct: 55, resetsAt: iso(NOW + 5 * DAY) }))).toBe('weekly usage is below 60%')
+    expect(liftReason(w60, at(null, { pct: 70, resetsAt: iso(NOW + 3 * DAY) }))).toBe('the weekly reset is less than 4d away')
+    expect(liftReason(stop, at({ pct: 0, resetsAt: null, estimated: true }, { pct: 40, resetsAt: iso(NOW + DAY) }))).toBe('the 5-hour usage window reset')
+    expect(liftReason(stop, at({ pct: 10, resetsAt: iso(NOW + H) }, { pct: 40, resetsAt: iso(NOW + DAY) }), 'five_hour')).toBe('5-hour usage is below 95%')
+    expect(liftReason(brake({ id: 'c', when: { context: '300k' } }), metrics({ tokens: 10_000 }))).toBe('its condition no longer holds')
+  })
+
+  const rolled = at({ pct: 0, resetsAt: null, estimated: true }, { pct: 40, resetsAt: iso(NOW + DAY) })
+
+  test('the default lift note, wake prompt, toast and notifies', () => {
+    const l = { trigger: stop, metrics: rolled, window: 'five_hour' }
+    expect(liftNoteText([l], ctx)).toBe('[ctx-guard] Trigger "limit-stop" has lifted: the 5-hour usage window reset. Agent, Workflow are allowed again.')
+    expect(wakePromptText(l, ctx)).toBe(
+      '[ctx-guard] Trigger "limit-stop" has lifted: the 5-hour usage window reset. Agent, Workflow are allowed again. You paused your work because of it. ' +
+        'Time has passed since then, so first check where the work stands (task list, git status, the handoff if you wrote one), before you start any subagent. ' +
+        'Then carry on with the work you paused. If nothing is left to do, say so in one line and stop.',
+    )
+    expect(DEFAULT_WAKE_PROMPT.startsWith('[ctx-guard] Trigger "{id}" has lifted')).toBe(true)
+    expect(liftToastText([l])).toBe('ctx-guard: "limit-stop" lifted (the 5-hour usage window reset); Agent, Workflow allowed again.')
+    expect(liftNotifyText([{ lift: l, why: NOT_WOKEN.untrusted }])).toBe(
+      'ctx-guard: "limit-stop" lifted (the 5-hour usage window reset); Agent, Workflow allowed again. Not woken: the repo is not trusted.',
+    )
+    expect(liftCheckFailedText(['week-60-early'])).toBe(
+      'ctx-guard: "week-60-early" may have lifted, but fresh usage could not be read (the window may still be full). Not woken; ctx-guard tries again when usage is next reported or the window resets.',
+    )
+  })
+
+  test('several lifts make one note and one notify naming them', () => {
+    const a = { trigger: stop, metrics: rolled, window: 'five_hour' }
+    const b = { trigger: w60, metrics: at(null, { pct: 70, resetsAt: iso(NOW + 3 * DAY) }), window: null }
+    expect(liftNoteText([a, b], ctx)).toBe(
+      '[ctx-guard] Trigger "limit-stop" has lifted: the 5-hour usage window reset. Agent, Workflow are allowed again. ' +
+        'Trigger "week-60-early" has lifted: the weekly reset is less than 4d away. Agent, Workflow are allowed again.',
+    )
+    expect(liftNotifyText([{ lift: a, why: NOT_WOKEN.paused }, { lift: b, why: NOT_WOKEN.paused }])).toBe(
+      'ctx-guard: "limit-stop" lifted (the 5-hour usage window reset); Agent, Workflow allowed again. ' +
+        '"week-60-early" lifted (the weekly reset is less than 4d away); Agent, Workflow allowed again. Not woken: ctx-guard is paused.',
+    )
+    expect(liftNotifyText([{ lift: a, why: NOT_WOKEN.spent }, { lift: b, why: NOT_WOKEN.paused }])).toContain('Not woken: "limit-stop": lift.times is spent; "week-60-early": ctx-guard is paused.')
+    expect(liftNotifyText([{ lift: a, why: null }])).toBe(liftToastText([a]))
+  })
+
+  test('liftReason for limit.any names the window that held, a reset only when that window rolled over', () => {
+    const rolled = { pct: 0, resetsAt: null, estimated: true } as const
+    expect(liftReason(stop, at({ pct: 40, resetsAt: iso(NOW + H) }, rolled), 'five_hour')).toBe('5-hour usage is below 95%')
+    expect(liftReason(stop, at(rolled, { pct: 40, resetsAt: iso(NOW + DAY) }), 'five_hour')).toBe('the 5-hour usage window reset')
+    expect(liftReason(stop, at({ pct: 40, resetsAt: iso(NOW + H) }, rolled))).toBe('the weekly usage window reset')
+  })
+
+  test('a custom lift.message renders {id}, {tools} and {liftReason} in the note and the prompt', () => {
+    const t = brake({ id: 'b', when: { 'limit.any': 95 }, lift: { do: ['note', 'prompt'], times: 1, message: 'Back: {id} freed {tools} ({liftReason}).' } })
+    const l = { trigger: t, metrics: rolled, window: null }
+    expect(liftNoteText([l], ctx)).toBe('[ctx-guard] Back: b freed Agent, Workflow (the 5-hour usage window reset).')
+    expect(wakePromptText(l, ctx)).toBe('Back: b freed Agent, Workflow (the 5-hour usage window reset).')
+  })
+
+  test('a trigger note can name {id}, {tools} and {liftsIn}', () => {
+    const s = spec({
+      triggers: [{ id: 'e', when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '4d' }, do: ['note', { deny: ['Agent'] }], message: '{id} blocks {tools} for {liftsIn}.' }],
+    })
+    const m = at(null, { pct: 70, resetsAt: iso(NOW + 4 * DAY + 5 * H) })
+    expect(note(s, fires(s, m)[0] as Fire)).toBe('[ctx-guard] e blocks Agent for 5h.')
+    expect(TEMPLATE_VARS).toContain('liftsIn')
+  })
+
+  test('{liftReason} is a lift text variable: a trigger note or prompt leaves it as written', () => {
+    const s = spec({ triggers: [{ id: 'e', when: { 'limit.seven_day': 60 }, do: ['note', { deny: ['Agent'] }], message: '{id}: {liftReason}.' }] })
+    const f = fires(s, at(null, { pct: 70, resetsAt: iso(NOW + DAY) }))[0] as Fire
+    expect(note(s, f)).toBe('[ctx-guard] e: {liftReason}.')
+    expect(promptText(f, ctx)).toBe('e: {liftReason}.')
+    expect(TEMPLATE_VARS).not.toContain('liftReason')
+  })
 })
 
 describe('refusal and subagent texts', () => {
@@ -538,7 +649,7 @@ describe('cache texts', () => {
 
   test('the prompt text, default and from the trigger message', () => {
     const f = (message: string | null) => ({
-      trigger: { id: 'away', message } as never,
+      trigger: { id: 'away', message, do: ['prompt'] } as never,
       actions: ['prompt'] as never,
       step: 0,
       vars: vars({ metric: 'cache.expiresIn' }),

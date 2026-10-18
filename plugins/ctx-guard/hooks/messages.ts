@@ -2,14 +2,14 @@
 // restart tail, deny reasons, refusals, subagent budget notes and toasts.
 // Pure: no `$`, never throws. Texts carry numbers, names and paths only.
 import type { Level, Quantity, RestartMode, RestartVia, RoleSpec, Trigger } from '../types'
-import type { Condition, Fire, FireVars, LimitInfo, Metrics } from './triggers'
-import { conditions, resetsInMs } from './triggers'
+import type { Condition, Fire, FireVars, LimitInfo, LimitKind, Metrics } from './triggers'
+import { conditions, denyTools, fireVars, isResetsIn, resetsInMs } from './triggers'
 
 export const PREFIX = '[ctx-guard]'
 
 // ---- templates and figures ---------------------------------------------------
 
-export const TEMPLATE_VARS = ['role', 'tokens', 'percent', 'threshold', 'window', 'limit', 'resetsIn', 'handoffPath', 'readyToken', 'idle', 'expiresIn'] as const
+export const TEMPLATE_VARS = ['role', 'tokens', 'percent', 'threshold', 'window', 'limit', 'resetsIn', 'handoffPath', 'readyToken', 'idle', 'expiresIn', 'id', 'tools', 'liftsIn'] as const
 
 export const DEFAULT_PROMPT = `${PREFIX} The user has been away {idle}; the prompt cache expires in {expiresIn}. Write the handoff to {handoffPath} and stop; do not start new work.`
 
@@ -94,9 +94,12 @@ export function handoffInstructionsFor(spec: RoleSpec, role: string): string | n
 
 export type NoteContext = { role: string | null; handoffPath: string | null; readyToken: string }
 
-/** Every template variable for a fired trigger, humanized. */
-export function templateVars(vars: FireVars, ctx: NoteContext): Record<string, string> {
+/** Every template variable for a fired trigger, humanized; a lift's texts add `liftReason`. */
+export function templateVars(vars: FireVars, ctx: NoteContext, trigger: Trigger | null = null): Record<string, string> {
   return {
+    id: trigger?.id ?? UNKNOWN,
+    tools: trigger ? denyTools(trigger).join(', ') || UNKNOWN : UNKNOWN,
+    liftsIn: vars.liftsIn === null || vars.liftsIn === undefined ? UNKNOWN : humanDuration(vars.liftsIn),
     role: ctx.role ?? 'none',
     tokens: vars.tokens === null ? UNKNOWN : humanTokens(vars.tokens),
     percent: vars.percent === null ? UNKNOWN : humanPercent(vars.percent),
@@ -113,7 +116,7 @@ export function templateVars(vars: FireVars, ctx: NoteContext): Record<string, s
 
 /** What a `prompt` action submits: the trigger's message, else the default, with template variables filled. */
 export function promptText(fire: Fire, ctx: NoteContext): string {
-  return render(fire.trigger.message ?? DEFAULT_PROMPT, templateVars(fire.vars, ctx))
+  return render(fire.trigger.message ?? DEFAULT_PROMPT, templateVars(fire.vars, ctx, fire.trigger))
 }
 
 /**
@@ -254,7 +257,7 @@ export function collapseNotes(fires: readonly Fire[], opts: NoteOptions): string
   if (fires.length === 0) return null
   const { role, spec, readyToken } = opts
   const handoffPath = handoffPathFor(spec, role)
-  const tvOf = (f: Fire): Record<string, string> => templateVars(f.vars, { role, handoffPath, readyToken })
+  const tvOf = (f: Fire): Record<string, string> => templateVars(f.vars, { role, handoffPath, readyToken }, f.trigger)
 
   const builtIn = fires.filter(f => f.trigger.message === null)
   const byFigure = new Map<string, Fire>()
@@ -346,7 +349,7 @@ export function noteToastText(fires: readonly Fire[], opts: NoteOptions): string
     // The level wording up to its colon: "Wrap up: start no new item…" → "wrap up".
     asks.push(clause(levelText(builtInTop.trigger.level, builtInTop.vars.metric, spec.restart.via).split(':')[0] ?? ''))
   } else if (custom) {
-    const tv = templateVars(custom.vars, { role, handoffPath: handoffPathFor(spec, role), readyToken })
+    const tv = templateVars(custom.vars, { role, handoffPath: handoffPathFor(spec, role), readyToken }, custom.trigger)
     asks.push(clause(unprefixed(render(custom.trigger.message as string, tv))))
   }
   if (fires.some(f => f.trigger.when.context !== null)) asks.push(restartAsk(spec, readyToken, opts.mode ?? spec.restart.mode))
@@ -357,7 +360,6 @@ export function noteToastText(fires: readonly Fire[], opts: NoteOptions): string
 
 // ---- denies, refusals, subagents ---------------------------------------------
 
-const isResetsIn = (metric: string): boolean => metric.endsWith('.resetsIn')
 
 function metricName(c: Condition): string {
   if (isResetsIn(c.metric)) return `time to the ${c.limit ? windowName(c.limit.kind) : 'usage'} reset`
@@ -371,11 +373,15 @@ function conditionText(c: Condition): string {
   return `${metricName(c)} ${value} ≥ ${humanQuantity(c.threshold)}`
 }
 
+// When the denied tool comes free (toolLiftsIn; null is unknown), and whether ctx-guard will prompt the model then.
+export type DenyLift = { liftsIn: number | null; wakes: boolean }
+
 /**
  * Why `tool` is denied, addressed to the model: the trigger, its metrics, and
- * what lifts it, none of which the model can do itself.
+ * what lifts it, none of which the model can do itself; with `lift`, when the
+ * tool comes free and whether ctx-guard prompts the model then.
  */
-export function denyReason(tool: string, trigger: Trigger, metrics: Metrics): string {
+export function denyReason(tool: string, trigger: Trigger, metrics: Metrics, lift: DenyLift | null = null): string {
   const cs = conditions(trigger, metrics)
   const lifts: string[] = []
   // A time-left condition stops holding as the reset nears, before the window resets.
@@ -392,9 +398,108 @@ export function denyReason(tool: string, trigger: Trigger, metrics: Metrics): st
   lifts.push(`when the operator runs /ctx-guard pause, changes trigger "${trigger.id}" in the ctx-guard config, or turns blocking off in /config`)
   const last = lifts.pop() as string
   const when = lifts.length ? `${lifts.join(', ')}, or ${last}` : last
+  const free = lift
+    ? ` ${tool} comes free ${lift.liftsIn === null ? 'at a time not known yet' : `in ${humanDuration(lift.liftsIn)}`}${lift.wakes ? '; ctx-guard is set to prompt you when the tool comes free' : ''}.`
+    : ''
   return (
     `${PREFIX} ${tool} is blocked by trigger "${trigger.id}": ${cs.map(conditionText).join(' and ')}. ` +
-    `Carry on without ${tool}; the block lifts ${when}. If you need ${tool} now, ask the operator.`
+    `Carry on without ${tool}; the block lifts ${when}.${free} If you need ${tool} now, ask the operator.`
+  )
+}
+
+// ---- lifts ---------------------------------------------------------------------
+
+export const DEFAULT_LIFT_NOTE = 'Trigger "{id}" has lifted: {liftReason}. {tools} are allowed again.'
+
+export const DEFAULT_WAKE_PROMPT =
+  `${PREFIX} Trigger "{id}" has lifted: {liftReason}. {tools} are allowed again. You paused your work because of it. ` +
+  'Time has passed since then, so first check where the work stands (task list, git status, the handoff if you wrote one), before you start any subagent. ' +
+  'Then carry on with the work you paused. If nothing is left to do, say so in one line and stop.'
+
+// Why a wake did not run, as the operator's notify says it.
+export const NOT_WOKEN = {
+  untrusted: 'the repo is not trusted',
+  autoActions: 'autoActions is off',
+  paused: 'ctx-guard is paused',
+  spent: 'lift.times is spent',
+  refused: 'the prompt was refused',
+} as const
+
+export type NotWoken = (typeof NOT_WOKEN)[keyof typeof NOT_WOKEN]
+
+// A trigger that lifted, the figures it lifted on, and the window `limit.any` read while it held.
+export type LiftInput = { trigger: Trigger; metrics: Metrics; window: string | null }
+
+const isKind = (k: string | null): k is LimitKind => k === 'five_hour' || k === 'seven_day'
+
+/**
+ * What let the trigger's AND go, in words: a window past its reset, a usage
+ * percent below its threshold, a reset nearer than its `.resetsIn`, or "its
+ * condition no longer holds" for any other metric. For `limit.any`, the window
+ * that held while the brake did (`window`), else one that rolled over.
+ */
+export function liftReason(trigger: Trigger, m: Metrics, window: string | null = null): string {
+  const c = conditions(trigger, m).find(x => x.value !== null && !x.holds)
+  if (!c || !c.metric.startsWith('limit.')) return 'its condition no longer holds'
+  let kind: LimitKind | null = c.limit?.kind ?? null
+  if (c.metric === 'limit.any') {
+    const rolled = (['five_hour', 'seven_day'] as const).find(k => m.limits[k]?.estimated)
+    kind = isKind(window) ? window : (rolled ?? kind)
+  }
+  const name = kind ? windowName(kind) : null
+  if (kind && m.limits[kind]?.estimated) return `the ${name} usage window reset`
+  if (isResetsIn(c.metric)) return `the ${name ? `${name} ` : ''}reset is less than ${humanQuantity(c.threshold)} away`
+  return `${name ? `${name} usage` : 'usage'} is below ${humanQuantity(c.threshold)}`
+}
+
+function liftTemplateVars(l: LiftInput, ctx: NoteContext): Record<string, string> {
+  const vars = fireVars(l.trigger, l.metrics)
+  const reason = liftReason(l.trigger, l.metrics, l.window)
+  if (vars) return { ...templateVars(vars, ctx, l.trigger), liftReason: reason }
+  return { role: ctx.role ?? 'none', id: l.trigger.id, tools: denyTools(l.trigger).join(', '), liftReason: reason }
+}
+
+/** One lift note for every lift of an evaluation: each trigger's `lift.message`, else the default sentence. Null for none. */
+export function liftNoteText(lifts: readonly LiftInput[], ctx: NoteContext): string | null {
+  if (!lifts.length) return null
+  const parts = lifts.map(l => unprefixed(render(l.trigger.lift?.message ?? DEFAULT_LIFT_NOTE, liftTemplateVars(l, ctx)).trim()))
+  return `${PREFIX} ${parts.join(' ')}`
+}
+
+/** The wake prompt: the trigger's `lift.message`, else the default, with template variables filled. */
+export function wakePromptText(l: LiftInput, ctx: NoteContext): string {
+  return render(l.trigger.lift?.message ?? DEFAULT_WAKE_PROMPT, liftTemplateVars(l, ctx))
+}
+
+// `"limit-stop" lifted (the 5-hour usage window reset); Agent, Workflow allowed again.`
+function liftedText(l: LiftInput): string {
+  return `"${l.trigger.id}" lifted (${liftReason(l.trigger, l.metrics, l.window)}); ${denyTools(l.trigger).join(', ')} allowed again.`
+}
+
+/** The toast (and `notify`) for lifts: one line naming each. Null for none. */
+export function liftToastText(lifts: readonly LiftInput[]): string | null {
+  return lifts.length ? `ctx-guard: ${lifts.map(liftedText).join(' ')}` : null
+}
+
+/**
+ * The one `notify` of an evaluation's lifts: the toast text, then why a wake
+ * did not run (one reason, or one per trigger when they differ). Null for none.
+ */
+export function liftNotifyText(lifts: readonly { lift: LiftInput; why: NotWoken | null }[]): string | null {
+  const head = liftToastText(lifts.map(x => x.lift))
+  if (!head) return null
+  const whys = lifts.filter(x => x.why !== null)
+  const distinct = [...new Set(whys.map(x => x.why))]
+  if (!distinct.length) return head
+  if (distinct.length === 1) return `${head} Not woken: ${distinct[0]}.`
+  return `${head} Not woken: ${whys.map(x => `"${x.lift.trigger.id}": ${x.why}`).join('; ')}.`
+}
+
+/** The `notify` after a lift check failed three times. */
+export function liftCheckFailedText(ids: readonly string[]): string {
+  return (
+    `ctx-guard: ${ids.map(id => `"${id}"`).join(', ')} may have lifted, but fresh usage could not be read (the window may still be full). ` +
+    'Not woken; ctx-guard tries again when usage is next reported or the window resets.'
   )
 }
 

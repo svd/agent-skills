@@ -284,6 +284,12 @@ function varsOf(trigger: Trigger, cs: readonly Condition[], step: number, m: Met
   }
 }
 
+/** What a text about the trigger needs on `m`, as for a fire at its first threshold (a lift's texts). */
+export function fireVars(trigger: Trigger, m: Metrics): FireVars | null {
+  const cs = conditions(trigger, m)
+  return cs.length ? varsOf(trigger, cs, 0, m) : null
+}
+
 const edgeActions = (t: Trigger): EdgeAction[] => t.do.filter((a): a is EdgeAction => typeof a === 'string')
 
 /**
@@ -534,7 +540,7 @@ export function triggersFor(config: Config, role: string | null): Trigger[] {
 
 // ---- holds and lifts -------------------------------------------------------------
 
-const isResetsIn = (metric: Metric): boolean => metric === 'limit.five_hour.resetsIn' || metric === 'limit.seven_day.resetsIn'
+export const isResetsIn = (metric: Metric): boolean => metric === 'limit.five_hour.resetsIn' || metric === 'limit.seven_day.resetsIn'
 
 // Time until a window reads as rolled over: ROLL_OVER_GRACE_MS past its reset (see limitsFrom).
 const rollsOverInMs = (resetsAt: string | null, now: number): number | null => resetsInMs(resetsAt, now - ROLL_OVER_GRACE_MS)
