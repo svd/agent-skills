@@ -12,6 +12,7 @@ import {
   asConfig,
   asConfigState,
   resolveWindow,
+  liftHas,
   localPathFor,
   mergeLayers,
   parseLayer,
@@ -31,7 +32,7 @@ import {
   zeroConfigTriggers,
 } from './config'
 import type { FileLayer } from './config'
-import type { Config } from '../types'
+import type { Config, Trigger } from '../types'
 
 const TEAM = '.claude/ctx-guard.json'
 const LOCAL = '.claude/ctx-guard.local.json'
@@ -1150,5 +1151,121 @@ describe('cache config', () => {
       subagents: { '*': { stop: '100k' } },
     }
     expect(trustHash(validate(full).config as Config)).toBe('a7da1ec5f112a4030c57961f540f32b5d12a0df768fcd191f447f51c4c6b7011')
+  })
+})
+
+describe('lift', () => {
+  const role = (triggers: unknown[]) => ({ version: 1, roles: { lead: { triggers } } })
+  const brake = (lift: unknown, extra: Record<string, unknown> = {}) => ({
+    id: 'week-60-early',
+    when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '4d' },
+    do: ['note', { deny: ['Agent', 'Workflow'] }],
+    level: 'hard',
+    lift,
+    ...extra,
+  })
+  const errs = (t: unknown): string => validate(role([t])).errors.join('\n')
+
+  test('a brake takes lift: do, times with prompt, a message', () => {
+    const r = validate(role([brake({ do: ['note', 'prompt'], times: 3, message: 'Back: {tools}.' })]))
+    expect(r.errors).toEqual([])
+    expect(r.config?.roles.lead?.triggers[0]?.lift).toEqual({ do: ['note', 'prompt'], times: 3, message: 'Back: {tools}.' })
+  })
+
+  test('a trigger with no lift reads lift null', () => {
+    expect(validate(role([{ id: 'n', when: { context: '50%' }, do: ['note'] }])).config?.roles.lead?.triggers[0]?.lift).toBeNull()
+  })
+
+  test('lift null reads as no lift, on a trigger with or without a deny; lift.message null keeps the default texts', () => {
+    for (const t of [brake(null), { id: 'n', when: { context: '50%' }, do: ['note'], lift: null }]) {
+      const r = validate(role([t]))
+      expect([r.errors, r.config?.roles.lead?.triggers[0]?.lift]).toEqual([[], null])
+    }
+    const r = validate(role([brake({ do: ['note'], message: null })]))
+    expect([r.errors, r.config?.roles.lead?.triggers[0]?.lift]).toEqual([[], { do: ['note'], times: null, message: null }])
+  })
+
+  test('lift on a trigger without a deny is refused', () => {
+    expect(errs({ id: 'n', when: { context: '50%' }, do: ['note'], lift: { do: ['note'] } })).toContain('lift: lift needs a deny to lift')
+  })
+
+  test('lift.do empty, unknown, or holding deny, compact or ping is refused', () => {
+    expect(errs(brake({ do: [] }))).toContain('lift.do: expected a non-empty list of note, toast, notify, prompt')
+    expect(errs(brake({}))).toContain('lift.do: expected a non-empty list')
+    for (const bad of [{ deny: ['Agent'] }, 'compact', 'ping', 'shout']) {
+      expect(errs(brake({ do: ['note', bad] }))).toContain('lift.do[1]: expected one of note, toast, notify, prompt')
+    }
+  })
+
+  test('lift.message empty or whitespace is refused', () => {
+    expect(errs(brake({ do: ['note'], message: '' }))).toContain('lift.message: expected a non-empty string')
+    expect(errs(brake({ do: ['note'], message: '   ' }))).toContain('lift.message: expected a non-empty string')
+  })
+
+  test('prompt needs lift.times; lift.times is a whole number of at least 1 and needs prompt', () => {
+    expect(errs(brake({ do: ['prompt'] }))).toContain('lift.times: prompt needs times')
+    expect(errs(brake({ do: ['prompt'], times: 0 }))).toContain('lift.times: expected a whole number of at least 1')
+    expect(errs(brake({ do: ['prompt'], times: 1.5 }))).toContain('lift.times: expected a whole number of at least 1')
+    expect(errs(brake({ do: ['note'], times: 2 }))).toContain('lift.times: caps wake prompts, so it needs prompt in lift.do')
+  })
+
+  test('unknown keys in lift are refused', () => {
+    expect(errs(brake({ do: ['note'], when: 'later' }))).toContain('lift.when: unknown key')
+  })
+
+  test('lift on a context trigger is accepted', () => {
+    const r = validate(role([{ id: 'c', when: { context: '80%' }, do: [{ deny: ['Agent'] }], lift: { do: ['note'] } }]))
+    expect(r.errors).toEqual([])
+  })
+
+  test('built-in week-80-early, week-90-early and limit-stop lift with a note', () => {
+    const lifts = Object.fromEntries(defaultTriggers().map(t => [t.id, t.lift]))
+    expect(lifts['week-80-early']).toEqual({ do: ['note'], times: null, message: null })
+    expect(lifts['week-90-early']).toEqual({ do: ['note'], times: null, message: null })
+    expect(lifts['limit-stop']).toEqual({ do: ['note'], times: null, message: null })
+    expect(lifts['limit-hard']).toBeNull()
+  })
+
+  test('a trigger stored before lift existed reads lift null and hashes the same', () => {
+    const c = validate(role([{ id: 'p', when: { idle: '50m' }, do: ['prompt'], times: 1 }])).config as Config
+    const spec = c.roles.lead as unknown as { triggers: Record<string, unknown>[] }
+    const old = { ...c, roles: { lead: { ...spec, triggers: spec.triggers.map(({ lift: _l, ...t }) => t) } } }
+    const back = asConfig(old)
+    expect(back?.roles.lead?.triggers[0]?.lift).toBeNull()
+    expect(trustHash(back as Config)).toBe(trustHash(c))
+  })
+
+  test('a stored lift of another shape reads as no lift: the trust hash and liftHas never throw', () => {
+    const c = validate(role([{ id: 'p', when: { idle: '50m' }, do: ['prompt'], times: 1 }])).config as Config
+    const spec = c.roles.lead as unknown as { triggers: Record<string, unknown>[] }
+    for (const lift of [{}, { do: null }, { do: ['note', 3] }, { do: ['note'], times: 'x' }, { do: ['note'], times: null, message: 4 }]) {
+      const back = asConfig({ ...c, roles: { lead: { ...spec, triggers: spec.triggers.map(t => ({ ...t, lift })) } } })
+      const t = back?.roles.lead?.triggers[0] as Trigger
+      expect(t.lift).toBeNull()
+      expect(liftHas(t, 'prompt')).toBe(false)
+      expect(trustHash(back as Config)).toBe(trustHash(c))
+    }
+  })
+
+  test('an approval given before lift existed still matches a config without lift', () => {
+    expect(trustHash(validate(role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }])).config as Config)).toBe(
+      '494a3f7d85bafc05f6a4d41ec9251e6a3cf0dc73d9dce2910c816de7fb402658',
+    )
+  })
+
+  test('a lift prompt puts its trigger in the trust material; adding or editing a lift there needs a fresh trust', () => {
+    const plain = validate(role([brake({ do: ['note'] })])).config as Config
+    const noLift = validate(role([{ ...brake(undefined), lift: undefined }])).config as Config
+    // A note-only lift on a trigger outside the trust material changes nothing trusted.
+    expect(trustHash(plain)).toBe(trustHash(noLift))
+    const wake = validate(role([brake({ do: ['note', 'prompt'], times: 3 })])).config as Config
+    expect(trustHash(wake)).not.toBe(trustHash(plain))
+    expect(Object.keys(trustFields(wake))).toContain('lead.autoTriggers')
+    const more = validate(role([brake({ do: ['note', 'prompt'], times: 4 })])).config as Config
+    expect(trustHash(more)).not.toBe(trustHash(wake))
+    // A compact trigger is trust material too: any lift on it counts.
+    const compact = (lift?: unknown) =>
+      validate(role([{ id: 'k', when: { context: '80%' }, do: ['compact', { deny: ['Agent'] }], ...(lift ? { lift } : {}) }])).config as Config
+    expect(trustHash(compact({ do: ['note'] }))).not.toBe(trustHash(compact()))
   })
 })

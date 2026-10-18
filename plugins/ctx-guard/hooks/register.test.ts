@@ -1465,6 +1465,7 @@ test('trust is the operator\'s, and any change to a trusted field withdraws it',
   writeConfig(w, autoConfig({ readyChecks: [{ run: ['./other.sh'] }] }))
   await measure($, w, 100_000)
   expect(await ctxGuard($, '')).toContain('trust: not approved (needs approval: lead.restart)')
+  expect(await ctxGuard($, '')).toContain('; automatic clear, compact, ping, prompt, lift prompts and ready checks stay off until')
   await ready($, clock)
   expect(w.ran).toEqual([])
   expect(refusals(session)[0]).toContain('(untrusted)')
@@ -1480,7 +1481,7 @@ test('a role with nothing automatic needs no trust: the report says so and the b
   const w = restartWorld()
   world(on, w, { CTX_GUARD_ROLE: 'main' })
   await start($)
-  expect(await ctxGuard($, '')).toContain('trust: not needed (nothing automatic: no auto restart, compact, ping or prompt trigger, or probe)')
+  expect(await ctxGuard($, '')).toContain('trust: not needed (nothing automatic: no auto restart, compact, ping or prompt trigger, lift prompt, or probe)')
   expect((await peekRestart($)).band?.untrusted ?? null).toBeNull()
 })
 

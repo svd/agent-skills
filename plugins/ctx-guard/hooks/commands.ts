@@ -2,7 +2,7 @@
 // pause, `init` presets and .gitignore lines, the report text, the engine
 // version gate and the command-collision check. Pure: no `$`, never throws.
 import type { Action, Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger, TtlSource } from '../types'
-import { parseQuantity, roleSpec, validate } from './config'
+import { liftHas, parseQuantity, roleSpec, validate } from './config'
 import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
 import { listedRoles } from './roles'
 import type { RoleResolution } from './roles'
@@ -120,11 +120,11 @@ export const INIT_TRUST_HINT =
 // The trigger actions that run unattended, so trust gates them.
 const TRUST_ACTIONS: readonly Action[] = ['compact', 'ping', 'prompt']
 
-/** True when a role restarts on its own or a trigger compacts, pings or prompts: the actions trust gates. */
+/** True when a role restarts on its own or a trigger compacts, pings or prompts (on its lift too): the actions trust gates. */
 export function wantsTrust(config: Config): boolean {
   return Object.keys(config.roles).some(name => {
     const spec = roleSpec(config, name)
-    return spec !== null && (spec.restart.mode === 'auto' || spec.triggers.some(t => t.do.some(a => TRUST_ACTIONS.includes(a))))
+    return spec !== null && (spec.restart.mode === 'auto' || spec.triggers.some(t => t.do.some(a => TRUST_ACTIONS.includes(a)) || liftHas(t, 'prompt')))
   })
 }
 
@@ -197,9 +197,15 @@ function doText(t: Trigger): string {
   return t.do.map(a => (typeof a === 'string' ? a : `deny ${a.deny.join(', ')}`)).join(', ')
 }
 
-/** One line per trigger: `id: context ≥ 70% and every 10% → note, deny Agent [stop] (times 2)`. */
+// `; lift → note, prompt (times 3)`; empty with no lift.
+function liftText(t: Trigger): string {
+  const l = t.lift
+  return l ? `; lift → ${l.do.join(', ')}${l.times === null ? '' : ` (times ${l.times})`}` : ''
+}
+
+/** One line per trigger: `id: context ≥ 70% and every 10% → note, deny Agent [stop] (times 2)`, then its lift. */
 export function triggerLine(t: Trigger): string {
-  return `${t.id}: ${whenText(t)} → ${doText(t)}${t.level ? ` [${t.level}]` : ''}${t.times === null ? '' : ` (times ${t.times})`}`
+  return `${t.id}: ${whenText(t)} → ${doText(t)}${t.level ? ` [${t.level}]` : ''}${t.times === null ? '' : ` (times ${t.times})`}${liftText(t)}`
 }
 
 function ago(ms: number): string {
@@ -317,9 +323,9 @@ export type RestartReport = {
 
 function trustLine(t: RestartReport, now: number): string {
   if (t.trusted) return `trust: approved${t.approvedAt === null ? '' : ` ${ago(now - t.approvedAt)}`}`
-  if (t.wanted === false) return 'trust: not needed (nothing automatic: no auto restart, compact, ping or prompt trigger, or probe)'
+  if (t.wanted === false) return 'trust: not needed (nothing automatic: no auto restart, compact, ping or prompt trigger, lift prompt, or probe)'
   const what = t.changed.length ? ` (needs approval: ${t.changed.join(', ')})` : ''
-  return `trust: not approved${what}; automatic clear, compact, ping, prompt and ready checks stay off until the operator runs /ctx-guard trust`
+  return `trust: not approved${what}; automatic clear, compact, ping, prompt, lift prompts and ready checks stay off until the operator runs /ctx-guard trust`
 }
 
 // How long the ready token stays refused as too-soon, mirroring restart.ts's check.

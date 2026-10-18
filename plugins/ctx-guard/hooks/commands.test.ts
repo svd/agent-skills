@@ -87,6 +87,9 @@ describe('presets', () => {
     expect(wantsTrust(cfg({ restart: { mode: 'auto' } }))).toBe(true)
     expect(wantsTrust(cfg({ triggers: [{ id: 'sq', when: { context: '85%' }, do: ['compact'] }] }))).toBe(true)
     expect(wantsTrust(cfg({ restart: { mode: 'manual' } }))).toBe(false)
+    const brake = (lift: unknown) => ({ id: 'b', when: { 'limit.any': 95 }, do: [{ deny: ['Agent'] }], lift })
+    expect(wantsTrust(cfg({ triggers: [brake({ do: ['note', 'notify'] })] }))).toBe(false)
+    expect(wantsTrust(cfg({ triggers: [brake({ do: ['prompt'], times: 2 })] }))).toBe(true)
   })
 })
 
@@ -244,6 +247,15 @@ describe('report', () => {
     const [warm, kept] = roleSpec(r.config ?? builtInConfig(), 'lead')?.triggers ?? []
     expect(warm ? triggerLine(warm) : '').toBe('warm: context ≥ 50k and cache.expiresIn ≤ 5m → ping (times 3)')
     expect(kept ? triggerLine(kept) : '').toBe('kept: cache.expiresIn ≤ 5m and cache.pings ≥ 3 → toast')
+  })
+
+  test('triggerLine shows a lift and its times', () => {
+    const r = validate({
+      version: 1,
+      roles: { lead: { triggers: [{ id: 'b', when: { 'limit.any': 95 }, do: ['note', { deny: ['Agent'] }], lift: { do: ['note', 'prompt'], times: 3 } }] } },
+    })
+    const [b] = roleSpec(r.config ?? builtInConfig(), 'lead')?.triggers ?? []
+    expect(b ? triggerLine(b) : '').toBe('b: limit.any ≥ 95% → note, deny Agent; lift → note, prompt (times 3)')
   })
 
   test('the report names role, config, metrics, marks and blocks', () => {

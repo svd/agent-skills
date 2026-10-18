@@ -11,6 +11,7 @@ import type {
   ConfigState,
   Display,
   Level,
+  LiftAction,
   Quantity,
   QuantityKind,
   ReadyCheck,
@@ -20,6 +21,7 @@ import type {
   SubagentBudget,
   Switches,
   Trigger,
+  TriggerLift,
   TriggerWhen,
 } from '../types'
 
@@ -347,7 +349,7 @@ function pathAt(ctx: Ctx, path: string, v: unknown, fallback: string, template =
 
 const TOP_KEYS = ['$schema', 'version', 'enabled', 'stateDir', 'readyToken', 'defaultRole', 'contextWindow', 'defaults', 'roles', 'subagents', 'band', 'cache']
 const ROLE_KEYS = ['description', 'triggers', 'notes', 'handoff', 'restart', 'compact']
-const TRIGGER_KEYS = ['id', 'when', 'do', 'level', 'message', 'times']
+const TRIGGER_KEYS = ['id', 'when', 'do', 'level', 'message', 'times', 'lift']
 const LIMIT_METRICS = ['limit.five_hour', 'limit.seven_day', 'limit.any'] as const
 // Time left to a window's reset; each needs its window's percent metric beside it.
 const RESETS_IN = { 'limit.five_hour.resetsIn': 'limit.five_hour', 'limit.seven_day.resetsIn': 'limit.seven_day' } as const
@@ -357,6 +359,7 @@ const METRICS = ['context', ...LIMIT_METRICS, ...RESETS_IN_METRICS, 'cost', 'idl
 const WHEN_KEYS = [...METRICS, 'every']
 const STEPPABLE = ['context', ...LIMIT_METRICS, 'cost'] as const
 const EDGE_ACTIONS = ['note', 'toast', 'notify', 'compact', 'ping', 'prompt'] as const
+const LIFT_ACTIONS: readonly LiftAction[] = ['note', 'toast', 'notify', 'prompt']
 const LEVELS: readonly Level[] = ['soft', 'hard', 'stop']
 const MODES: readonly RestartMode[] = ['auto', 'manual', 'off']
 const VIAS: readonly RestartVia[] = ['clear', 'compact']
@@ -455,6 +458,41 @@ function normalizeAction(ctx: Ctx, path: string, v: unknown): Action | null {
   return null
 }
 
+const WHOLE = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1
+
+/**
+ * A trigger's `lift`: what runs when its deny lets go. Only a trigger that
+ * denies has one; `prompt` needs `times`, which caps wake attempts and means
+ * nothing without it.
+ */
+function normalizeLift(ctx: Ctx, path: string, v: unknown, denies: boolean): TriggerLift | null {
+  if (!isObj(v)) {
+    err(ctx, path, `expected {"do": [actions], "times": 3, "message": "..."}, got ${shown(v)}`)
+    return null
+  }
+  checkKeys(ctx, path, v, ['do', 'times', 'message'])
+  const before = ctx.errors.length
+  if (!denies) err(ctx, path, 'lift needs a deny to lift')
+  const actions: LiftAction[] = []
+  const dp = join(path, 'do')
+  if (!Array.isArray(v.do) || v.do.length === 0) err(ctx, dp, `expected a non-empty list of ${LIFT_ACTIONS.join(', ')}, got ${shown(v.do)}`)
+  else {
+    v.do.forEach((a, i) => {
+      if (typeof a === 'string' && (LIFT_ACTIONS as readonly string[]).includes(a)) actions.push(a as LiftAction)
+      else err(ctx, `${dp}[${i}]`, `expected one of ${LIFT_ACTIONS.join(', ')}, got ${shown(a)}`)
+    })
+  }
+  const prompt = actions.includes('prompt')
+  let times: number | null = null
+  if (v.times !== undefined) {
+    if (!WHOLE(v.times)) err(ctx, join(path, 'times'), `expected a whole number of at least 1, got ${shown(v.times)}`)
+    else if (!prompt) err(ctx, join(path, 'times'), 'caps wake prompts, so it needs prompt in lift.do')
+    else times = v.times
+  } else if (prompt) err(ctx, join(path, 'times'), 'prompt needs times, so automatic spending has a cap')
+  const message = textAt(ctx, join(path, 'message'), v.message, null)
+  return ctx.errors.length > before ? null : { do: actions, times, message }
+}
+
 function normalizeTrigger(ctx: Ctx, path: string, v: unknown): Trigger | null {
   if (!isObj(v)) {
     err(ctx, path, `expected a trigger object, got ${shown(v)}`)
@@ -487,15 +525,16 @@ function normalizeTrigger(ctx: Ctx, path: string, v: unknown): Trigger | null {
   }
   let times: number | null = null
   if (v.times !== undefined) {
-    if (typeof v.times === 'number' && Number.isInteger(v.times) && v.times >= 1) times = v.times
+    if (WHOLE(v.times)) times = v.times
     else err(ctx, join(path, 'times'), `expected a whole number of at least 1, got ${shown(v.times)}`)
   } else if (auto.length) {
     err(ctx, join(path, 'times'), `${auto.join(' and ')} needs times, so automatic spending has a cap`)
   }
   const level = v.level === undefined ? null : enumAt<Level>(ctx, join(path, 'level'), v.level, LEVELS, 'soft')
   const message = textAt(ctx, join(path, 'message'), v.message, null)
+  const lift = v.lift === undefined ? null : normalizeLift(ctx, join(path, 'lift'), v.lift, actions.some(a => typeof a === 'object'))
   if (ctx.errors.length > before || !when) return null
-  return { id, when, do: actions, level, message, times }
+  return { id, when, do: actions, level, message, times, lift }
 }
 
 function normalizeTriggers(ctx: Ctx, path: string, v: unknown): Trigger[] {
@@ -824,6 +863,9 @@ export function validate(raw: unknown, label = 'config'): { config: Config | nul
 // Says nothing of a block: with `blocking` off there is none.
 const EARLY_WEEK = 'With {resetsIn} still to the weekly reset, start no new subagents so the rest of the window lasts; do small steps in this session.'
 
+// A brake's lift: tells a working model the tools are back, at no cost.
+const LIFT_NOTE = { do: ['note'] }
+
 // The ladder a role gets when neither it nor `defaults` lists triggers.
 const DEFAULT_TRIGGERS_RAW = [
   { id: 'ctx-soft', when: { context: '40%' }, do: ['note'], level: 'soft' },
@@ -832,9 +874,9 @@ const DEFAULT_TRIGGERS_RAW = [
   { id: 'limit-soft', when: { 'limit.any': 80 }, do: ['note'], level: 'soft' },
   { id: 'limit-hard', when: { 'limit.any': 90 }, do: ['note', 'toast'], level: 'hard' },
   // The weekly window filling early: no new subagents (Workflow fans out more) while that much time is left, so the week lasts.
-  { id: 'week-80-early', when: { 'limit.seven_day': 80, 'limit.seven_day.resetsIn': '2d' }, do: ['note', { deny: ['Agent', 'Workflow'] }], level: 'hard', message: EARLY_WEEK },
-  { id: 'week-90-early', when: { 'limit.seven_day': 90, 'limit.seven_day.resetsIn': '1d' }, do: ['note', { deny: ['Agent', 'Workflow'] }], level: 'hard', message: EARLY_WEEK },
-  { id: 'limit-stop', when: { 'limit.any': 95 }, do: ['note', 'toast', { deny: ['Agent', 'Workflow', 'WebSearch', 'WebFetch'] }], level: 'stop' },
+  { id: 'week-80-early', when: { 'limit.seven_day': 80, 'limit.seven_day.resetsIn': '2d' }, do: ['note', { deny: ['Agent', 'Workflow'] }], level: 'hard', message: EARLY_WEEK, lift: LIFT_NOTE },
+  { id: 'week-90-early', when: { 'limit.seven_day': 90, 'limit.seven_day.resetsIn': '1d' }, do: ['note', { deny: ['Agent', 'Workflow'] }], level: 'hard', message: EARLY_WEEK, lift: LIFT_NOTE },
+  { id: 'limit-stop', when: { 'limit.any': 95 }, do: ['note', 'toast', { deny: ['Agent', 'Workflow', 'WebSearch', 'WebFetch'] }], level: 'stop', lift: LIFT_NOTE },
 ]
 
 // With no role: band plus toasts only, so a user-scope install changes no model behaviour.
@@ -1052,17 +1094,26 @@ function isCacheShape(c: unknown): boolean {
   )
 }
 
-// A trigger stored before `times` and the cache metrics existed reads with them unset (null).
+// A stored lift in the shape validate gives it; another (an older build's) reads as no lift.
+const isStoredLift = (v: unknown): v is TriggerLift =>
+  isObj(v) &&
+  Array.isArray(v.do) &&
+  v.do.every(a => (LIFT_ACTIONS as readonly unknown[]).includes(a)) &&
+  (v.times === null || typeof v.times === 'number') &&
+  (v.message === null || typeof v.message === 'string')
+
+// A trigger stored before `times`, `lift` and the cache metrics existed reads with them unset (null).
 // A trigger that already has them comes back as the same object.
 function storedTrigger(t: unknown): unknown {
   if (!isObj(t) || !isObj(t.when)) return t
   const when = t.when
-  if (typeof t.times === 'number' || t.times === null) {
+  const lift = isStoredLift(t.lift) ? t.lift : null
+  if ((typeof t.times === 'number' || t.times === null) && (t.lift === null || isStoredLift(t.lift))) {
     if (CACHE_METRICS.every(m => when[m] !== undefined)) return t
   }
   const filled: Obj = { ...when }
   for (const m of CACHE_METRICS) if (filled[m] === undefined) filled[m] = null
-  return { ...t, when: filled, times: typeof t.times === 'number' ? t.times : null }
+  return { ...t, when: filled, times: typeof t.times === 'number' ? t.times : null, lift }
 }
 
 function storedSpec(spec: unknown): unknown {
@@ -1128,14 +1179,20 @@ export function canonicalJson(v: unknown): string {
   return JSON.stringify(v) ?? 'null'
 }
 
-// A trigger as the trust hash sees it: the cache metrics and `times` appear only when set,
+// A trigger as the trust hash sees it: the cache metrics, `times` and `lift` appear only when set,
 // so an approval given before they existed still matches.
 function trustedTrigger(t: Trigger): Obj {
   const when: Obj = { ...t.when }
   for (const m of CACHE_METRICS) if (when[m] === null || when[m] === undefined) delete when[m]
-  const { times, ...rest } = t
-  return times === null || times === undefined ? { ...rest, when } : { ...rest, when, times }
+  const { times, lift, ...rest } = t
+  const out: Obj = { ...rest, when }
+  if (times !== null && times !== undefined) out.times = times
+  if (lift !== null && lift !== undefined) out.lift = lift
+  return out
 }
+
+/** Whether the trigger's lift runs action `a`; with `prompt`, its lift may wake the session with a prompt of its own. */
+export const liftHas = (t: Trigger, a: LiftAction): boolean => t.lift?.do.includes(a) === true
 
 /**
  * The fields that can run code or prompts unattended, or steer where and when
@@ -1151,7 +1208,7 @@ export function trustMaterial(config: Config): unknown {
     const spec = roleSpec(config, name)
     if (!spec) continue
     const { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext } = spec.restart
-    const auto = spec.triggers.filter(t => t.do.includes('ping') || t.do.includes('prompt'))
+    const auto = spec.triggers.filter(t => t.do.includes('ping') || t.do.includes('prompt') || liftHas(t, 'prompt'))
     out[name] = {
       restart: { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext },
       // The handoff path lands in the resume command line.

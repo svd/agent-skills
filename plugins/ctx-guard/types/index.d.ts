@@ -54,6 +54,14 @@ export type TriggerWhen = {
   everyMetric: Metric | null
 }
 
+// What a brake's lift does: tell the model, tell the operator, or wake the session.
+export type LiftAction = 'note' | 'toast' | 'notify' | 'prompt'
+
+// The falling edge of a trigger's deny. `times` caps the wake attempts between
+// two operator inputs (set with `prompt` only); `message` replaces the default
+// lift note and wake prompt.
+export type TriggerLift = { do: LiftAction[]; times: number | null; message: string | null }
+
 export type Trigger = {
   id: string
   when: TriggerWhen
@@ -62,6 +70,8 @@ export type Trigger = {
   message: string | null
   // At most this many fires per idle period; null is no cap.
   times: number | null
+  // What runs when the trigger's deny lets go; null is nothing.
+  lift: TriggerLift | null
 }
 
 export type RestartMode = 'auto' | 'manual' | 'off'

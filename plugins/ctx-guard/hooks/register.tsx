@@ -64,6 +64,7 @@ import {
   checkScripts,
   confinePath,
   effectiveConfig,
+  liftHas,
   localPathFor,
   onCacheMetric,
   readSwitches,
@@ -2864,9 +2865,13 @@ async function trustCommand($: EngineInterface): Promise<string> {
     if (compactTriggers.length) lines.push(`    compact triggers: ${compactTriggers.join(', ')}`)
     for (const t of spec.triggers) {
       const kinds = (['ping', 'prompt'] as const).filter(k => t.do.includes(k))
-      if (!kinds.length) continue
-      const prompt = kinds.includes('prompt') ? `, prompt ${t.message === null ? 'default' : q(t.message)}` : ''
-      lines.push(`    ${kinds.join(' and ')} trigger ${t.id}: ${t.times === null ? 'no times cap' : `times ${t.times}`}${prompt}`)
+      if (kinds.length) {
+        const prompt = kinds.includes('prompt') ? `, prompt ${t.message === null ? 'default' : q(t.message)}` : ''
+        lines.push(`    ${kinds.join(' and ')} trigger ${t.id}: ${t.times === null ? 'no times cap' : `times ${t.times}`}${prompt}`)
+      }
+      if (t.lift && liftHas(t, 'prompt')) {
+        lines.push(`    lift prompt of trigger ${t.id}: lift.times ${t.lift.times ?? 'none'}, prompt ${t.lift.message === null ? 'default' : q(t.lift.message)}`)
+      }
     }
   }
   lines.push(
