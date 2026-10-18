@@ -10,9 +10,9 @@
         { "id": "ctx-stop", "when": { "context": "75%", "every": "5%" }, "do": ["note"], "level": "stop" },
         { "id": "limit-soft", "when": { "limit.any": 80 }, "do": ["note"], "level": "soft" },
         { "id": "limit-hard", "when": { "limit.any": 90 }, "do": ["note", "toast"], "level": "hard" },
-        { "id": "week-80-early", "when": { "limit.seven_day": 80, "limit.seven_day.resetsIn": "2d" }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "hard", "message": "With {resetsIn} still to the weekly reset, start no new subagents so the rest of the window lasts; do small steps in this session." },
-        { "id": "week-90-early", "when": { "limit.seven_day": 90, "limit.seven_day.resetsIn": "1d" }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "hard", "message": "With {resetsIn} still to the weekly reset, start no new subagents so the rest of the window lasts; do small steps in this session." },
-        { "id": "limit-brake", "when": { "limit.any": 95 }, "do": ["note", "toast", { "deny": ["Agent", "Workflow", "WebSearch", "WebFetch"] }], "level": "stop" },
+        { "id": "week-80-early", "when": { "limit.seven_day": 80, "limit.seven_day.resetsIn": "2d" }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "hard", "message": "With {resetsIn} still to the weekly reset, start no new subagents so the rest of the window lasts; do small steps in this session.", "lift": { "do": ["note", "notify"] } },
+        { "id": "week-90-early", "when": { "limit.seven_day": 90, "limit.seven_day.resetsIn": "1d" }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "hard", "message": "With {resetsIn} still to the weekly reset, start no new subagents so the rest of the window lasts; do small steps in this session.", "lift": { "do": ["note", "notify"] } },
+        { "id": "limit-brake", "when": { "limit.any": 95 }, "do": ["note", "toast", { "deny": ["Agent", "Workflow", "WebSearch", "WebFetch"] }], "level": "stop", "lift": { "do": ["note", "notify"] } },
         { "id": "cache-miss", "when": { "cache.miss": "50k" }, "do": ["toast"] }
       ],
       "handoff": {

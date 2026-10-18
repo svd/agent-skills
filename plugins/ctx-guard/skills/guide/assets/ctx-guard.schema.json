@@ -982,6 +982,16 @@
               "type": "null"
             }
           ]
+        },
+        "lift": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/lift"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1069,6 +1079,27 @@
               "do": {
                 "items": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "lift"
+            ],
+            "properties": {
+              "lift": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "do": {
+                "contains": {
+                  "type": "object"
                 }
               }
             }
@@ -1482,6 +1513,69 @@
           }
         }
       ]
+    },
+    "liftAction": {
+      "enum": [
+        "note",
+        "toast",
+        "notify",
+        "prompt"
+      ],
+      "description": "Runs once when the trigger's deny lets go and no other brake denies its tools. note tells the model, toast and notify the operator; prompt wakes an idle session with a turn of its own (needs lift.times and a trusted repo)."
+    },
+    "lift": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What runs when the trigger's deny lets go. Only on a trigger with a deny. A prompt first forks the session's context to read fresh usage, then starts a turn: both spend usage.",
+      "properties": {
+        "do": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/liftAction"
+          }
+        },
+        "times": {
+          "description": "At most this many wake attempts between two operator inputs. Required with prompt, and only with it.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "message": {
+          "description": "Text of the lift note and the wake prompt, in place of the defaults; {id}, {tools} and {liftReason} beside the trigger's variables.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "do"
+      ],
+      "if": {
+        "properties": {
+          "do": {
+            "contains": {
+              "const": "prompt"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "times"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "times"
+          ]
+        }
+      }
     }
   }
 }
