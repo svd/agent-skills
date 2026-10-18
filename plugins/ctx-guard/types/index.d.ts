@@ -191,6 +191,8 @@ export type CacheState = {
   coldShown: boolean
   // Fires per trigger id in the current idle period, for `times`.
   fired: { [triggerId: string]: number }
+  // When a keep-warm ping's fork started; null once it settled. A module copy after a reload honours it until the ping's timeout.
+  pingAt: number | null
 }
 
 // The band's cache segment as last drawn; `color` is a theme key, null for the default.
@@ -241,8 +243,9 @@ export type Hold = {
   tries: number
   // The window `limit.any` read while it held, for the lift's reason.
   window: string | null
-  // When it lifted (phase lifting).
+  // When it lifted (phase lifting), and what let it go, in words.
   liftedAt: number | null
+  reason: string | null
   // Its lift's non-prompt actions already ran, and when its lift note went (a lift seen mid-turn).
   ran: boolean
   liftNotedAt: number | null
@@ -250,9 +253,9 @@ export type Hold = {
   stall: { reports: number; until: number | null } | null
 }
 
-// The wake prompt waiting for an idle tick or a retry: unchecked after a lift
-// seen mid-turn, checked once the lift check freed its tools.
-export type LiftPending = { triggerId: string; text: string; tries: number; at: number; checked: boolean }
+// The wake prompt the lift check let through, waiting for an idle tick or a
+// retry: its trigger, its text, the submit tries so far and when it lifted.
+export type LiftPending = { triggerId: string; text: string; tries: number; at: number }
 
 // The lifts of a role: holds by trigger id, triggers whose lift ran on
 // estimated figures, the lift check's fork start, wake attempts since the last

@@ -597,13 +597,13 @@ export function toolsFree(trigger: Trigger, triggers: readonly Trigger[], m: Met
 const sameTools = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i])
 
 function newHold(trigger: Trigger, now: number, window: string | null): Hold {
-  return { tools: denyTools(trigger), when: canonicalJson(trigger.when), startedAt: now, touchedAt: null, notedAt: null, phase: 'holding', tries: 0, window, liftedAt: null, ran: false, liftNotedAt: null, stall: null }
+  return { tools: denyTools(trigger), when: canonicalJson(trigger.when), startedAt: now, touchedAt: null, notedAt: null, phase: 'holding', tries: 0, window, liftedAt: null, reason: null, ran: false, liftNotedAt: null, stall: null }
 }
 
 // A hold whose condition let go: it lifts when its tools are free, else it waits for the last brake on them.
 function letGo(h: Hold, trigger: Trigger, triggers: readonly Trigger[], m: Metrics): Hold {
   if (blockedBy(trigger.id, h.tools, triggers, m) !== null) return { ...h, phase: 'waiting', tries: 0, stall: null }
-  return { ...h, phase: 'lifting', liftedAt: m.now, ran: false, liftNotedAt: null, tries: 0, stall: null }
+  return { ...h, phase: 'lifting', liftedAt: m.now, reason: null, ran: false, liftNotedAt: null, tries: 0, stall: null }
 }
 
 export type HoldOptions = {
@@ -644,7 +644,7 @@ export function stepHolds(prev: Readonly<Record<string, Hold>>, triggers: readon
     const state = whenState(t, m)
     if (state === true) {
       const window = t.when['limit.any'] ? (limitFor('limit.any', m)?.kind ?? null) : null
-      holds[t.id] = old ? { ...old, phase: 'holding', tries: 0, window: window ?? old.window, liftedAt: null, ran: false, liftNotedAt: null, stall: null } : newHold(t, m.now, window)
+      holds[t.id] = old ? { ...old, phase: 'holding', tries: 0, window: window ?? old.window, liftedAt: null, reason: null, ran: false, liftNotedAt: null, stall: null } : newHold(t, m.now, window)
       continue
     }
     if (!old) continue

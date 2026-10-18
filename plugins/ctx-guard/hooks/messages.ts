@@ -427,8 +427,17 @@ export const NOT_WOKEN = {
 
 export type NotWoken = (typeof NOT_WOKEN)[keyof typeof NOT_WOKEN]
 
-// A trigger that lifted, the figures it lifted on, and the window `limit.any` read while it held.
-export type LiftInput = { trigger: Trigger; metrics: Metrics; window: string | null }
+// A trigger that lifted, the figures at hand, the window `limit.any` read while it held, and
+// what let it go when it lifted (liftReason on those figures; null reads it from `metrics`).
+export type LiftInput = { trigger: Trigger; metrics: Metrics; window: string | null; reason?: string | null }
+
+const reasonOf = (l: LiftInput): string => l.reason ?? liftReason(l.trigger, l.metrics, l.window)
+
+// The default texts say "Agent is", "Agent, Workflow are".
+function agreeing(text: string, l: LiftInput): string {
+  const tools = denyTools(l.trigger)
+  return tools.length === 1 ? text.replace(`${tools[0]} are allowed again`, `${tools[0]} is allowed again`) : text
+}
 
 const isKind = (k: string | null): k is LimitKind => k === 'five_hour' || k === 'seven_day'
 
@@ -454,7 +463,7 @@ export function liftReason(trigger: Trigger, m: Metrics, window: string | null =
 
 function liftTemplateVars(l: LiftInput, ctx: NoteContext): Record<string, string> {
   const vars = fireVars(l.trigger, l.metrics)
-  const reason = liftReason(l.trigger, l.metrics, l.window)
+  const reason = reasonOf(l)
   if (vars) return { ...templateVars(vars, ctx, l.trigger), liftReason: reason }
   return { role: ctx.role ?? 'none', id: l.trigger.id, tools: denyTools(l.trigger).join(', '), liftReason: reason }
 }
@@ -462,18 +471,24 @@ function liftTemplateVars(l: LiftInput, ctx: NoteContext): Record<string, string
 /** One lift note for every lift of an evaluation: each trigger's `lift.message`, else the default sentence. Null for none. */
 export function liftNoteText(lifts: readonly LiftInput[], ctx: NoteContext): string | null {
   if (!lifts.length) return null
-  const parts = lifts.map(l => unprefixed(render(l.trigger.lift?.message ?? DEFAULT_LIFT_NOTE, liftTemplateVars(l, ctx)).trim()))
+  const parts = lifts.map(l => {
+    const custom = l.trigger.lift?.message ?? null
+    const text = render(custom ?? DEFAULT_LIFT_NOTE, liftTemplateVars(l, ctx)).trim()
+    return unprefixed(custom === null ? agreeing(text, l) : text)
+  })
   return `${PREFIX} ${parts.join(' ')}`
 }
 
 /** The wake prompt: the trigger's `lift.message`, else the default, with template variables filled. */
 export function wakePromptText(l: LiftInput, ctx: NoteContext): string {
-  return render(l.trigger.lift?.message ?? DEFAULT_WAKE_PROMPT, liftTemplateVars(l, ctx))
+  const custom = l.trigger.lift?.message ?? null
+  const text = render(custom ?? DEFAULT_WAKE_PROMPT, liftTemplateVars(l, ctx))
+  return custom === null ? agreeing(text, l) : text
 }
 
 // `"limit-stop" lifted (the 5-hour usage window reset); Agent, Workflow allowed again.`
 function liftedText(l: LiftInput): string {
-  return `"${l.trigger.id}" lifted (${liftReason(l.trigger, l.metrics, l.window)}); ${denyTools(l.trigger).join(', ')} allowed again.`
+  return `"${l.trigger.id}" lifted (${reasonOf(l)}); ${denyTools(l.trigger).join(', ')} allowed again.`
 }
 
 /** The toast (and `notify`) for lifts: one line naming each. Null for none. */

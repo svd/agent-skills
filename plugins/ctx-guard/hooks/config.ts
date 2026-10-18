@@ -162,9 +162,12 @@ export function confinePath(root: string, rel: string, template = false): { path
 
 type Obj = Record<string, unknown>
 
-function isObj(v: unknown): v is Obj {
+export function isObj(v: unknown): v is Obj {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
+
+/** `v` when it is a finite number, else null. */
+export const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 
 // Names that collide with Object.prototype (its own names include the
 // prototype accessor), refused as role or subagent keys and never copied by a

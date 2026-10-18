@@ -2,6 +2,7 @@
 // request that rewrote a cache expected warm, ping verdicts, idle-period
 // counters and the band's countdown. Pure: no `$`, never throws.
 import type { BandCache, CacheConfig, CacheShow, CacheState, Quantity, TtlSource } from '../types'
+import { num } from './config'
 import { humanDuration } from './messages'
 
 export const MARGIN_MS = 30_000
@@ -19,10 +20,8 @@ const RANK: Record<TtlSource, number> = { guess: 0, observed: 1, transcript: 2, 
 const SOURCES = Object.keys(RANK) as TtlSource[]
 
 export function emptyCache(): CacheState {
-  return { sessionId: null, ttl: null, ttlSource: null, transcriptTried: false, anchor: null, prevFill: null, warmSeen: false, model: null, miss: 0, missCause: null, pings: 0, cold: false, coldShown: false, fired: {} }
+  return { sessionId: null, ttl: null, ttlSource: null, transcriptTried: false, anchor: null, prevFill: null, warmSeen: false, model: null, miss: 0, missCause: null, pings: 0, cold: false, coldShown: false, fired: {}, pingAt: null }
 }
-
-const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 
 /** The stored value, checked field by field: another version may have written it. */
 export function asCache(v: unknown): CacheState {
@@ -48,6 +47,7 @@ export function asCache(v: unknown): CacheState {
     cold: o.cold === true,
     coldShown: o.coldShown === true,
     fired,
+    pingAt: num(o.pingAt),
   }
 }
 

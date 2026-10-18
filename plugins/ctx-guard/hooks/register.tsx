@@ -16,10 +16,13 @@ import type {
   CacheState,
   Config,
   HeldStamp,
+  Hold,
   ConfigFile,
   ConfigState,
   LastCompact,
   LeaseState,
+  LiftPending,
+  Lifts,
   MainReading,
   Marks,
   Pause,
@@ -66,6 +69,7 @@ import {
   effectiveConfig,
   liftHas,
   localPathFor,
+  num,
   onCacheMetric,
   readSwitches,
   resolveWindow,
@@ -79,6 +83,7 @@ import {
 } from './config'
 import type { Effective, EngineWindow, FileLayer, ScriptHashes, TrustRecord, TrustState, WindowInfo } from './config'
 import {
+  NOT_WOKEN,
   PREFIX,
   collapseNotes,
   denyReason,
@@ -87,6 +92,11 @@ import {
   humanDuration,
   humanQuantity,
   isOwnPrompt,
+  liftCheckFailedText,
+  liftNoteText,
+  liftReason,
+  liftNotifyText,
+  liftToastText,
   noteToastText,
   promptText,
   refusalNote,
@@ -94,7 +104,9 @@ import {
   subagentStopText,
   subagentWarnText,
   toastText,
+  wakePromptText,
 } from './messages'
+import type { LiftInput, NoteContext, NotWoken } from './messages'
 import {
   COMPACT_QUIET_MS,
   RACE_SETTLE_MS,
@@ -132,19 +144,25 @@ import {
   contextFloor,
   crossesGates,
   deniedBy,
+  denyTools,
   evaluate,
   idleMs,
   inFlightTokens,
   liveDenies,
   markHeld,
   metricsOf,
+  onEstimate,
   placeContext,
   planActions,
   resetMarks,
+  stepHolds,
   stepTokens,
   tokenGates,
+  toolLiftsIn,
+  toolsFree,
   triggerHolds,
   triggersFor,
+  whenState,
 } from './triggers'
 import type { ActionPlan, CacheMetrics, Fire, Metrics, TokenGates } from './triggers'
 import {
@@ -166,7 +184,8 @@ import {
   track,
 } from './subagents'
 import type { Tracked } from './subagents'
-import { asLifts } from './lifts'
+import { LIFT_CHECK_TIMEOUT_MS, LIFT_TRIES, asLifts, checkTries, earliestReset, emptyLifts, gateWhy, liftsFor, operatorInput, wakeVerdict, wakesOnLift } from './lifts'
+import type { WakeGate } from './lifts'
 import { parseProbe, probeSegment, probeState, scriptEnv } from './scripts'
 import type { ProbeOutcome, ProbeRun, ScriptContext, ScriptPurpose } from './scripts'
 
@@ -213,7 +232,8 @@ type Reading = {
 type BandWrite = 'always' | 'changed' | 'never'
 
 // A failed ping or prompt and the tries made so far.
-type Retry = { kind: 'ping' | 'prompt'; fire: Fire; tries: number }
+// `deferred`: a prompt that waits for lift work to end, which it does not hold back.
+type Retry = { kind: 'ping' | 'prompt'; fire: Fire; tries: number; deferred?: boolean }
 
 // Module state: lost on a hot reload, which fires session.start again and
 // rebuilds it. Whatever must outlive a reload is in `$.state`, which `mem` (see state below) writes through to.
@@ -282,8 +302,8 @@ type Mod = {
   probeResults: Map<string, ProbeRun>
   // The transcript path the last classic Stop named; null when none did.
   transcriptPath: string | null
-  // A keep-warm ping is in flight.
-  pinging: boolean
+  // A keep-warm ping is in flight (holdSlot): set until its fork settles or counts as gone.
+  pinging: symbol | null
   // Counts /clears, so a ping that was in flight across one drops its answer.
   clears: number
   // A ping or prompt that failed, tried again on each idle tick while its trigger holds.
@@ -294,6 +314,16 @@ type Mod = {
   ownText: string | null
   // The next main turn answers ctx-guard's own prompt.
   ownPrompt: boolean
+  // That prompt is a lift's wake prompt.
+  wakeNext: boolean
+  // The holds a lift check's fork covers while it is out; null with none.
+  checking: Set<string> | null
+  // A lift check's fork has not settled yet, past its timeout too, until it counts as gone (holdSlot).
+  liftForking: symbol | null
+  // A lift check's fresh or failed evaluation is under way: its own fires wait, as for lift work.
+  deciding: boolean
+  // The `at` of the queued compact that waits for lift work to end.
+  compactAfterLift: number | null
   // The last reading showed a usage window (a subscription); null before any reading.
   subscribed: boolean | null
 }
@@ -337,12 +367,17 @@ const fresh = (): Mod => ({
   probeRunning: new Set(),
   probeResults: new Map(),
   transcriptPath: null,
-  pinging: false,
+  pinging: null,
   clears: 0,
   retry: null,
   compactAfter: null,
   ownText: null,
   ownPrompt: false,
+  wakeNext: false,
+  checking: null,
+  liftForking: null,
+  deciding: false,
+  compactAfterLift: null,
   subscribed: null,
 })
 
@@ -375,8 +410,6 @@ const active = (): boolean => mod.started && !mod.inert && mod.interactive && mo
 
 const drawsBand = (surface: RenderSurface): boolean =>
   active() && mod.eff?.display === 'band' && (surface === 'terminal' || surface === 'desktop')
-
-const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 
 // Activity comes back from $.state, which another version may have written.
 function asActivity(v: unknown): Activity {
@@ -736,8 +769,12 @@ async function resolveNow($: EngineInterface): Promise<RoleResolution> {
   })
   if (r.role !== mod.role.role) {
     mod.gates = null
+    // The lifts are the role's: a check under way for the old role answers nothing.
+    mod.checking = null
     rejudgeAll()
   }
+  // Stored lifts of another role are dropped as soon as this role is resolved, so a role switched back to starts with none.
+  if (mem.lifts && mem.lifts.role !== r.role) await put($, 'lifts', emptyLifts(r.role))
   mod.role = r
   if (r.problem && active()) await noticeOnce($, `role:${r.problem}`, `ctx-guard: ${r.problem}`)
   return r
@@ -769,8 +806,10 @@ const freshCache = (c: CacheState): CacheState => newPeriod(startOver({ ...c, tr
 async function metricsFor($: EngineInterface, reading: Reading, now: number): Promise<Metrics> {
   const a = activity()
   const running = turnRunningIn(a, now)
-  // ctx-guard's own prompt turn keeps the idle clock running: it is not the operator back.
-  const idle = idleMs(a.lastMainEndAt, running && !a.ownTurn, now)
+  // ctx-guard's own prompt turn keeps the idle clock running: it is not the operator back. A woken turn
+  // is work again: idle stands still through it and counts from its end.
+  const woke = a.lastWokenEndAt !== null && (a.lastMainEndAt === null || a.lastWokenEndAt > a.lastMainEndAt)
+  const idle = idleMs(woke ? a.lastWokenEndAt : a.lastMainEndAt, running && (!a.ownTurn || a.wokenTurn), now)
   const window = windowFor(reading.context.window).tokens
   const m = metricsOf({ tokens: reading.context.tokens, rateLimits: reading.rateLimits, cost: reading.cost }, window, idle, now)
   mod.subscribed = subscribedIn(m)
@@ -814,11 +853,13 @@ async function rememberMain($: EngineInterface, tokens: number | null, now: numb
 
 const roleTriggers = (): Trigger[] => (mod.eff ? triggersFor(mod.eff.config, mod.role.role) : [])
 
-async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean, metrics: Metrics): Promise<void> {
+// Answers the ids of the triggers whose note went to the model.
+async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean, metrics: Metrics): Promise<string[]> {
   const eff = mod.eff
   const role = mod.role.role
-  if (!eff) return
+  if (!eff) return []
   const spec = role === null ? null : roleSpec(eff.config, role)
+  let noted: string[] = []
   // Fires whose toast the note toast stands for.
   let shown = new Set<Fire>()
   // Model notes only once a role is assigned: a user-scope install never changes model behaviour unasked.
@@ -832,6 +873,7 @@ async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean, metr
         sent = true
       })
     }
+    if (sent) noted = plan.notes.map(f => f.trigger.id)
     // The operator sees what the model was told: one toast for the note, in place of its fires' own.
     const toast = sent && eff.noteToasts ? noteToastText(plan.notes, opts) : null
     if (toast) {
@@ -861,6 +903,7 @@ async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean, metr
     const afterPrompt = prompt === 'went' || prompt === 'retry'
     await quietly(() => requestCompact($, plan.compact as Fire, role, isPaused, afterPrompt))
   }
+  return noted
 }
 
 async function setBand($: EngineInterface, metrics: Metrics, isPaused: boolean, write: BandWrite): Promise<void> {
@@ -901,8 +944,12 @@ async function drawBand($: EngineInterface, band: Band): Promise<void> {
   await written
 }
 
-/** Rising edges since the stored marks → note, toast, notify; then the band. */
-async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrite): Promise<void> {
+/**
+ * Rising edges since the stored marks → note, toast, notify; the holds of
+ * brakes with a lift, and their lifts; then the band. `check` is a lift
+ * check's outcome: fresh figures, or its last try failed.
+ */
+async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrite, check: LiftCheck | null = null): Promise<void> {
   if (!active()) return
   const now = await $.clock.now()
   const metrics = await metricsFor($, reading, now)
@@ -915,13 +962,18 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
     await put($, 'marks', ev.marks)
     await quietly(() => dropRearmedCompact($, ev.marks))
   }
+  const exempt = role === null ? new Set<string>() : await stepLifts($, triggers, metrics)
   // Counted before acting too: a fire counts toward its trigger's `times` whether or not its actions succeed.
   const fired = cacheState().fired
-  const capped = applyTimes(ev.fire, fired)
+  const capped = applyTimes(ev.fire, fired, exempt)
   if (JSON.stringify(capped.fired) !== JSON.stringify(fired)) await setCache($, c => ({ ...c, fired: capped.fired }))
   mod.gates = tokenGates(triggers, ev.marks, role, metrics.window)
   const isPaused = paused(now)
-  await act($, planActions(capped.fire), isPaused, metrics)
+  const noted = await act($, planActions(capped.fire), isPaused, metrics)
+  if (role !== null) {
+    if (noted.length) await putLifts($, l => ({ ...l, holds: stamp(l.holds, noted, h => ({ ...h, notedAt: now })) }))
+    await quietly(() => judgeLifts($, metrics, isPaused, check))
+  }
   // A pause that ran out frees a blocked compact here.
   await quietly(() => unblockCompact($, isPaused))
   await setBand($, metrics, isPaused, write)
@@ -985,6 +1037,10 @@ async function onMeasure($: EngineInterface, e: Reading & { changed: readonly st
     await readEngineWindow($)
   }
   await rememberMain($, num(e.context.tokens), await $.clock.now())
+  // A usage report: a stalled hold waits for one.
+  if (e.changed.includes('rateLimits') && Object.values(liftsNow().holds).some(h => h.phase === 'stalled')) {
+    await putLifts($, l => ({ ...l, reports: l.reports + 1 }))
+  }
   await evaluateNow($, e, 'changed')
   await quietly(() => leaseBeat($, false))
 }
@@ -1842,7 +1898,13 @@ async function requestCompact($: EngineInterface, fire: Fire, role: string, isPa
     mod.compactAfter = p.at
     return
   }
-  if (!(await turnRunning($, now))) scheduleCompact($)
+  if (await turnRunning($, now)) return
+  // Lift work under way: the compact waits for the next turn end, or for that work to end with none.
+  if (liftWork()) {
+    mod.compactAfterLift = p.at
+    return
+  }
+  scheduleCompact($)
 }
 
 // The compact waiting for ctx-guard's prompt turn to end: its trigger's mark does not decide it meanwhile.
@@ -1923,6 +1985,11 @@ async function tryCompact($: EngineInterface): Promise<void> {
         return await dropCompact($, p, holds === null ? 'no reading since the last compact' : 'the context since the last compact is below the threshold', true)
       }
     }
+    // A lift check out or being decided: the compact waits for that work to end, or for the next turn end.
+    if (mod.checking !== null || mod.deciding) {
+      mod.compactAfterLift = p.at
+      return
+    }
     const busy = compactBusy({
       turnRunning: await turnRunning($, now),
       restart: await restartBusy($, now),
@@ -1946,6 +2013,12 @@ async function tryCompact($: EngineInterface): Promise<void> {
       return
     }
     gen.compacting = true
+    if (mod.compactAfterLift === p.at) mod.compactAfterLift = null
+    // A wake prompt waiting to go is judged again from the start once the context is compacted, as
+    // the same attempt: its hold keeps the attempt charged (`tries` 1), so the new check counts nothing.
+    if (liftsNow().pending) {
+      await putLifts($, l => (l.pending ? { ...l, pending: null, holds: stamp(l.holds, [l.pending.triggerId], h => ({ ...h, tries: 1 })) } : l))
+    }
     $.ui.toast(`ctx-guard: compacting ${role} (trigger "${p.triggerId}")`)
     try {
       await runCompact($, spec.compact.instructions, gen)
@@ -2072,6 +2145,8 @@ async function finishPending($: EngineInterface): Promise<void> {
 
 const PING_PROMPT = 'Reply with OK.'
 const PING_TIMEOUT_MS = 2 * 60 * 1000
+// A ping's or a lift check's fork not settled this long after it went counts as gone: its slot is free.
+const FORK_GONE_MS = 2 * PING_TIMEOUT_MS
 // A refused prompt is tried this many times in all.
 const PROMPT_TRIES = 3
 
@@ -2081,11 +2156,30 @@ const usageHigh = (m: Metrics): number => Math.max(m.limits.five_hour?.pct ?? 0,
 // No ping now: one is in flight, a main turn runs, the period went cold, the cache
 // expired or a usage window is at ping.maxUsage. The caller checked role, trust and pause.
 const pingSkipped = (m: Metrics): boolean =>
-  mod.pinging ||
+  mod.pinging !== null ||
   turnRunningIn(activity(), m.now) ||
   cacheState().cold ||
   (m.cache.expiresIn ?? 0) <= 0 ||
   usageHigh(m) >= cacheConfig().ping.maxUsage
+
+/**
+ * Marks a fork in `mod[key]` until the returned release runs (it settled) or
+ * FORK_GONE_MS passes, whichever is first, so a fork that never settles
+ * cannot hold the slot for good. A later fork's mark stays.
+ */
+function holdSlot($: EngineInterface, key: 'pinging' | 'liftForking'): () => void {
+  const gen = mod
+  const mark = Symbol(key)
+  gen[key] = mark
+  const release = (): void => {
+    if (gen[key] === mark) gen[key] = null
+  }
+  const gone = $.clock.after(FORK_GONE_MS, release)
+  return () => {
+    gone.cancel()
+    release()
+  }
+}
 
 /**
  * A fork over the main thread's own prefix: the model never sees it, and a
@@ -2095,12 +2189,20 @@ const pingSkipped = (m: Metrics): boolean =>
  * a timeout leaves a retry for the next idle tick.
  */
 function runPing($: EngineInterface, fire: Fire, m: Metrics, tries: number): void {
+  // Lift work under way, or a lift check's fork still out: the ping waits for the next idle tick.
+  if (liftWork() || forkOut(liftsNow(), m.now)) {
+    if (mod.retry === null) mod.retry = { kind: 'ping', fire, tries }
+    return
+  }
   if (pingSkipped(m)) return
   const gen = mod
   const clears = mod.clears
-  gen.pinging = true
+  const release = holdSlot($, 'pinging')
   void quietly(async () => {
+    const at = await $.clock.now()
     try {
+      // Written before the fork, so a module copy after a reload knows it is out.
+      await setCache($, c => ({ ...c, pingAt: at }))
       const fork = $.model.fork({ prompt: PING_PROMPT }).catch(() => null)
       let expire = (): void => {}
       const timeout = new Promise<'timeout'>(resolve => {
@@ -2123,10 +2225,12 @@ function runPing($: EngineInterface, fire: Fire, m: Metrics, tries: number): voi
         $.ui.log(`ctx-guard: ping read ${r.usage.cache_read_input_tokens}, wrote ${r.usage.cache_creation_input_tokens}`, { to: 'debug' })
         await refreshBand($, 'changed')
       })
-      // One request at a time: a timed-out fork still holds the slot until it is over.
+      // One request at a time: a timed-out fork still holds the slot until it is over, or counts as gone.
       await fork
     } finally {
-      gen.pinging = false
+      release()
+      // A newer ping's stamp stays.
+      await setCache($, c => (c.pingAt === at ? { ...c, pingAt: null } : c))
     }
   })
 }
@@ -2145,6 +2249,11 @@ type PromptOutcome = 'went' | 'retry' | 'gave-up' | 'skipped'
 async function runPrompt($: EngineInterface, fire: Fire, role: string, spec: RoleSpec, m: Metrics, tries: number): Promise<PromptOutcome> {
   if (turnRunningIn(activity(), await $.clock.now())) {
     mod.retry = { kind: 'prompt', fire, tries }
+    return 'retry'
+  }
+  // Lift work under way: the prompt waits for the next idle tick, and holds that work back meanwhile.
+  if (liftWork()) {
+    mod.retry = { kind: 'prompt', fire, tries, deferred: true }
     return 'retry'
   }
   if (onCacheMetric(fire.trigger) && usageHigh(m) >= cacheConfig().prompt.maxUsage) return 'skipped'
@@ -2207,6 +2316,498 @@ async function retryAuto($: EngineInterface): Promise<void> {
   if (expired || triggerHolds(r.fire.trigger, m) !== true) return await drop(`trigger "${r.fire.trigger.id}" no longer holds`)
   if (r.kind === 'ping') runPing($, r.fire, m, r.tries)
   else if ((await runPrompt($, r.fire, role, spec, m, r.tries)) === 'skipped') await skipPromptRetry($)
+}
+
+
+// ---- lifts: holds, lift checks and wake prompts ----------------------------------
+
+// A lift check's outcome, for the evaluation that follows it: fresh figures, or its last try failed.
+type LiftCheck = 'fresh' | 'failed'
+
+const liftsNow = (): Lifts => liftsFor(mem.lifts, mod.role.role)
+
+// Read-modify-write on memory; nothing is written when nothing changed.
+async function putLifts($: EngineInterface, fn: (l: Lifts) => Lifts): Promise<void> {
+  const cur = liftsNow()
+  const next = fn(cur)
+  if (JSON.stringify(next) !== JSON.stringify(cur)) await put($, 'lifts', next)
+}
+
+// `holds` with `fn` applied to each of `ids` it has.
+function stamp(holds: Readonly<Record<string, Hold>>, ids: readonly string[], fn: (h: Hold, id: string) => Hold): Record<string, Hold> {
+  const out = { ...holds }
+  for (const id of ids) {
+    const h = Object.hasOwn(out, id) ? out[id] : undefined
+    if (h) out[id] = fn(h, id)
+  }
+  return out
+}
+
+function without(holds: Readonly<Record<string, Hold>>, ids: readonly string[]): Record<string, Hold> {
+  const out = { ...holds }
+  for (const id of ids) delete out[id]
+  return out
+}
+
+const liftTriggers = (): Trigger[] => roleTriggers().filter(t => t.lift !== null && t.lift !== undefined)
+
+// Lift work: a lift check in flight or being decided, or a wake prompt waiting to go. It does not overlap ctx-guard's other automatic actions.
+const liftWork = (): boolean => mod.checking !== null || mod.deciding || liftsNow().pending !== null
+
+const wakeGateNow = (isPaused: boolean): WakeGate => ({ trusted: trusted(), autoActions: mod.eff?.autoActions === true, paused: isPaused })
+
+/**
+ * What holds lift work back: a trigger prompt waiting in its retry slot, a
+ * ping holding the fork slot, a compact or a restart running, or a compact
+ * queued for the end of the turn (once a try found the session busy, it no
+ * longer does). A compact that itself waits for lift work holds nothing back,
+ * nor one behind a trigger prompt put off for that work.
+ */
+function liftHeldBack(): boolean {
+  const deferred = mod.retry?.kind === 'prompt' && mod.retry.deferred === true
+  if (mod.retry?.kind === 'prompt' && !deferred) return true
+  if (mod.pinging !== null || mod.compacting || mod.compactTrying || mod.restarting) return true
+  const p = mem.pendingCompact
+  if (p === null || p.step !== 'queued' || p.waiting !== null || p.at === mod.compactAfterLift) return false
+  return !(deferred && afterPromptTurn(p))
+}
+
+// A keep-warm ping's fork still out: this copy's until it settles, and one another copy started before a reload until its timeout.
+function pingOut(now: number): boolean {
+  const at = cacheState().pingAt
+  return mod.pinging !== null || (at !== null && now - at < PING_TIMEOUT_MS)
+}
+
+// A lift check's or a ping's fork still out: this copy's until it settles, and one another copy started before a reload until its timeout.
+const forkOut = (l: Lifts, now: number): boolean => mod.liftForking !== null || pingOut(now) || (mod.checking === null && l.forkAt !== null && now - l.forkAt < LIFT_CHECK_TIMEOUT_MS)
+
+function noteContext(): NoteContext | null {
+  const eff = mod.eff
+  const role = mod.role.role
+  const spec = eff && role !== null ? roleSpec(eff.config, role) : null
+  return eff && spec && role !== null ? { role, handoffPath: handoffPathFor(spec, role), readyToken: eff.config.readyToken } : null
+}
+
+/**
+ * The holds after this reading (stepHolds), written before anything acts.
+ * Answers the triggers whose rising edge corrects a lift run on estimated
+ * figures: the first reported figures show them holding, and that fire does
+ * not count in their `times`.
+ */
+async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Metrics): Promise<Set<string>> {
+  const l = liftsNow()
+  if (!triggers.some(t => t.lift) && !Object.keys(l.holds).length && !l.estimatedLift.length) return new Set()
+  const byId = new Map(triggers.map(t => [t.id, t]))
+  const step = stepHolds(l.holds, triggers, m, { blocking: mod.eff?.blocking === true, reports: l.reports, frozen: mod.checking ?? undefined })
+  const reported = (id: string): Trigger | null => {
+    const t = byId.get(id)
+    return t && !onEstimate(t, m) && whenState(t, m) !== null ? t : null
+  }
+  // What let each new lift go, in words, read on the figures it lifted on.
+  const lifted = stamp(step.holds, step.lifted, (h, id) => {
+    const t = byId.get(id)
+    return t ? { ...h, reason: liftReason(t, m, h.window) } : h
+  })
+  const exempt = new Set(
+    l.estimatedLift.filter(id => {
+      const t = reported(id)
+      return t !== null && whenState(t, m) === true
+    }),
+  )
+  const estimatedLift = l.estimatedLift.filter(id => byId.has(id) && reported(id) === null)
+  await putLifts($, x => ({ ...x, holds: lifted, estimatedLift }))
+  return exempt
+}
+
+type LiftItem = { trigger: Trigger; hold: Hold; why: NotWoken | null; steer: boolean; wake: boolean }
+
+const liftInput = (i: LiftItem, m: Metrics): LiftInput => ({ trigger: i.trigger, metrics: m, window: i.hold.window, reason: i.hold.reason })
+
+/**
+ * Runs the actions of lifts: one note, one toast and one notify for them all.
+ * A lift seen mid-turn ran its own already (`ran`); `steer` (the operator
+ * spoke since the brake touched the work) adds a toast and the lift note;
+ * `why` adds the reason a wake did not run. `wakeId`'s note is withheld, as
+ * its prompt carries the text, and when it is set no "Not woken" reason goes.
+ * Each lift that runs clears its trigger's mark, so the condition holding
+ * again is a new crossing. A hold in `keep` stays lifting (its prompt waits);
+ * the others end.
+ */
+async function runLifts($: EngineInterface, items: readonly LiftItem[], m: Metrics, wakeId: string | null = null, keep: ReadonlySet<string> = new Set()): Promise<void> {
+  const ctx = noteContext()
+  const role = mod.role.role
+  if (!items.length || !ctx || role === null) return
+  const notes = items.filter(i => i.trigger.id !== wakeId && i.hold.liftNotedAt === null && (i.steer || liftHas(i.trigger, 'note')))
+  const toasts = items.filter(i => i.steer || (!i.hold.ran && liftHas(i.trigger, 'toast')))
+  const notifies = items.flatMap(i => {
+    const why = wakeId === null ? i.why : null
+    return (!i.hold.ran && liftHas(i.trigger, 'notify')) || why !== null ? [{ lift: liftInput(i, m), why }] : []
+  })
+  const text = liftNoteText(notes.map(i => liftInput(i, m)), ctx)
+  let noted = false
+  if (text) {
+    await quietly(async () => {
+      await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+      noted = true
+    })
+  }
+  const toast = liftToastText(toasts.map(i => liftInput(i, m)))
+  if (toast) $.ui.toast(toast)
+  const notify = liftNotifyText(notifies)
+  if (notify) await quietly(() => $.ui.notify(notify))
+  for (const i of items) if (!i.hold.ran) await clearMark($, role, i.trigger.id)
+  const notedIds = noted ? notes.map(i => i.trigger.id) : []
+  const estimated = items.filter(i => !i.hold.ran && onEstimate(i.trigger, m)).map(i => i.trigger.id)
+  const ended = items.map(i => i.trigger.id).filter(id => !keep.has(id))
+  await putLifts($, l => ({
+    ...l,
+    holds: without(
+      stamp(l.holds, [...keep], (h, id) => ({ ...h, ran: true, liftNotedAt: notedIds.includes(id) ? m.now : h.liftNotedAt })),
+      ended,
+    ),
+    estimatedLift: [...new Set([...l.estimatedLift, ...estimated])],
+  }))
+}
+
+/**
+ * The lifts of an evaluation, decided. Mid-turn each runs its actions on the
+ * turn's own figures and a prompt waits for the turn's end. Idle, a prompt
+ * passes rules 1–4 (wakeVerdict) and rule 5 (no turn, no lift work held
+ * back); then every lift of the evaluation waits for one lift check, charged
+ * to the first such trigger in config order. Lifts with no wake run at once.
+ */
+async function judgeLifts($: EngineInterface, m: Metrics, isPaused: boolean, check: LiftCheck | null): Promise<void> {
+  if (check === null && mod.checking !== null) return
+  if (!noteContext()) return
+  const triggers = roleTriggers()
+  const l = liftsNow()
+  // A waiting prompt goes with its hold's lift, and with a reload that took `prompt` out of that lift.
+  const p = l.pending
+  const stale = p !== null && (l.holds[p.triggerId]?.phase !== 'lifting' || !triggers.some(t => t.id === p.triggerId && liftHas(t, 'prompt')))
+  if (stale) await putLifts($, x => ({ ...x, pending: null }))
+  const pending = stale ? null : p
+  const items: LiftItem[] = triggers.flatMap(t => {
+    const h = Object.hasOwn(l.holds, t.id) ? l.holds[t.id] : undefined
+    return t.lift && h?.phase === 'lifting' ? [{ trigger: t, hold: h, why: null, steer: false, wake: false }] : []
+  })
+  if (!items.length) return
+  const running = turnRunningIn(activity(), m.now)
+  if (running && check === null) {
+    // The figures are the turn's own: each lift runs its actions now, and a prompt waits for the turn's end.
+    const fresh = items.filter(i => !i.hold.ran)
+    return await runLifts($, fresh, m, null, new Set(fresh.filter(i => liftHas(i.trigger, 'prompt')).map(i => i.trigger.id)))
+  }
+  let rest = items
+  const live = pending ? items.find(i => i.trigger.id === pending.triggerId) : undefined
+  if (pending && live) {
+    if (check === null) await tryPending($, live, m, isPaused, triggers)
+    rest = items.filter(i => i !== live)
+  }
+  const gate = wakeGateNow(isPaused)
+  const a = activity()
+  for (const i of rest) {
+    if (!liftHas(i.trigger, 'prompt')) continue
+    const v = wakeVerdict(i.hold, { lastTurnEndAt: a.lastTurnEndAt, operatorAt: l.operatorAt, gate, attempts: l.attempts[i.trigger.id] ?? 0, times: i.trigger.lift?.times ?? 0 })
+    if (v.kind === 'steering') i.steer = true
+    else if (v.kind === 'not-woken') i.why = v.why
+    else if (v.kind === 'wake') i.wake = true
+  }
+  if (check === 'fresh') return await afterCheck($, rest, m, triggers, running)
+  if (check === 'failed') return await checksFailed($, rest, m)
+  const wakes = rest.filter(i => i.wake)
+  const others = rest.filter(i => !i.wake)
+  // Rule 5 holds the wakes back with their actions; the other lifts run now, on the figures at hand.
+  if (!wakes.length || liftWork() || liftHeldBack() || forkOut(liftsNow(), m.now)) return await runLifts($, others, m)
+  const charged = wakes.find(i => i.hold.tries > 0) ?? (wakes[0] as LiftItem)
+  // A reload cut the last try short: that was the third.
+  if (charged.hold.tries >= LIFT_TRIES) return await checksFailed($, rest, m)
+  await startCheck($, charged, rest.map(i => i.trigger.id))
+}
+
+/**
+ * The wake attempt: its tries (and, on the first, the charged trigger's
+ * attempt) written before the fork, so a reload during it counts the try.
+ */
+async function startCheck($: EngineInterface, charged: LiftItem, ids: string[]): Promise<void> {
+  const now = await $.clock.now()
+  let before: string | null = null
+  await quietly(async () => {
+    before = JSON.stringify((await $.session.usage()).rateLimits)
+  })
+  const id = charged.trigger.id
+  await putLifts($, l => {
+    const h = Object.hasOwn(l.holds, id) ? l.holds[id] : undefined
+    if (!h) return l
+    const attempts = h.tries === 0 ? { ...l.attempts, [id]: (l.attempts[id] ?? 0) + 1 } : l.attempts
+    return { ...l, forkAt: now, attempts, holds: { ...l.holds, [id]: { ...h, tries: h.tries + 1 } } }
+  })
+  runLiftCheck($, new Set(ids), before, now)
+}
+
+/**
+ * The lift check: the ping's fork, read for the account's current usage
+ * windows, with none of the ping's guards or bookkeeping (cache.ping.maxUsage,
+ * an expired or cold cache, `cache.pings`, the anchor). While it is out its
+ * holds are frozen and no other check starts. An answer, or a failure whose
+ * usage moved, is evaluated afresh; a timeout or another failure is a failed
+ * try, and the third ends the attempt. A /clear, a reload or a role change
+ * meanwhile drops its answer. The fork holds the slot until it settles, past
+ * its timeout too (its late answer is dropped), or until it counts as gone
+ * (holdSlot); the evaluation of its outcome is lift work until its lifts are
+ * judged.
+ */
+function runLiftCheck($: EngineInterface, covers: Set<string>, before: string | null, forkAt: number): void {
+  const gen = mod
+  const clears = mod.clears
+  mod.checking = covers
+  const release = holdSlot($, 'liftForking')
+  const decide = async (check: LiftCheck): Promise<void> => {
+    gen.deciding = true
+    try {
+      await evaluateNow($, await currentReading($), 'changed', check)
+    } finally {
+      gen.deciding = false
+    }
+  }
+  void quietly(async () => {
+    const fork = $.model.fork({ prompt: PING_PROMPT }).catch(() => null)
+    try {
+      let expire = (): void => {}
+      const timeout = new Promise<'timeout'>(resolve => {
+        expire = () => resolve('timeout')
+      })
+      const timer = $.clock.after(LIFT_CHECK_TIMEOUT_MS, expire)
+      const r = await Promise.race([fork, timeout])
+      timer.cancel()
+      await serial(async () => {
+        if (gen !== mod || clears !== mod.clears || mod.checking !== covers) return
+        mod.checking = null
+        if (!active()) return
+        const failure = r === 'timeout' ? 'timeout' : r === null ? 'error' : r.isAnswered ? null : r.reason
+        const answered = failure === null
+        $.ui.log(`ctx-guard: lift check ${answered ? 'read fresh usage' : `failed (${failure})`}`, { to: 'debug' })
+        let moved = false
+        if (!answered && before !== null) {
+          await quietly(async () => {
+            moved = JSON.stringify((await $.session.usage()).rateLimits) !== before
+          })
+        }
+        if (answered || moved) return await decide('fresh')
+        if (checkTries(liftsNow().holds, covers) >= LIFT_TRIES) await decide('failed')
+      })
+      await fork
+    } finally {
+      release()
+      // A newer check's stamp stays.
+      await putLifts($, l => (l.forkAt === forkAt ? { ...l, forkAt: null } : l))
+    }
+  })
+}
+
+/**
+ * Step 2 of the check, on fresh figures: a lift whose tools are free runs
+ * its actions, and the prompt goes from the charged trigger (else the first
+ * other free one that passed rules 1–5). A turn running or lift work held
+ * back leaves the prompt pending for the next idle tick.
+ */
+async function afterCheck($: EngineInterface, items: readonly LiftItem[], m: Metrics, triggers: readonly Trigger[], running: boolean): Promise<void> {
+  const ctx = noteContext()
+  if (!ctx) return
+  const free = items.filter(i => toolsFree(i.trigger, triggers, m))
+  const chosen = free.find(i => i.wake && i.hold.tries > 0) ?? free.find(i => i.wake) ?? null
+  // The check answered: its tries are spent, whatever it found.
+  const answered = free.map(i => i.trigger.id)
+  await putLifts($, l => ({ ...l, holds: stamp(l.holds, answered, h => ({ ...h, tries: 0 })) }))
+  if (!chosen) return await runLifts($, free, m)
+  const id = chosen.trigger.id
+  const pending: LiftPending = { triggerId: id, text: wakePromptText(liftInput(chosen, m), ctx), tries: 0, at: chosen.hold.liftedAt ?? m.now }
+  await putLifts($, l => ({ ...l, pending }))
+  await runLifts($, free, m, id, new Set([id]))
+  if (!running && !liftHeldBack()) await sendPending($)
+}
+
+/** The checks failed three times: the lifts that would wake stall, with one notify; the others run on the figures at hand. */
+async function checksFailed($: EngineInterface, items: readonly LiftItem[], m: Metrics): Promise<void> {
+  const stalls = items.filter(i => i.wake).map(i => i.trigger.id)
+  const until = earliestReset(m)
+  await putLifts($, l => ({ ...l, holds: stamp(l.holds, stalls, h => ({ ...h, phase: 'stalled', stall: { reports: l.reports, until } })) }))
+  if (stalls.length) await quietly(() => $.ui.notify(liftCheckFailedText(stalls)))
+  await runLifts($, items.filter(i => !i.wake), m)
+}
+
+/**
+ * The wake prompt the check let through, on an idle tick: a failed try if
+ * its trigger reads unknown; dropped with nothing appended if a brake holds
+ * its tools again, dropped with a toast and its withheld note if the
+ * operator spoke since the brake touched the work, turned into a notify (and
+ * its withheld note) if a gate closed, held back like any lift work, else
+ * sent.
+ */
+async function tryPending($: EngineInterface, item: LiftItem, m: Metrics, isPaused: boolean, triggers: readonly Trigger[]): Promise<void> {
+  const id = item.trigger.id
+  const state = whenState(item.trigger, m)
+  if (state === null) return await pendingUnknown($, id, m)
+  if (!toolsFree(item.trigger, triggers, m)) {
+    // Braked again before the prompt went: no lift happened.
+    return await putLifts($, l => ({ ...l, pending: null, holds: stamp(l.holds, [id], h => ({ ...h, phase: 'waiting', tries: 0 })) }))
+  }
+  // The operator spoke since the touch: their input may be in ahead of the drop it scheduled.
+  const operatorAt = liftsNow().operatorAt
+  if (operatorAt !== null && item.hold.touchedAt !== null && operatorAt > item.hold.touchedAt) return await endPending($, m, null, true)
+  const why = gateWhy(wakeGateNow(isPaused))
+  if (why) return await endPending($, m, why, false)
+  if (liftHeldBack()) return
+  await sendPending($)
+}
+
+/**
+ * The pending wake prompt's trigger reads unknown (a window gone from the
+ * report, say): a failed try, as a refusal is. The third drops the prompt and
+ * stalls its hold, with the notify of a failed check.
+ */
+async function pendingUnknown($: EngineInterface, id: string, m: Metrics): Promise<void> {
+  const p = liftsNow().pending
+  if (!p) return
+  const tries = p.tries + 1
+  if (tries < LIFT_TRIES) return await putLifts($, l => (l.pending ? { ...l, pending: { ...l.pending, tries } } : l))
+  const until = earliestReset(m)
+  await putLifts($, l => ({ ...l, pending: null, holds: stamp(l.holds, [id], h => ({ ...h, phase: 'stalled', stall: { reports: l.reports, until } })) }))
+  await quietly(() => $.ui.notify(liftCheckFailedText([id])))
+}
+
+/**
+ * Submits the pending wake prompt as ctx-guard's own, flagged so its turn
+ * counts as work for `idle`. A refusal leaves it for the next idle tick; the
+ * third ends it with a notify, and a compact that waited for the lift work
+ * is dropped.
+ */
+async function sendPending($: EngineInterface): Promise<void> {
+  const p = liftsNow().pending
+  if (!p) return
+  const tries = p.tries + 1
+  await putLifts($, l => (l.pending ? { ...l, pending: { ...l.pending, tries } } : l))
+  mod.wakeNext = true
+  let went = false
+  await quietly(async () => {
+    went = (await submitOwnPrompt($, p.text)).drop === undefined
+  })
+  if (went) return await putLifts($, l => ({ ...l, pending: null, holds: without(l.holds, [p.triggerId]) }))
+  mod.wakeNext = false
+  if (tries < LIFT_TRIES) return
+  const c = getPendingCompact()
+  if (c && c.at === mod.compactAfterLift) await dropCompact($, c, `the wake prompt was refused ${LIFT_TRIES} times`, true)
+  await endPending($, null, NOT_WOKEN.refused, false)
+}
+
+/**
+ * The pending wake prompt dropped while its tools are free (operator input, a
+ * freed tool used, a gate, refusals): its withheld note is appended, with a
+ * toast for the operator's input or a notify for `why`; the lift is over.
+ */
+async function endPending($: EngineInterface, m: Metrics | null, why: NotWoken | null, steer: boolean): Promise<void> {
+  const l = liftsNow()
+  const p = l.pending
+  if (!p) return
+  await putLifts($, x => ({ ...x, pending: null }))
+  const t = liftTriggers().find(x => x.id === p.triggerId)
+  const h = Object.hasOwn(l.holds, p.triggerId) ? l.holds[p.triggerId] : undefined
+  if (!t || !h) return
+  const metrics = m ?? (await metricsFor($, await currentReading($), await $.clock.now()))
+  await runLifts($, [{ trigger: t, hold: h, why, steer, wake: false }], metrics)
+}
+
+/**
+ * Operator input (a prompt or command from an operator origin, not
+ * /ctx-guard): wake attempts count from zero again, and a pending wake prompt
+ * is dropped; the operator is steering, so they get a toast and the model the
+ * lift note. Their /clear would wipe that note: the prompt is dropped after
+ * the clear, by their next input or the next idle tick (tryPending).
+ */
+async function onOperator($: EngineInterface, command: string | null): Promise<void> {
+  if (!active() || mod.role.role === null || !liftTriggers().length) return
+  const now = await $.clock.now()
+  const pending = liftsNow().pending
+  await putLifts($, l => ({ ...l, operatorAt: now, attempts: {} }))
+  if (pending && command !== 'clear') $.clock.after(0, () => void serial(() => timed($, () => endPending($, null, null, true))))
+}
+
+/**
+ * A /clear: the new context never saw a brake, so each hold loses its touch
+ * and note stamps, and a pending wake prompt is dropped (rule 1 fails, and the
+ * lift note goes into the new context). An operator's /clear is input after
+ * the touch (rule 2): the holds it steers keep their stamps, and their prompt
+ * is dropped after the clear with a toast and the lift note.
+ */
+async function liftsOnClear($: EngineInterface): Promise<void> {
+  await putLifts($, l => {
+    const unseen = Object.entries(l.holds)
+      .filter(([, h]) => l.operatorAt === null || h.touchedAt === null || l.operatorAt <= h.touchedAt)
+      .map(([id]) => id)
+    const pending = l.pending && unseen.includes(l.pending.triggerId) ? null : l.pending
+    return { ...l, pending, holds: stamp(l.holds, unseen, h => ({ ...h, touchedAt: null, notedAt: null, liftNotedAt: null })) }
+  })
+}
+
+// A refused call of one of a hold's tools touches it, whichever trigger refused the call.
+async function touchHolds($: EngineInterface, tool: string, now: number): Promise<void> {
+  await putLifts($, l => ({ ...l, holds: stamp(l.holds, Object.keys(l.holds).filter(id => l.holds[id]?.tools.includes(tool)), h => ({ ...h, touchedAt: now })) }))
+}
+
+// A main step's work for the lifts: a hold's note read, a lift note read mid-turn, a usage report for a stall.
+function liftStepDue(): boolean {
+  return Object.values(liftsNow().holds).some(
+    h => (h.notedAt !== null && (h.touchedAt === null || h.touchedAt < h.notedAt)) || (h.phase === 'lifting' && h.ran && h.liftNotedAt !== null) || h.phase === 'stalled',
+  )
+}
+
+/**
+ * A main step went out: a hold whose note was appended before it is touched
+ * (the model read the note); a lift seen mid-turn whose note it carries is
+ * over (the model knows, so its prompt is dropped); and its response is a
+ * usage report, which a stalled hold waits for.
+ */
+async function onLiftStep($: EngineInterface, sentAt: Promise<number | null> | null): Promise<void> {
+  const at = (await sentAt) ?? (await $.clock.now())
+  await putLifts($, l => {
+    const holds: Record<string, Hold> = {}
+    for (const [id, h] of Object.entries(l.holds)) {
+      if (h.phase === 'lifting' && h.ran && h.liftNotedAt !== null && at > h.liftNotedAt && l.pending?.triggerId !== id) continue
+      holds[id] = h.notedAt !== null && at > h.notedAt && (h.touchedAt === null || h.touchedAt < h.notedAt) ? { ...h, touchedAt: at } : h
+    }
+    return { ...l, holds, reports: Object.values(l.holds).some(h => h.phase === 'stalled') ? l.reports + 1 : l.reports }
+  })
+}
+
+// A freed tool's call went through: a lift seen mid-turn, or a pending wake prompt, on that tool is over.
+function liftFreedBy(tool: string): boolean {
+  const l = liftsNow()
+  return Object.entries(l.holds).some(([id, h]) => h.phase === 'lifting' && (h.ran || l.pending?.triggerId === id) && h.tools.includes(tool))
+}
+
+async function onFreedTool($: EngineInterface, tool: string): Promise<void> {
+  const l = liftsNow()
+  const p = l.pending
+  if (p && l.holds[p.triggerId]?.tools.includes(tool)) await endPending($, null, null, false)
+  await putLifts($, x => ({
+    ...x,
+    holds: without(
+      x.holds,
+      Object.keys(x.holds).filter(id => x.holds[id]?.phase === 'lifting' && x.holds[id]?.ran && x.holds[id]?.tools.includes(tool) && x.pending?.triggerId !== id),
+    ),
+  }))
+}
+
+// On an idle tick: a compact that waited for lift work runs once that work ended with no turn to end.
+async function compactAfterLiftWork($: EngineInterface): Promise<void> {
+  if (mod.compactAfterLift === null || liftWork()) return
+  const p = getPendingCompact()
+  if (!p || p.at !== mod.compactAfterLift || p.step !== 'queued') {
+    mod.compactAfterLift = null
+    return
+  }
+  if (await turnRunning($, await $.clock.now())) return
+  mod.compactAfterLift = null
+  scheduleCompact($)
 }
 
 // ---- session ----------------------------------------------------------------
@@ -2340,6 +2941,7 @@ async function syncActive($: EngineInterface): Promise<void> {
           timed($, async () => {
             await quietly(() => retryAuto($))
             await evaluateCurrent($, 'changed')
+            await quietly(() => compactAfterLiftWork($))
           }),
         ),
       ),
@@ -2472,6 +3074,9 @@ async function onClear($: EngineInterface): Promise<void> {
   mod.clears += 1
   mod.retry = null
   mod.compactAfter = null
+  // A lift check out was for the old context: its answer is dropped, and the holds are judged again.
+  mod.checking = null
+  await liftsOnClear($)
   await setCache($, c => ({ ...freshCache(c), sessionId: null }))
   const queued = getPendingCompact()
   if (queued && queued.step !== 'sent') await dropCompact($, queued, 'a /clear came first', false)
@@ -2526,10 +3131,10 @@ async function submitOwnPrompt($: EngineInterface, text: string): Promise<Prompt
   mod.ownPrompt = true
   try {
     const r = await $.prompt.submit({ text })
-    if (r.drop !== undefined) mod.ownPrompt = false
+    if (r.drop !== undefined) mod.ownPrompt = mod.wakeNext = false
     return r
   } catch (e) {
-    mod.ownPrompt = false
+    mod.ownPrompt = mod.wakeNext = false
     throw e
   } finally {
     mod.ownText = null
@@ -2546,16 +3151,30 @@ function noteOwnPrompt(e: PromptSubmitInput): void {
 async function onTurnStart($: EngineInterface, main: boolean): Promise<void> {
   const now = await $.clock.now()
   const own = main && mod.ownPrompt
-  if (main) mod.ownPrompt = false
-  await patchActivity($, a => ({ ...a, mainTurnAt: now, ...(main ? { ownTurn: own } : {}) }))
+  const woken = own && mod.wakeNext
+  if (main) {
+    mod.ownPrompt = false
+    mod.wakeNext = false
+  }
+  await patchActivity($, a => ({ ...a, mainTurnAt: now, ...(main ? { ownTurn: own, wokenTurn: woken } : {}) }))
 }
 
 // The end of the operator's turn starts a new idle period; ctx-guard's own
-// prompt turn is not the operator back, so idle and the period go on.
+// prompt turn is not the operator back, so idle and the period go on. A
+// woken turn's end is where idle counts from; every main turn's end is one
+// a lift's wake rule reads.
 async function onMainTurnEnd($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
-  const own = activity().ownTurn
-  await patchActivity($, a => ({ ...a, mainTurnAt: null, ownTurn: false, ...(own ? {} : { lastMainEndAt: now }) }))
+  const { ownTurn: own, wokenTurn: woken } = activity()
+  await patchActivity($, a => ({
+    ...a,
+    mainTurnAt: null,
+    ownTurn: false,
+    wokenTurn: false,
+    lastTurnEndAt: now,
+    ...(own ? {} : { lastMainEndAt: now }),
+    ...(woken ? { lastWokenEndAt: now } : {}),
+  }))
   // The turn's requests moved the cache in memory only: written now, so a reload keeps the anchor.
   await setCache($, c => (own ? c : newPeriod(c)))
 }
@@ -2984,7 +3603,13 @@ async function mainDeny($: EngineInterface, tool: string): Promise<string | null
   const metrics = await metricsFor($, await currentReading($), now)
   const hit = deniedBy(tool, liveDenies(triggers, metrics, { blocking: eff.blocking, paused: isPausedNow }))
   const trigger = hit ? triggers.find(t => t.id === hit.triggerId) : undefined
-  return trigger ? denyReason(tool, trigger, metrics) : null
+  if (!trigger) return null
+  await quietly(() => touchHolds($, tool, now))
+  // When the tool comes free, and whether a brake on it will prompt the model then.
+  const l = liftsNow()
+  const gate = wakeGateNow(isPausedNow)
+  const wakes = triggers.some(t => denyTools(t).includes(tool) && triggerHolds(t, metrics) === true && wakesOnLift(t, gate, l.attempts[t.id] ?? 0))
+  return denyReason(tool, trigger, metrics, { liftsIn: toolLiftsIn(tool, triggers, metrics), wakes })
 }
 
 // ---- hooks --------------------------------------------------------------------
@@ -3027,6 +3652,11 @@ export const register: Register = (on, options) => {
   // Who sent the prompt the next main turn answers: ctx-guard itself, or anyone else.
   on('prompt.submit', async ($, e, next) => {
     await quietly(async () => noteOwnPrompt(e))
+    // The operator's own input: it resets the wake count and steers past a pending wake.
+    if (operatorInput(e.origin?.kind, e.command?.name ?? null)) {
+      if (needsReady()) await quietly(() => ready($))
+      await quietly(() => onOperator($, e.command?.name ?? null))
+    }
     return next(e)
   })
 
@@ -3050,6 +3680,9 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined && active()) {
       noteStep($, e.agentId)
       if (budgetsOn()) subagentStep($, e.agentId, stepTokens(r.usage))
+    }
+    if (e.agentId === undefined && active() && liftStepDue()) {
+      $.clock.after(0, () => void serial(() => timed($, () => onLiftStep($, sentAt))))
     }
     if (e.agentId === undefined && active()) {
       const usage = r.usage
@@ -3148,6 +3781,7 @@ export const register: Register = (on, options) => {
   // A resume typed by the person claims its role= for a session with none.
   on('command.run', { command: 'ctx-guard:resume' }, async ($, e, next) => {
     if (needsReady()) await quietly(() => ready($))
+    if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command))
     if (!mod.commandOwned || !active() || e.origin.kind !== 'composer') return next(e)
     const refusal = await resumeClaim($, e.args)
     if (refusal !== null) return { text: refusal }
@@ -3162,6 +3796,11 @@ export const register: Register = (on, options) => {
   // other command passes straight through; a claim that cannot be judged lets
   // the command run, as it did before restart commands claimed roles.
   on('command.run', async ($, e, next) => {
+    // The operator's command (their /clear too): it resets the wake count and steers past a pending wake.
+    if (operatorInput(e.origin.kind, e.command) && mod.eff && liftTriggers().length) {
+      if (needsReady()) await quietly(() => ready($))
+      await quietly(() => onOperator($, e.command))
+    }
     // Judged from memory first, so any other command runs with no work done for it.
     const eff = mod.eff
     if (e.origin.kind !== 'composer' || !eff || roleForCommand(eff.config, e.command) === null) return next(e)
@@ -3188,6 +3827,8 @@ export const register: Register = (on, options) => {
     const gen = mod.mainGen
     const deny = await mainDeny($, tool)
     if (deny !== null) return { deny }
+    // A freed tool went through: a lift seen in this turn has nothing left to wake for.
+    if (active() && liftFreedBy(tool)) $.clock.after(0, () => void serial(() => timed($, () => onFreedTool($, tool))))
     const r = await next(e)
     // Only the model's own calls feed its context; a plugin's `$.tool.call` answers the plugin.
     if (next.origin.plugin === 'engine') addResult(gen, r.text)
