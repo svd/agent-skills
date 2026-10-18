@@ -166,6 +166,7 @@ import {
   track,
 } from './subagents'
 import type { Tracked } from './subagents'
+import { asLifts } from './lifts'
 import { parseProbe, probeSegment, probeState, scriptEnv } from './scripts'
 import type { ProbeOutcome, ProbeRun, ScriptContext, ScriptPurpose } from './scripts'
 
@@ -187,6 +188,7 @@ const LAST_COMPACT = { plugin: 'ctx-guard', key: 'lastCompact' } as const
 const SUBAGENTS = { plugin: 'ctx-guard', key: 'subagents' } as const
 const SPAWNED = { plugin: 'ctx-guard', key: 'spawned' } as const
 const CACHE = { plugin: 'ctx-guard', key: 'cache' } as const
+const LIFTS = { plugin: 'ctx-guard', key: 'lifts' } as const
 // A /clear this soon after a not-cleared restart was dropped is that restart's, landing late.
 const LATE_CLEAR_MS = 60 * 1000
 
@@ -385,6 +387,9 @@ function asActivity(v: unknown): Activity {
     lastMainEndAt: num(o.lastMainEndAt),
     mainTurnAt: num(o.mainTurnAt),
     ownTurn: o.ownTurn === true,
+    wokenTurn: o.wokenTurn === true,
+    lastWokenEndAt: num(o.lastWokenEndAt),
+    lastTurnEndAt: num(o.lastTurnEndAt),
     lastMain: lm && at !== null ? { tokens: num(lm.tokens), at } : null,
     shown: Array.isArray(o.shown) ? o.shown.filter((x): x is string => typeof x === 'string') : [],
   }
@@ -423,6 +428,7 @@ const emptyMem = (): Stored => ({
   stamp: null,
   activity: null,
   cache: null,
+  lifts: null,
 })
 
 let mem: Stored = emptyMem()
@@ -480,6 +486,8 @@ function stateSet($: EngineInterface, key: Key, value: unknown): Promise<unknown
       return $.state.set(ACTIVITY, value as Stored['activity'])
     case 'cache':
       return $.state.set(CACHE, value as Stored['cache'])
+    case 'lifts':
+      return $.state.set(LIFTS, value as Stored['lifts'])
   }
 }
 
@@ -508,7 +516,7 @@ const writesSettled = (): Promise<unknown> => Promise.all(Object.values(writing)
 
 // Shape-checked, as another version may have written them; a key never written is its default.
 async function readStored($: EngineInterface): Promise<Stored> {
-  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache] = await Promise.all([
+  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache, lifts] = await Promise.all([
     $.state.get(BAND),
     $.state.get(MARKS),
     $.state.get(ROLE_CLAIM),
@@ -527,6 +535,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     $.state.get(STAMP),
     $.state.get(ACTIVITY),
     $.state.get(CACHE),
+    $.state.get(LIFTS),
   ])
   const opt = <T,>(v: unknown, as: (v: unknown) => T): T | null => (v === undefined || v === null ? null : as(v))
   return {
@@ -548,6 +557,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     stamp: asHeldStamp(stamp.value),
     activity: opt(activity.value, asActivity),
     cache: opt(cache.value, asCache),
+    lifts: opt(lifts.value, asLifts),
   }
 }
 

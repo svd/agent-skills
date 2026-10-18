@@ -404,11 +404,12 @@ export function reportText(r: ReportInput): string {
   const pct = contextPercent(m)
   lines.push(`context: ${m.tokens === null ? 'unknown (no response yet)' : `${humanTokens(m.tokens)} (${pct === null ? '?' : humanPercent(pct)} of ${humanTokens(m.window)})`}`)
   const limits = [m.limits.five_hour && { kind: 'five_hour', ...m.limits.five_hour }, m.limits.seven_day && { kind: 'seven_day', ...m.limits.seven_day }]
-  const shown = limits.filter((x): x is { kind: string; pct: number; resetsAt: string | null } => Boolean(x))
+  const shown = limits.filter((x): x is { kind: string; pct: number; resetsAt: string | null; estimated?: true } => Boolean(x))
   if (!shown.length) lines.push('usage: no rate-limit windows reported')
   for (const l of shown) {
     const left = resetsInMs(l.resetsAt, r.now)
-    lines.push(`usage ${windowName(l.kind)}: ${humanPercent(l.pct)}${left === null ? '' : `, resets in ${humanDuration(left)}`}`)
+    const est = l.estimated ? ' (estimated: the window reset, no response since)' : ''
+    lines.push(`usage ${windowName(l.kind)}: ${humanPercent(l.pct)}${left === null ? '' : `, resets in ${humanDuration(left)}`}${est}`)
   }
   if (m.cost !== null) lines.push(`cost: ${humanUsd(m.cost)}`)
   lines.push(`idle: ${m.idleMs === null ? 'no turn has ended yet' : m.idleMs === 0 ? 'a turn is running' : humanDuration(m.idleMs)}`)

@@ -220,6 +220,55 @@ export type Mark = { step: number; at: number }
 
 export type Marks = { role: string | null; byId: { [triggerId: string]: Mark } }
 
+// A hold's phase: its condition holds; it let go but another brake still denies
+// one of its tools; it lifted and its actions or wake are being decided; or its
+// lift checks failed and it waits for new figures or a reset.
+export type HoldPhase = 'holding' | 'waiting' | 'lifting' | 'stalled'
+
+// A trigger with `lift` whose deny holds (or held). The stamps (`startedAt`,
+// `touchedAt`, `notedAt`) outlive a check and a stall.
+export type Hold = {
+  tools: string[]
+  // The trigger's `when` as canonical JSON: a reload that changes it drops the hold.
+  when: string
+  startedAt: number
+  // The last refused call of one of its tools, or the step that read its note.
+  touchedAt: number | null
+  // When the trigger's rising-edge note was appended.
+  notedAt: number | null
+  phase: HoldPhase
+  // Tries of the lift check under way; above 0 the attempt is already charged.
+  tries: number
+  // The window `limit.any` read while it held, for the lift's reason.
+  window: string | null
+  // When it lifted (phase lifting).
+  liftedAt: number | null
+  // Its lift's non-prompt actions already ran, and when its lift note went (a lift seen mid-turn).
+  ran: boolean
+  liftNotedAt: number | null
+  // Stalled: the usage report count it stalled on, and the earliest reset it waits for.
+  stall: { reports: number; until: number | null } | null
+}
+
+// The wake prompt waiting for an idle tick or a retry: unchecked after a lift
+// seen mid-turn, checked once the lift check freed its tools.
+export type LiftPending = { triggerId: string; text: string; tries: number; at: number; checked: boolean }
+
+// The lifts of a role: holds by trigger id, triggers whose lift ran on
+// estimated figures, the lift check's fork start, wake attempts since the last
+// operator input, the pending wake prompt, the last operator input and how
+// many usage reports have come (a stall waits for the next).
+export type Lifts = {
+  role: string | null
+  holds: { [triggerId: string]: Hold }
+  estimatedLift: string[]
+  forkAt: number | null
+  attempts: { [triggerId: string]: number }
+  pending: LiftPending | null
+  operatorAt: number | null
+  reports: number
+}
+
 // A role claimed by `/ctx-guard role` or `/ctx-guard:resume role=`; a null
 // role is an explicit "none".
 export type RoleClaim = { role: string | null; source: 'command' | 'resume'; at: number }
@@ -299,6 +348,12 @@ export type Activity = {
   mainTurnAt: number | null
   // The running main turn is ctx-guard's own prompt: idle keeps counting through it.
   ownTurn: boolean
+  // The running own turn is a lift's wake prompt: idle does not grow during it.
+  wokenTurn: boolean
+  // When the last woken turn ended; idle counts from the later of this and lastMainEndAt.
+  lastWokenEndAt: number | null
+  // When the last main-loop turn of any kind ended (the operator's, a prompt's, a wake's).
+  lastTurnEndAt: number | null
   // Newer than `$.session.usage()` can be mid-turn, so evaluations off a step read it first.
   lastMain: MainReading | null
   // One-time notices already toasted (version, collision, a role problem), so a reload does not repeat them.
@@ -359,6 +414,8 @@ declare module 'claude-code' {
       activity: Activity | null
       // The main thread's prompt cache: TTL, anchor, misses and this idle period's pings and fire counts.
       cache: CacheState | null
+      // Brakes with `lift`: their holds, the wake attempts and the pending wake prompt.
+      lifts: Lifts | null
     }
   }
 }

@@ -506,6 +506,7 @@ describe('cache texts', () => {
     miss: null,
     missCause: null,
     pings: 0,
+    liftsIn: null,
     ...over,
   })
   const ctx = { role: 'main', handoffPath: '.ctx-guard/main-handoff.md', readyToken: 'CTX-READY' }

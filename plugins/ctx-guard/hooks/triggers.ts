@@ -1,10 +1,20 @@
 // ctx-guard triggers: metric readings, rising-edge evaluation with JSON marks,
-// and the level-triggered live deny set. Pure: no `$`, never throws.
-import type { Config, EdgeAction, Mark, Marks, Metric, Quantity, Trigger } from '../types'
-import { roleSpec, zeroConfigTriggers } from './config'
+// the level-triggered live deny set, and the holds and lifts of brakes.
+// Pure: no `$`, never throws.
+import type { Config, EdgeAction, Hold, Mark, Marks, Metric, Quantity, Trigger } from '../types'
+import { canonicalJson, roleSpec, zeroConfigTriggers } from './config'
 
 export type LimitKind = 'five_hour' | 'seven_day'
-export type LimitReading = { pct: number; resetsAt: string | null }
+// `estimated`: the window's reset time passed with no response since, so it reads as rolled
+// over; `rolledAt` is that passed reset time.
+export type LimitReading = { pct: number; resetsAt: string | null; estimated?: true; rolledAt?: string }
+
+// How long past its reset time a window still reads as reported: clock skew, or a reset
+// time rounded down, must not turn a fresh 97 % into an estimated 0 %.
+export const ROLL_OVER_GRACE_MS = 60 * 1000
+
+// The length of each window: a rolled-over one resets again this long after it rolled over.
+export const WINDOW_MS: Readonly<Record<LimitKind, number>> = { five_hour: 5 * 60 * 60 * 1000, seven_day: 7 * 24 * 60 * 60 * 1000 }
 
 // The main thread's prompt cache, as cache.ts reads it; null is unknown.
 export type CacheMetrics = { expiresIn: number | null; miss: number | null; missCause: 'model' | 'prefix' | null; pings: number | null }
@@ -42,6 +52,8 @@ export type Condition = {
   holds: boolean
   // The window behind a limit metric (the highest one for limit.any).
   limit: LimitInfo | null
+  // The value rests on a window read as rolled over (for limit.any, either window).
+  estimated: boolean
 }
 
 // What a note, toast or deny reason needs about a fired trigger.
@@ -61,6 +73,8 @@ export type FireVars = {
   missCause: 'model' | 'prefix' | null
   pings: number | null
   now: number
+  // Time until the trigger's condition stops holding; null when unknown (see liftsInMs).
+  liftsIn: number | null
 }
 
 export type Fire = { trigger: Trigger; actions: EdgeAction[]; step: number; vars: FireVars }
@@ -87,14 +101,22 @@ export const METRIC_ORDER: readonly Metric[] = [
 // Float slack so 70 + 2 × 5 counts as reaching step 2 at exactly 80.
 const EPS = 1e-9
 
-/** The rate-limit windows ctx-guard tests, from the engine's list. */
+/**
+ * The rate-limit windows ctx-guard tests, from the engine's list. The figures
+ * are the last response's; with `now`, a window whose reset time passed
+ * ROLL_OVER_GRACE_MS ago or more reads as rolled over (0 %, reset unknown,
+ * estimated) until a response reports it again.
+ */
 export function limitsFrom(
   rateLimits: readonly { kind: string; percentUsed: number; resetsAt?: string }[] | null | undefined,
+  now?: number,
 ): Metrics['limits'] {
   const out: Metrics['limits'] = { five_hour: null, seven_day: null }
   for (const r of rateLimits ?? []) {
     if ((r.kind === 'five_hour' || r.kind === 'seven_day') && Number.isFinite(r.percentUsed)) {
-      out[r.kind] = { pct: r.percentUsed, resetsAt: r.resetsAt ?? null }
+      const at = r.resetsAt ? Date.parse(r.resetsAt) : Number.NaN
+      out[r.kind] =
+        now !== undefined && Number.isFinite(at) && now - at >= ROLL_OVER_GRACE_MS ? { pct: 0, resetsAt: null, estimated: true, rolledAt: r.resetsAt as string } : { pct: r.percentUsed, resetsAt: r.resetsAt ?? null }
     }
   }
   return out
@@ -140,7 +162,7 @@ export function metricsOf(src: MetricsSource, window: number, idle: number | nul
   return {
     tokens: count(src.tokens),
     window,
-    limits: limitsFrom(src.rateLimits),
+    limits: limitsFrom(src.rateLimits, now),
     cost: count(src.cost?.usd),
     idleMs: idle,
     cache,
@@ -202,8 +224,20 @@ const AT_OR_BELOW: ReadonlySet<Metric> = new Set<Metric>(['cache.expiresIn'])
 /** True for a metric that holds at or below its threshold; every other holds at or above it. */
 export const holdsBelow = (metric: Metric): boolean => AT_OR_BELOW.has(metric)
 
+// Brakes, holds and texts read the same trigger's conditions many times on one
+// reading, so each is read once per Metrics. Neither a reading nor a trigger
+// changes once made, so the memo never shows.
+const conditionMemo = new WeakMap<Metrics, WeakMap<Trigger, readonly Condition[]>>()
+
 /** Each metric of the trigger's AND with its live value. */
-export function conditions(trigger: Trigger, m: Metrics): Condition[] {
+export function conditions(trigger: Trigger, m: Metrics): readonly Condition[] {
+  let byTrigger = conditionMemo.get(m)
+  if (!byTrigger) {
+    byTrigger = new WeakMap()
+    conditionMemo.set(m, byTrigger)
+  }
+  const hit = byTrigger.get(trigger)
+  if (hit) return hit
   const out: Condition[] = []
   for (const metric of METRIC_ORDER) {
     const threshold = trigger.when[metric]
@@ -211,8 +245,10 @@ export function conditions(trigger: Trigger, m: Metrics): Condition[] {
     const limit = limitFor(metric, m)
     const value = valueOf(metric, threshold, m, limit)
     const holds = value !== null && (holdsBelow(metric) ? value - EPS <= threshold.value : value + EPS >= threshold.value)
-    out.push({ metric, threshold, value, holds, limit })
+    const estimated = metric === 'limit.any' ? Boolean(m.limits.five_hour?.estimated || m.limits.seven_day?.estimated) : limit?.estimated === true
+    out.push({ metric, threshold, value, holds, limit, estimated })
   }
+  byTrigger.set(trigger, out)
   return out
 }
 
@@ -244,6 +280,7 @@ function varsOf(trigger: Trigger, cs: readonly Condition[], step: number, m: Met
     missCause: m.cache.missCause,
     pings: m.cache.pings,
     now: m.now,
+    liftsIn: liftsInMs(trigger, m),
   }
 }
 
@@ -284,9 +321,10 @@ function priorMarks(marks: unknown, role: string | null): Record<string, unknown
  * Rising edges since `marks`. A trigger fires when its whole AND holds and it
  * did not at the last mark, or `every` reached a higher step (a jump of several
  * steps fires once, at the highest). The mark drops when the AND stops holding
- * and falls with the step, so the trigger re-arms. A trigger with an unknown
- * metric is skipped and keeps its mark; marks of another role, or of triggers
- * no longer configured, are dropped.
+ * and falls with the step, so the trigger re-arms; a window read as rolled over
+ * is an estimate and drops no mark (only a reported figure, or a lift, does).
+ * A trigger with an unknown metric is skipped and keeps its mark; marks of
+ * another role, or of triggers no longer configured, are dropped.
  */
 export function evaluate(
   triggers: readonly Trigger[],
@@ -305,7 +343,10 @@ export function evaluate(
       if (old) byId[trigger.id] = old
       continue
     }
-    if (!allHold(cs)) continue
+    if (!allHold(cs)) {
+      if (old && cs.every(c => c.holds || c.estimated)) byId[trigger.id] = old
+      continue
+    }
     const step = stepOf(trigger, cs)
     if (old && old.step >= step) {
       byId[trigger.id] = old.step === step ? old : { step, at: old.at }
@@ -320,14 +361,19 @@ export function evaluate(
 
 /**
  * Holds back the fires of triggers that used up their `times` in this idle
- * period and counts the rest; uncapped triggers pass and are not counted.
+ * period and counts the rest; uncapped triggers pass and are not counted, and
+ * so do the `exempt` (a rising edge that corrects a lift run on estimates).
  */
-export function applyTimes(fire: readonly Fire[], fired: Readonly<Record<string, number>>): { fire: Fire[]; fired: Record<string, number> } {
+export function applyTimes(
+  fire: readonly Fire[],
+  fired: Readonly<Record<string, number>>,
+  exempt: ReadonlySet<string> = new Set(),
+): { fire: Fire[]; fired: Record<string, number> } {
   const counts: Record<string, number> = { ...fired }
   const out: Fire[] = []
   for (const f of fire) {
     const cap = f.trigger.times
-    if (cap === null) {
+    if (cap === null || exempt.has(f.trigger.id)) {
       out.push(f)
       continue
     }
@@ -343,6 +389,22 @@ export function applyTimes(fire: readonly Fire[], fired: Readonly<Record<string,
 export function triggerHolds(trigger: Trigger, m: Metrics): boolean | null {
   const cs = conditions(trigger, m)
   return known(cs) ? allHold(cs) : null
+}
+
+/**
+ * The state of the trigger's AND for its lift: true when every metric is known
+ * and holds, false as soon as one known metric does not (whatever the others
+ * read), null otherwise.
+ */
+export function whenState(trigger: Trigger, m: Metrics): boolean | null {
+  const cs = conditions(trigger, m)
+  if (cs.some(c => c.value !== null && !c.holds)) return false
+  return known(cs) && allHold(cs) ? true : null
+}
+
+/** Whether `m` rests on a window read as rolled over for any of the trigger's metrics. */
+export function onEstimate(trigger: Trigger, m: Metrics): boolean {
+  return conditions(trigger, m).some(c => c.estimated)
 }
 
 /** Whether `marks` (of `role`) still hold a mark for trigger `id`: it fired and has not re-armed. */
@@ -454,6 +516,11 @@ export function liveDenies(
   return out
 }
 
+/** The tools a trigger denies, each once, in config order. */
+export function denyTools(trigger: Trigger): string[] {
+  return [...new Set(trigger.do.flatMap(a => (typeof a === 'object' ? a.deny : [])))]
+}
+
 /** The first live deny that names `tool`, or null. */
 export function deniedBy(tool: string, denies: readonly DenyEntry[]): DenyEntry | null {
   return denies.find(d => d.tool === tool) ?? null
@@ -463,4 +530,138 @@ export function deniedBy(tool: string, denies: readonly DenyEntry[]): DenyEntry 
 export function triggersFor(config: Config, role: string | null): Trigger[] {
   const spec = role === null ? null : roleSpec(config, role)
   return spec ? spec.triggers : zeroConfigTriggers()
+}
+
+// ---- holds and lifts -------------------------------------------------------------
+
+const isResetsIn = (metric: Metric): boolean => metric === 'limit.five_hour.resetsIn' || metric === 'limit.seven_day.resetsIn'
+
+// Time until a window reads as rolled over: ROLL_OVER_GRACE_MS past its reset (see limitsFrom).
+const rollsOverInMs = (resetsAt: string | null, now: number): number | null => resetsInMs(resetsAt, now - ROLL_OVER_GRACE_MS)
+
+/**
+ * Time until the trigger's AND stops holding: for a `.resetsIn` metric, until
+ * the reset is nearer than its threshold; for usage percents alone, until the
+ * window reads as rolled over, ROLL_OVER_GRACE_MS past its reset (for
+ * `limit.any`, the latest among the windows at or past the threshold). Null when that time is unknown, or another metric (context,
+ * cost) decides it.
+ */
+export function liftsInMs(trigger: Trigger, m: Metrics): number | null {
+  const cs = conditions(trigger, m)
+  if (!cs.length) return null
+  const resets = cs.filter(c => isResetsIn(c.metric))
+  const parts: (number | null)[] = []
+  if (resets.length) for (const c of resets) parts.push(c.value === null ? null : Math.max(0, c.value - c.threshold.value))
+  else {
+    if (cs.some(c => !c.metric.startsWith('limit.'))) return null
+    for (const c of cs) {
+      if (c.metric !== 'limit.any') {
+        parts.push(c.limit ? rollsOverInMs(c.limit.resetsAt, m.now) : null)
+        continue
+      }
+      const over = (['five_hour', 'seven_day'] as const).map(k => m.limits[k]).filter((r): r is LimitReading => r !== null && r.pct + EPS >= c.threshold.value)
+      const ms = over.map(r => rollsOverInMs(r.resetsAt, m.now))
+      parts.push(ms.some(x => x === null) ? null : ms.length ? Math.max(...(ms as number[])) : 0)
+    }
+  }
+  return parts.some(x => x === null) ? null : Math.min(...(parts as number[]))
+}
+
+/**
+ * When `tool` comes free: the latest lift time among the triggers that deny it
+ * and hold now, since it is free only once the last of them lets go. Null when
+ * one of them is unknown, or none holds.
+ */
+export function toolLiftsIn(tool: string, triggers: readonly Trigger[], m: Metrics): number | null {
+  const times = triggers.filter(t => denyTools(t).includes(tool) && triggerHolds(t, m) === true).map(t => liftsInMs(t, m))
+  return !times.length || times.some(x => x === null) ? null : Math.max(...(times as number[]))
+}
+
+/** Whether another trigger whose AND is known to hold denies one of `tools`: the rule the call path applies. */
+export function blockedBy(id: string, tools: readonly string[], triggers: readonly Trigger[], m: Metrics): string | null {
+  const other = triggers.find(t => t.id !== id && triggerHolds(t, m) === true && denyTools(t).some(x => tools.includes(x)))
+  return other ? other.id : null
+}
+
+/** Whether the trigger's deny tools are all free on `m`: its own AND known not to hold, and no other brake on them. */
+export function toolsFree(trigger: Trigger, triggers: readonly Trigger[], m: Metrics): boolean {
+  return whenState(trigger, m) === false && blockedBy(trigger.id, denyTools(trigger), triggers, m) === null
+}
+
+const sameTools = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i])
+
+function newHold(trigger: Trigger, now: number, window: string | null): Hold {
+  return { tools: denyTools(trigger), when: canonicalJson(trigger.when), startedAt: now, touchedAt: null, notedAt: null, phase: 'holding', tries: 0, window, liftedAt: null, ran: false, liftNotedAt: null, stall: null }
+}
+
+// A hold whose condition let go: it lifts when its tools are free, else it waits for the last brake on them.
+function letGo(h: Hold, trigger: Trigger, triggers: readonly Trigger[], m: Metrics): Hold {
+  if (blockedBy(trigger.id, h.tools, triggers, m) !== null) return { ...h, phase: 'waiting', tries: 0, stall: null }
+  return { ...h, phase: 'lifting', liftedAt: m.now, ran: false, liftNotedAt: null, tries: 0, stall: null }
+}
+
+export type HoldOptions = {
+  blocking: boolean
+  // Usage reports so far: a stalled hold waits for a newer one (or its reset).
+  reports: number
+  // Holds a lift check covers: left as they are.
+  frozen?: ReadonlySet<string>
+}
+
+/**
+ * The holds after one reading, and the triggers that lifted on it, in config
+ * order. A trigger with `lift` holds while its AND is known to hold; when one
+ * of its metrics is known not to, it lifts once no other brake whose AND holds
+ * denies one of its tools, and waits until then. An unknown reading changes
+ * nothing. A lifting hold stays lifting (the caller decides it) unless its AND
+ * holds again, or another such brake denies one of its tools, when it waits
+ * again; a stalled one lifts again only after a newer usage report or its
+ * reset. A frozen hold is left as it is. A hold whose trigger or lift a
+ * reload removed, or whose `when` or deny tools it changed, is dropped, as is
+ * every hold with `blocking` off: none of that is a lift. A reload that edits
+ * the lift keeps the hold.
+ */
+export function stepHolds(prev: Readonly<Record<string, Hold>>, triggers: readonly Trigger[], m: Metrics, opts: HoldOptions): { holds: Record<string, Hold>; lifted: string[] } {
+  const holds: Record<string, Hold> = {}
+  const lifted: string[] = []
+  if (!opts.blocking) return { holds, lifted }
+  for (const t of triggers) {
+    if (!t.lift) continue
+    const tools = denyTools(t)
+    if (!tools.length) continue
+    const raw = Object.hasOwn(prev, t.id) ? prev[t.id] : undefined
+    const old = raw && sameTools(raw.tools, tools) && raw.when === canonicalJson(t.when) ? raw : undefined
+    if (old && opts.frozen?.has(t.id)) {
+      holds[t.id] = old
+      continue
+    }
+    const state = whenState(t, m)
+    if (state === true) {
+      const window = t.when['limit.any'] ? (limitFor('limit.any', m)?.kind ?? null) : null
+      holds[t.id] = old ? { ...old, phase: 'holding', tries: 0, window: window ?? old.window, liftedAt: null, ran: false, liftNotedAt: null, stall: null } : newHold(t, m.now, window)
+      continue
+    }
+    if (!old) continue
+    // Another brake denies a tool again before the lift ran its course: it waits for that brake, stamps kept.
+    if (old.phase === 'lifting' && blockedBy(t.id, old.tools, triggers, m) !== null) {
+      holds[t.id] = { ...old, phase: 'waiting', tries: 0 }
+      continue
+    }
+    if (state === null || old.phase === 'lifting') {
+      holds[t.id] = old
+      continue
+    }
+    if (old.phase === 'stalled') {
+      const stall = old.stall
+      const free = !stall || opts.reports > stall.reports || (stall.until !== null && m.now >= stall.until)
+      if (!free) {
+        holds[t.id] = old
+        continue
+      }
+    }
+    const next = letGo(old, t, triggers, m)
+    holds[t.id] = next
+    if (next.phase === 'lifting') lifted.push(t.id)
+  }
+  return { holds, lifted }
 }

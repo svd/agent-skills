@@ -1,9 +1,35 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { defaultTriggers, roleSpec, validate } from './config'
-import { CHARS_PER_TOKEN, NO_CACHE, applyTimes, conditions, crossesGates, deniedBy, evaluate, idleMs, inFlightTokens, limitsFrom, liveDenies, markHeld, metricsOf, planActions, resetMarks, stepTokens, tokenGates, triggersFor } from './triggers'
+import {
+  CHARS_PER_TOKEN,
+  NO_CACHE,
+  ROLL_OVER_GRACE_MS,
+  applyTimes,
+  blockedBy,
+  conditions,
+  crossesGates,
+  deniedBy,
+  evaluate,
+  idleMs,
+  inFlightTokens,
+  liftsInMs,
+  limitsFrom,
+  liveDenies,
+  markHeld,
+  metricsOf,
+  planActions,
+  resetMarks,
+  stepHolds,
+  stepTokens,
+  tokenGates,
+  toolLiftsIn,
+  toolsFree,
+  triggersFor,
+  whenState,
+} from './triggers'
 import type { Metrics } from './triggers'
-import type { Config, Marks, Trigger } from '../types'
+import type { Config, Hold, Marks, Trigger } from '../types'
 
 function configWith(triggers: unknown[]): Config {
   const r = validate({ version: 1, roles: { lead: { triggers } } })
@@ -209,6 +235,21 @@ describe('AND metrics', () => {
       m({ tokens: 200_000, idleMs: 51 * min }),
     ])
     expect(fired).toEqual([['idle@0'], [], ['idle@0']])
+  })
+})
+
+describe('conditions', () => {
+  test('read once per trigger and reading: a new reading or another trigger reads afresh', () => {
+    const [a, b] = trigs({ id: 'a', when: { context: '10k' }, do: ['notify'] }, { id: 'b', when: { context: '20k' }, do: ['notify'] }) as [Trigger, Trigger]
+    const r = m({ tokens: 15_000 })
+    const first = conditions(a, r)
+    expect(conditions(a, r)).toBe(first)
+    expect(conditions(b, r)).not.toBe(first)
+    expect(conditions(b, r)[0]?.holds).toBe(false)
+    const next = m({ tokens: 5_000 })
+    expect(conditions(a, next)).not.toBe(first)
+    expect(conditions(a, next)[0]?.holds).toBe(false)
+    expect(conditions(a, r)[0]?.holds).toBe(true)
   })
 })
 
@@ -649,5 +690,316 @@ describe('plan', () => {
 
   test('one ping per evaluation', () => {
     expect(planActions([fire('a', ['ping']), fire('b', ['ping'])]).ping?.trigger.id).toBe('a')
+  })
+})
+
+describe('rolled-over windows', () => {
+  const H = 3_600_000
+  const NOW = Date.parse('2026-10-13T10:00:00Z')
+  const iso = (ms: number): string => new Date(ms).toISOString()
+
+  test('a window past its reset reads as 0 %, reset unknown, estimated; one ahead of it as reported', () => {
+    const l = limitsFrom(
+      [
+        { kind: 'five_hour', percentUsed: 95, resetsAt: iso(NOW - 60_000) },
+        { kind: 'seven_day', percentUsed: 61, resetsAt: iso(NOW + H) },
+      ],
+      NOW,
+    )
+    expect(l).toEqual({ five_hour: { pct: 0, resetsAt: null, estimated: true, rolledAt: iso(NOW - 60_000) }, seven_day: { pct: 61, resetsAt: iso(NOW + H) } })
+    // Without a time the figures stand as reported.
+    expect(limitsFrom([{ kind: 'five_hour', percentUsed: 95, resetsAt: iso(NOW - 60_000) }]).five_hour?.pct).toBe(95)
+  })
+
+  test('a window reads as rolled over only a minute past its reset: a fresh figure inside that minute stands', () => {
+    const at = (past: number) => limitsFrom([{ kind: 'five_hour', percentUsed: 97, resetsAt: iso(NOW - past) }], NOW).five_hour
+    expect(at(59_999)).toEqual({ pct: 97, resetsAt: iso(NOW - 59_999) })
+    expect(at(60_000)).toEqual({ pct: 0, resetsAt: null, estimated: true, rolledAt: iso(NOW - 60_000) })
+  })
+
+  test('metricsOf reads the windows against its time', () => {
+    const r = metricsOf({ rateLimits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: iso(NOW - 60_000) }] }, WINDOW, null, NOW)
+    expect(r.limits.five_hour).toEqual({ pct: 0, resetsAt: null, estimated: true, rolledAt: iso(NOW - 60_000) })
+  })
+
+  const reading = (pct: number, resetsAt: number) => metricsOf({ rateLimits: [{ kind: 'five_hour', percentUsed: pct, resetsAt: iso(resetsAt) }] }, WINDOW, null, NOW)
+  const stop = { id: 'limit-stop', when: { 'limit.any': 95 }, do: ['note', { deny: ['Agent'] }] }
+
+  test('an estimate keeps the mark; the first reported figures still over fire no second note', () => {
+    const t = trigs(stop)
+    const first = evaluate(t, reading(96, NOW + H), null, 'lead')
+    expect(first.fire.map(f => f.trigger.id)).toEqual(['limit-stop'])
+    const rolled = evaluate(t, reading(96, NOW - 60_000), first.marks, 'lead')
+    expect(rolled.fire).toEqual([])
+    expect(markHeld(rolled.marks, 'lead', 'limit-stop')).toBe(true)
+    // The window was in fact still full: fresh figures, same hold, no note.
+    const fresh = evaluate(t, reading(97, NOW + 5 * H), rolled.marks, 'lead')
+    expect(fresh.fire).toEqual([])
+  })
+
+  test('a reported figure below the threshold drops the mark', () => {
+    const t = trigs(stop)
+    const first = evaluate(t, reading(96, NOW + H), null, 'lead')
+    expect(markHeld(evaluate(t, reading(20, NOW + 5 * H), first.marks, 'lead').marks, 'lead', 'limit-stop')).toBe(false)
+  })
+
+  test('after a passed reset a percent brake denies nothing until a response reports figures', () => {
+    expect(liveDenies(trigs(stop), reading(96, NOW - 60_000), { blocking: true, paused: false })).toEqual([])
+  })
+
+  test('limit.any rests on an estimate when either window does', () => {
+    const r = metricsOf(
+      { rateLimits: [{ kind: 'five_hour', percentUsed: 96, resetsAt: iso(NOW - 60_000) }, { kind: 'seven_day', percentUsed: 40, resetsAt: iso(NOW + 9 * H) }] },
+      WINDOW,
+      null,
+      NOW,
+    )
+    expect(conditions(trigs(stop)[0] as Trigger, r)[0]?.estimated).toBe(true)
+  })
+})
+
+describe('whenState', () => {
+  const H = 3_600_000
+  const t = trigs({ id: 'e', when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '4d' }, do: [{ deny: ['Agent'] }] })[0] as Trigger
+  const week = (pct: number, left: number | null) => m({ now: 0, limits: { five_hour: null, seven_day: { pct, resetsAt: left === null ? null : new Date(left).toISOString() } } })
+
+  test('true when every metric is known and holds', () => {
+    expect(whenState(t, week(70, 5 * 24 * H))).toBe(true)
+  })
+
+  test('false when one metric is known not to hold, whatever the others read', () => {
+    expect(whenState(t, week(50, 5 * 24 * H))).toBe(false)
+    expect(whenState(t, week(50, null))).toBe(false)
+  })
+
+  test('null when one is unknown and none is known false', () => {
+    expect(whenState(t, week(70, null))).toBeNull()
+    expect(whenState(t, m())).toBeNull()
+  })
+})
+
+describe('holds and lifts', () => {
+  const H = 3_600_000
+  const D = 24 * H
+  const T0 = Date.parse('2026-10-13T10:00:00Z')
+  const iso = (ms: number): string => new Date(ms).toISOString()
+  const week = (pct: number, left: number | null, now = T0, five: number | null = null): Metrics =>
+    m({
+      now,
+      limits: {
+        five_hour: five === null ? null : { pct: five, resetsAt: iso(now + 2 * H) },
+        seven_day: { pct, resetsAt: left === null ? null : iso(now + left) },
+      },
+    })
+  const early = (id: string, pct: number, lift: unknown = { do: ['note'] }) => ({
+    id,
+    when: { 'limit.seven_day': pct, 'limit.seven_day.resetsIn': '4d' },
+    do: ['note', { deny: ['Agent', 'Workflow'] }],
+    ...(lift ? { lift } : {}),
+  })
+  const on = { blocking: true, reports: 0 }
+  type Step = { holds: Record<string, Hold>; lifted: string[] }
+  const steps = (triggers: Trigger[], readings: Metrics[]): Step[] => {
+    let holds: Record<string, Hold> = {}
+    return readings.map(r => {
+      const s = stepHolds(holds, triggers, r, on)
+      holds = s.holds
+      return s
+    })
+  }
+  const phases = (s: Step): Record<string, string> => Object.fromEntries(Object.entries(s.holds).map(([id, h]) => [id, h.phase]))
+
+  test('a hold starts while the condition holds and carries the tools and when', () => {
+    const [s] = steps(trigs(early('w60', 60)), [week(65, 5 * D)])
+    expect(s?.holds.w60).toMatchObject({ phase: 'holding', tools: ['Agent', 'Workflow'], startedAt: T0, tries: 0, touchedAt: null, notedAt: null })
+    expect(s?.lifted).toEqual([])
+  })
+
+  test('stacked brakes: 60 % lets go while 70 % holds → waits; 70 % lets go → both lift at once', () => {
+    // The 60 % brake lets go at 5d left, the 70 % one at 4d.
+    const t2 = trigs({ ...early('w60', 60), when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '5d' } }, early('w70', 70))
+    const r = steps(t2, [week(75, 6 * D), week(75, 4.5 * D), week(75, 3.5 * D)])
+    expect(phases(r[1] as Step)).toEqual({ w60: 'waiting', w70: 'holding' })
+    expect(r[1]?.lifted).toEqual([])
+    expect(phases(r[2] as Step)).toEqual({ w60: 'lifting', w70: 'lifting' })
+    expect(r[2]?.lifted).toEqual(['w60', 'w70'])
+  })
+
+  test('stacked brakes with lift only on the 60 % one: it lifts when the 70 % one lets go', () => {
+    const t = trigs({ ...early('w60', 60), when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '5d' } }, early('w70', 70, null))
+    const r = steps(t, [week(75, 6 * D), week(75, 4.5 * D), week(75, 3.5 * D)])
+    expect(phases(r[1] as Step)).toEqual({ w60: 'waiting' })
+    expect(r[2]?.lifted).toEqual(['w60'])
+  })
+
+  test('a waiting hold whose condition holds again goes back to holding, no lift', () => {
+    const t = trigs({ ...early('w60', 60), when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '5d' } }, early('w70', 70))
+    const r = steps(t, [week(75, 6 * D), week(75, 4.5 * D), week(75, 5.5 * D)])
+    expect(phases(r[2] as Step).w60).toBe('holding')
+    expect(r[2]?.lifted).toEqual([])
+  })
+
+  test('another trigger on the same tool with an unknown metric does not hold the lift back', () => {
+    const t = trigs(early('w60', 60), { id: 'ctx', when: { context: '50%' }, do: [{ deny: ['Agent'] }] })
+    const r = steps(t, [week(65, 5 * D), week(65, 3 * D)])
+    expect(r[1]?.lifted).toEqual(['w60'])
+  })
+
+  test('limit-stop lets go while week-90-early still denies Agent → waits; week-90-early lets go → limit-stop lifts with all four tools', () => {
+    const t = defaultTriggers()
+    // 96 % with 30h left: both hold; the five-hour window resets and the week sits at 92 % with 30h left.
+    const r = steps(t, [week(96, 30 * H, T0), week(92, 30 * H, T0), week(92, 20 * H, T0)])
+    expect(phases(r[0] as Step)).toEqual({ 'week-90-early': 'holding', 'limit-stop': 'holding' })
+    expect(phases(r[1] as Step)['limit-stop']).toBe('waiting')
+    expect(r[2]?.lifted).toEqual(['week-90-early', 'limit-stop'])
+    expect(r[2]?.holds['limit-stop']?.tools).toEqual(['Agent', 'Workflow', 'WebSearch', 'WebFetch'])
+  })
+
+  test('a .resetsIn lift on time alone: 4d1m left holds, 3d59m lifts', () => {
+    const r = steps(trigs(early('w60', 60)), [week(65, 4 * D + 60_000), week(65, 4 * D - 60_000)])
+    expect(phases(r[0] as Step)).toEqual({ w60: 'holding' })
+    expect(r[1]?.lifted).toEqual(['w60'])
+    expect(r[1]?.holds.w60?.liftedAt).toBe(T0)
+  })
+
+  test('an AND with one condition known false and one unknown lets go; all unknown changes nothing', () => {
+    const t = trigs(early('w60', 60))
+    const r = steps(t, [week(65, 5 * D), week(50, null)])
+    expect(r[1]?.lifted).toEqual(['w60'])
+    const u = steps(t, [week(65, 5 * D), m({ now: T0 })])
+    expect(phases(u[1] as Step)).toEqual({ w60: 'holding' })
+  })
+
+  test('a lifting hold stays lifting until its condition holds again', () => {
+    const t = trigs(early('w60', 60))
+    const r = steps(t, [week(65, 5 * D), week(65, 3 * D), week(65, 2 * D), week(65, 5 * D)])
+    expect(phases(r[2] as Step)).toEqual({ w60: 'lifting' })
+    expect(r[2]?.lifted).toEqual([])
+    expect(phases(r[3] as Step)).toEqual({ w60: 'holding' })
+  })
+
+  test('a lifting hold whose tools another brake starts denying waits again, stamps kept; it lifts once that brake lets go', () => {
+    const t = trigs(early('w60', 60), { id: 'stop', when: { 'limit.five_hour': 95 }, do: [{ deny: ['Agent'] }] })
+    const r = steps(t, [week(65, 5 * D), week(65, 3 * D, T0, 10), week(65, 3 * D, T0 + H, 96), week(65, 3 * D, T0 + 2 * H, 10)])
+    expect(phases(r[1] as Step)).toEqual({ w60: 'lifting' })
+    expect(phases(r[2] as Step)).toEqual({ w60: 'waiting' })
+    expect(r[2]?.lifted).toEqual([])
+    expect(r[2]?.holds.w60).toMatchObject({ startedAt: T0, tries: 0 })
+    expect(r[3]?.lifted).toEqual(['w60'])
+    expect(r[3]?.holds.w60).toMatchObject({ phase: 'lifting', liftedAt: T0 + 2 * H, startedAt: T0 })
+  })
+
+  test('blocking off drops every hold, and none starts while it stays off', () => {
+    const t = trigs(early('w60', 60))
+    const held = stepHolds({}, t, week(65, 5 * D), on).holds
+    expect(stepHolds(held, t, week(65, 3 * D), { ...on, blocking: false })).toEqual({ holds: {}, lifted: [] })
+    expect(stepHolds({}, t, week(65, 5 * D), { ...on, blocking: false }).holds).toEqual({})
+  })
+
+  test('a reload that removes the trigger, its lift, a deny tool, or changes its when drops the hold with no lift', () => {
+    const held = stepHolds({}, trigs(early('w60', 60)), week(65, 5 * D), on).holds
+    const later = week(65, 3 * D)
+    expect(stepHolds(held, trigs(early('other', 60)), later, on)).toEqual({ holds: {}, lifted: [] })
+    expect(stepHolds(held, trigs(early('w60', 60, null)), later, on)).toEqual({ holds: {}, lifted: [] })
+    expect(stepHolds(held, trigs({ ...early('w60', 60), do: ['note', { deny: ['Agent'] }] }), later, on)).toEqual({ holds: {}, lifted: [] })
+    expect(stepHolds(held, trigs({ ...early('w60', 60), when: { 'limit.seven_day': 61, 'limit.seven_day.resetsIn': '4d' } }), later, on).lifted).toEqual([])
+    // The same config keeps it.
+    expect(stepHolds(held, trigs(early('w60', 60)), later, on).lifted).toEqual(['w60'])
+  })
+
+  test('a frozen hold is left as it is', () => {
+    const t = trigs(early('w60', 60))
+    const lifting = stepHolds(stepHolds({}, t, week(65, 5 * D), on).holds, t, week(65, 3 * D), on).holds
+    const back = stepHolds(lifting, t, week(65, 5 * D), { ...on, frozen: new Set(['w60']) })
+    expect(back.holds.w60?.phase).toBe('lifting')
+  })
+
+  test('a stalled hold lifts again only after a newer usage report or its reset', () => {
+    const t = trigs(early('w60', 60))
+    const stalled: Hold = { ...(stepHolds({}, t, week(65, 5 * D), on).holds.w60 as Hold), phase: 'stalled', tries: 3, stall: { reports: 4, until: T0 + H } }
+    const prev = { w60: stalled }
+    expect(stepHolds(prev, t, week(65, 3 * D), { ...on, reports: 4 }).holds.w60?.phase).toBe('stalled')
+    const report = stepHolds(prev, t, week(65, 3 * D), { ...on, reports: 5 })
+    expect(report.lifted).toEqual(['w60'])
+    expect(report.holds.w60).toMatchObject({ phase: 'lifting', tries: 0, stall: null, startedAt: T0 })
+    expect(stepHolds(prev, t, week(65, 3 * D, T0 + H), { ...on, reports: 4 }).lifted).toEqual(['w60'])
+    // Held again on fresh figures: back to holding, stamps kept.
+    expect(stepHolds(prev, t, week(65, 5 * D), { ...on, reports: 4 }).holds.w60).toMatchObject({ phase: 'holding', tries: 0, startedAt: T0 })
+  })
+
+  test('toolsFree and blockedBy follow the call path', () => {
+    const t = trigs(early('w60', 60), early('w70', 70))
+    expect(toolsFree(t[0] as Trigger, t, week(75, 3 * D))).toBe(true)
+    expect(toolsFree(t[0] as Trigger, t, week(75, 5 * D))).toBe(false)
+    const both = week(75, 5 * D)
+    expect(blockedBy('w60', ['Agent'], t, both)).toBe('w70')
+    expect(toolsFree(t[0] as Trigger, t, week(50, 5 * D))).toBe(true)
+  })
+})
+
+describe('liftsIn', () => {
+  const H = 3_600_000
+  const D = 24 * H
+  const G = ROLL_OVER_GRACE_MS
+  const T0 = Date.parse('2026-10-13T10:00:00Z')
+  const iso = (ms: number): string => new Date(ms).toISOString()
+  const at = (five: number | null, fiveLeft: number | null, week: number | null, weekLeft: number | null): Metrics =>
+    m({
+      now: T0,
+      limits: {
+        five_hour: five === null ? null : { pct: five, resetsAt: fiveLeft === null ? null : iso(T0 + fiveLeft) },
+        seven_day: week === null ? null : { pct: week, resetsAt: weekLeft === null ? null : iso(T0 + weekLeft) },
+      },
+    })
+
+  test('a .resetsIn condition: the time left less its threshold', () => {
+    const t = trigs({ id: 'e', when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '4d' }, do: [{ deny: ['Agent'] }] })[0] as Trigger
+    expect(liftsInMs(t, at(null, null, 70, 4 * D + 5 * H))).toBe(5 * H)
+    expect(liftsInMs(t, at(null, null, 70, null))).toBeNull()
+  })
+
+  test('a percent alone: the time until its window reads as rolled over', () => {
+    const t = trigs({ id: 's', when: { 'limit.five_hour': 90 }, do: [{ deny: ['Agent'] }] })[0] as Trigger
+    expect(liftsInMs(t, at(95, 2 * H, null, null))).toBe(2 * H + G)
+    // Reset 30 s ago: the grace has 30 s left.
+    expect(liftsInMs(t, at(95, -30_000, null, null))).toBe(G - 30_000)
+    expect(liftsInMs(t, at(95, -G, null, null))).toBe(0)
+  })
+
+  test('limit.any: the latest reset among the windows at or over the threshold', () => {
+    const t = trigs({ id: 's', when: { 'limit.any': 95 }, do: [{ deny: ['Agent'] }] })[0] as Trigger
+    expect(liftsInMs(t, at(96, 2 * H, 97, 3 * D))).toBe(3 * D + G)
+    expect(liftsInMs(t, at(96, 2 * H, 40, 3 * D))).toBe(2 * H + G)
+    expect(liftsInMs(t, at(96, null, 40, 3 * D))).toBeNull()
+  })
+
+  test('a context trigger is unknown', () => {
+    const t = trigs({ id: 'c', when: { context: '80%' }, do: [{ deny: ['Agent'] }] })[0] as Trigger
+    expect(liftsInMs(t, m({ tokens: 900_000 }))).toBeNull()
+  })
+
+  test('a tool comes free when the last brake on it lets go; unknown when one is unknown', () => {
+    const t = trigs(
+      { id: 'e', when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '4d' }, do: [{ deny: ['Agent'] }] },
+      { id: 's', when: { 'limit.five_hour': 90 }, do: [{ deny: ['Agent', 'WebFetch'] }] },
+    )
+    expect(toolLiftsIn('Agent', t, at(95, 2 * H, 70, 4 * D + 5 * H))).toBe(5 * H)
+    expect(toolLiftsIn('Agent', t, at(95, 6 * H, 70, 4 * D + 5 * H))).toBe(6 * H + G)
+    expect(toolLiftsIn('WebFetch', t, at(95, 2 * H, 70, 4 * D + 5 * H))).toBe(2 * H + G)
+    expect(toolLiftsIn('Agent', [...t, ...trigs({ id: 'c', when: { context: '50%' }, do: [{ deny: ['Agent'] }] })], { ...at(95, 2 * H, 70, 4 * D), tokens: 900_000 })).toBeNull()
+  })
+
+  test('the fired vars carry liftsIn', () => {
+    const t = trigs({ id: 'e', when: { 'limit.seven_day': 60, 'limit.seven_day.resetsIn': '4d' }, do: ['note', { deny: ['Agent'] }] })
+    expect(evaluate(t, at(null, null, 70, 4 * D + 5 * H), null, 'lead').fire[0]?.vars.liftsIn).toBe(5 * H)
+  })
+})
+
+describe('times exempt', () => {
+  test('an exempt fire passes uncounted, even past its times', () => {
+    const t = trigs({ id: 'b', when: { 'limit.any': 95 }, do: ['note', { deny: ['Agent'] }], times: 1 })
+    const f = evaluate(t, m({ five: 96 }), null, 'lead').fire
+    expect(applyTimes(f, { b: 1 }, new Set(['b']))).toEqual({ fire: f, fired: { b: 1 } })
+    expect(applyTimes(f, { b: 1 }).fire).toEqual([])
   })
 })
