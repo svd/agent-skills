@@ -11,6 +11,7 @@ Every key, default and rule of config schema v1, then recipes. The JSON Schema i
 - [Top-level keys](#top-level-keys)
 - [Role keys](#role-keys)
 - [Triggers](#triggers)
+- [Lifts](#lifts)
 - [Notes and template variables](#notes-and-template-variables)
 - [Restart](#restart)
 - [Ready checks](#ready-checks)
@@ -136,6 +137,7 @@ Text values must hold more than whitespace. Unknown keys are errors at every lev
 | `level` | no | `soft`, `hard` or `stop`: picks the built-in note wording. |
 | `message` | no | A note template that replaces the built-in wording for this trigger. For a `prompt` action it is the prompt's text. |
 | `times` | no (yes with `ping` or `prompt`) | A whole number of at least 1: the most fires of this trigger in one idle period. See [`times`](#times). |
+| `lift` | no | What runs when the trigger's `deny` lets go: a note, a toast, a notify, or a prompt that wakes the session. Only on a trigger with a `deny`. See [Lifts](#lifts). |
 
 ### Metrics
 
@@ -148,7 +150,7 @@ Text values must hold more than whitespace. Unknown keys are errors at every lev
 | `limit.five_hour.resetsIn` | duration | Time left until the 5-hour window resets, at least. Needs `limit.five_hour` in the same `when`. |
 | `limit.seven_day.resetsIn` | duration | Time left until the weekly window resets, at least. Needs `limit.seven_day` in the same `when`. |
 | `cost` | usd | Session cost. |
-| `idle` | duration | Time since the last main-loop turn ended. Zero while a turn runs. The turn of a `prompt` action does not reset it. |
+| `idle` | duration | Time since the last main-loop turn ended. Zero while a turn runs. The turn of a `prompt` action does not reset it; a turn a lift woke counts as work (see [Lifts](#lifts)). |
 | `cache.expiresIn` | duration | Time left before the main thread's prompt cache expires, at most: it holds at or **below** its threshold. See [Prompt cache](#prompt-cache). |
 | `cache.miss` | tokens | Tokens the latest main-loop request re-wrote of a cache that should have been warm. `0` for a request with no miss. |
 | `cache.pings` | count | Warm pings in the current idle period. |
@@ -157,19 +159,33 @@ ctx-guard evaluates triggers after each main-loop turn (and when a usage window 
 after a main-loop request whose fill crosses a threshold, and on a one-minute timer that catches
 `idle`.
 
-**Rising edge.** Edge actions (`note`, `toast`, `notify`, `compact`, `ping`, `prompt`) fire once, when the whole AND
-starts to hold. The trigger's mark then stays until a metric drops below its threshold (after
-`/compact`, or when a usage window resets); the trigger re-arms then. `cache.expiresIn` is the
-reverse: its trigger re-arms when the time left rises above the threshold, as after a warm ping. `/clear` resets the mark of
-every trigger with a `context` condition; a trigger on `limit.*`, `cost` or `idle` alone keeps
-its mark, since a `/clear` leaves those figures as they were, and re-arms only when its figure
-drops.
+**Rising edge.** Edge actions (`note`, `toast`, `notify`, `compact`, `ping`, `prompt`) fire once,
+when the whole AND starts to hold. The trigger's mark then stays until a metric drops below its
+threshold (after `/compact`, or when a usage window reports a figure below it); the trigger re-arms
+then. `cache.expiresIn` is the reverse: its trigger re-arms when the time left rises above the
+threshold, as after a warm ping. `/clear` resets the mark of every trigger with a `context`
+condition; a trigger on `limit.*`, `cost` or `idle` alone keeps its mark, since a `/clear` leaves
+those figures as they were, and re-arms only when its figure drops.
 Marks survive a hot reload. A role change drops the old role's marks.
 
 **Unknown metrics.** Context is unknown before the first response and right after `/clear`;
 usage windows are unknown until the engine reports them, and a `.resetsIn` metric while its
 window reports no reset time. `cache.expiresIn` is unknown before the first main-loop request
 and after `/clear` or `/compact` until the next one. A trigger with an unknown metric is skipped and keeps its mark.
+
+**A passed reset.** Usage figures are those of the last response; while the session is idle no
+response comes. A minute after a window's reset time, ctx-guard reads that window as rolled
+over: 0 %, reset time unknown, until the next response reports it. This is an estimate:
+
+- It clears no mark. A percent trigger re-arms only on a reported figure below its threshold, or
+  when its [lift](#lifts) runs, so the first response after the reset, if the window is still
+  full, sends no second note for what is one crossing.
+- It applies to every trigger. A percent brake on that window stops denying until the next
+  response reports figures; the first request after the reset is judged on 0 %, and if the window
+  is in fact full its response brakes the session again from the next request. The same 0 % feeds
+  `cache.ping.maxUsage` and `cache.prompt.maxUsage`, so keep-warm pings and cache prompts may run
+  again after a reset until fresh figures arrive.
+- The band and the `/ctx-guard` report show 0 % (the report marks it estimated).
 
 **Time left to a reset.** Every metric but `cache.expiresIn` holds at or above its threshold, so a `.resetsIn`
 threshold means "at least this long until the reset". It pairs a usage level with how early it
@@ -212,15 +228,18 @@ A trigger with `ping` or `prompt` must have `times`, so automatic spending has a
 | `"prompt"` | rising edge | Submits a real turn with the trigger's `message`, or a default asking for the handoff. Needs trust, `autoActions` on, no pause and `times`. See [Prompt cache](#prompt-cache). |
 | `{ "deny": ["Agent", …] }` | while the AND holds | Denies those main-loop tool calls. See below. |
 
-**Denies** are level-triggered: each main-loop tool call is judged afresh from live usage, so a
-deny lifts as soon as its metrics drop. They match tool names exactly, apply only once the
-session has a role, and fail open: an unknown metric or a failed check denies nothing. The
-reason names the trigger, its figures and what lifts it (for a `.resetsIn` condition, also when
-the reset comes close enough). `/ctx-guard pause` and the `blocking`
-switch lift every deny. A deny cannot share a trigger with `idle` or a `cache.*` metric. A response's tool calls start
-before its usage arrives, so a call made while the response streams is judged on an estimate of
-that request's context: the previous request's input and output plus the tool results since, at
-4 characters a token (the person's prompt and any note are not counted).
+**Denies** are level-triggered: each main-loop tool call is judged afresh from live usage, so a deny
+lifts as soon as its metrics drop. They match tool names exactly, apply only once the session has a
+role, and fail open: an unknown metric or a failed check denies nothing. The reason names the
+trigger, its figures and what lifts it (for a `.resetsIn` condition, also when the reset comes close
+enough), then when the tool comes free: the latest `{liftsIn}` among all the triggers that deny it
+and hold, or "at a time not known yet". When one of them has `prompt` in `lift.do` and would wake
+the session (trusted, `autoActions` on, no pause, `lift.times` not spent), it adds "ctx-guard is set
+to prompt you when the tool comes free". `/ctx-guard pause` and the `blocking` switch lift every
+deny. A deny cannot share a trigger with `idle` or a `cache.*` metric. A response's tool calls start
+before its usage arrives, so a call made while the response streams is judged on an estimate of that
+request's context: the previous request's input and output plus the tool results since, at 4
+characters a token (the person's prompt and any note are not counted).
 
 ### Levels
 
@@ -246,15 +265,161 @@ A role with no `triggers` of its own (and none in `defaults`) gets:
 | `ctx-stop` | context ≥ 75 %, every 5 % | note | stop |
 | `limit-soft` | `limit.any` ≥ 80 % | note | soft |
 | `limit-hard` | `limit.any` ≥ 90 % | note, toast | hard |
-| `week-80-early` | `limit.seven_day` ≥ 80 % and its reset ≥ 2 days away | note, deny `Agent`, `Workflow` | hard |
-| `week-90-early` | `limit.seven_day` ≥ 90 % and its reset ≥ 1 day away | note, deny `Agent`, `Workflow` | hard |
-| `limit-stop` | `limit.any` ≥ 95 % | note, toast, deny `Agent`, `Workflow`, `WebSearch`, `WebFetch` | stop |
+| `week-80-early` | `limit.seven_day` ≥ 80 % and its reset ≥ 2 days away | note, deny `Agent`, `Workflow`; lift: note | hard |
+| `week-90-early` | `limit.seven_day` ≥ 90 % and its reset ≥ 1 day away | note, deny `Agent`, `Workflow`; lift: note | hard |
+| `limit-stop` | `limit.any` ≥ 95 % | note, toast, deny `Agent`, `Workflow`, `WebSearch`, `WebFetch`; lift: note | stop |
 
 The two `week-*-early` triggers carry their own note: "With {resetsIn} still to the weekly
 reset, start no new subagents so the rest of the window lasts; do small steps in this session."
 They stop subagents and workflows sooner the earlier the weekly window fills, and lift by themselves as the
 reset nears (see [Time left to a reset](#metrics)). A window that reports no reset time leaves
-them unknown, so only `limit-stop` blocks then.
+them unknown, so only `limit-stop` blocks then. The three brakes lift with a note alone, which the
+model reads on its next request.
+
+## Lifts
+
+A trigger with a `deny` is a brake. Its `lift` names what runs when the brake lets go:
+
+```jsonc
+{ "id": "week-60-early",
+  "when": { "limit.seven_day": 60, "limit.seven_day.resetsIn": "4d" },
+  "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "hard",
+  "lift": { "do": ["note", "prompt"], "times": 3 } }
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `lift.do` | yes | Actions run when the brake lifts: `note`, `toast`, `notify`, `prompt`. |
+| `lift.times` | with `prompt`, and only with it | A whole number of at least 1: the most wake attempts of this trigger between two operator inputs. |
+| `lift.message` | no | Text for the lift note and the wake prompt, in place of the defaults below. All template variables apply (`{id}` and `{tools}` among them), and `{liftReason}`, which only lift texts have. |
+
+| Choice | `lift.do` | Effect |
+|---|---|---|
+| Tell the operator | `["notify"]` (or `toast`) | OS notification; the operator decides whether to say "go on". Works untrusted. |
+| Tell the model | `["note"]` | The model reads it on its next request. Useful mid-turn; an idle session still waits. |
+| Wake the model | `["prompt"]` | Submits a turn so an idle session resumes on its own. It spends usage on its own (see [Cost](#the-lift-check)). Needs trust, `autoActions` and no pause. When the prompt does not go: a brake that never touched the work runs its other actions alone; after operator input, the operator gets a toast and the model the lift note on the next turn; a closed gate (untrusted, `autoActions` off, paused), a spent `lift.times`, a refused prompt or failed checks each send the operator a `notify`. |
+
+**Holds.** ctx-guard keeps a hold for each trigger with `lift` while its whole `when` holds. A
+pause neither ends a hold nor starts one. When one metric is known not to hold (whatever the
+others read), the brake lets go; the hold **lifts** once no other trigger of the role whose
+`when` holds denies one of its tools, the rule the call path applies. Until then it waits, and it
+goes back to holding if its own condition holds again first. A lift frees all of its trigger's
+deny tools at once: with two stacked brakes on `Agent`, the session hears of a lift only when
+`Agent` is usable. An unknown reading changes nothing, so a dropped usage report neither ends a
+hold nor wakes the session.
+
+These are not lifts: the hold is dropped with no lift action when a reload removes the trigger or
+its `lift`, or changes its `when` or its deny tools; when `blocking` is off (no hold starts while
+it stays off); and on a role change. After `--resume` the session has no holds until the first
+response reports figures.
+
+**What runs.** A lift without `prompt` runs its actions at once, on the figures at hand: after a
+long wait those may be the [estimate of a passed reset](#metrics). Several lifts in one
+evaluation send one note and one notify. A lift that runs clears its trigger's mark, so if the
+condition holds again later the trigger fires its note as for any new crossing; when the lift ran
+on estimated figures and the first reported figures show the condition holding, that fire does
+not count in the trigger's `times`.
+
+**Default texts.**
+
+| Text | Default |
+|---|---|
+| Lift note | `[ctx-guard] Trigger "{id}" has lifted: {liftReason}. {tools} are allowed again.` |
+| Wake prompt | `[ctx-guard] Trigger "{id}" has lifted: {liftReason}. {tools} are allowed again. You paused your work because of it. Time has passed since then, so first check where the work stands (task list, git status, the handoff if you wrote one), before you start any subagent. Then carry on with the work you paused. If nothing is left to do, say so in one line and stop.` |
+| Toast and `notify` | `ctx-guard: "{id}" lifted ({liftReason}); {tools} allowed again.` |
+| `notify` for a wake that did not run | The toast text plus `Not woken: <why>.`: `the repo is not trusted`, `autoActions is off`, `ctx-guard is paused`, `lift.times is spent` or `the prompt was refused`. |
+| `notify` after failed checks | `ctx-guard: "{id}" may have lifted, but fresh usage could not be read (the window may still be full). Not woken; ctx-guard tries again when usage is next reported or the window resets.` |
+
+With one deny tool the defaults read "is allowed again". When the wake prompt goes, the lift note
+is not appended: the prompt carries the same text. `{limit}` reads the window's percent, which
+after a reset is an estimate; the default texts leave it out.
+
+### Waking the session
+
+A lift with `prompt` is judged in this order when it is found, and again on each idle tick while
+it waits. The first rule that stops it decides.
+
+1. **The brake touched the work.** During the hold a call to one of its tools was refused (by any
+   trigger), or its note was read (a main-loop request went out after the note was appended); and
+   a main-loop turn ended after that. Otherwise the prompt is dropped with no `notify`, and the
+   rest of the lift runs. A `/clear` other than the operator's (ctx-guard's restart) starts a
+   context the brake never touched: a hold's earlier touch no longer counts, and a wake prompt
+   waiting to go is dropped.
+2. **No operator input since the last touch.** Operator input is a prompt or command with origin
+   `composer`, `bridge`, `sdk`, `peer`, `coordinator`, `channel` or `slack-ping`, whether it
+   starts a turn or arrives in a running one; an operator's `/clear` and a typed
+   `/ctx-guard:resume` count, `/ctx-guard` itself does not. Notifications, schedules, other
+   plugins (ctx-guard's restart included) and SendMessage deliveries are not operator input. If
+   the operator spoke, they are steering: the prompt is dropped, a toast says the brake lifted,
+   and the lift note goes to the model even when `lift.do` has no `note`.
+3. **Gates.** In an untrusted repo, with `autoActions` off or while paused, the prompt becomes a
+   `notify` with its reason. This counts no attempt.
+4. **`lift.times`.** Past it, the lift runs without `prompt` and its `notify` says `lift.times is
+   spent`. The count resets on operator input; a trigger's own `times` does not count wake
+   attempts, and `lift.times` does not count its fires.
+5. **Idle.** No main-loop turn runs and no lift work is held back (below). Otherwise the lift
+   waits for the next idle tick, its other actions with it.
+6. **Fresh figures.** A lift check (below) reads the account's current usage. This is the wake
+   attempt; every other lift of the same evaluation waits for it. On fresh figures, a lift whose
+   tools are free runs its actions and the prompt goes; one a brake holds again does nothing, keeps
+   its stamps, and its next let-go is a new lift.
+
+The attempt is charged before the check to the first trigger in config order that passed rules
+1–5, whatever the check finds. The prompt goes from that trigger if its tools are free, else from
+the first other one that passed and is free. At most one prompt goes; when it does, the other
+lifts' "Not woken" notifies are dropped, and a `notify` in `lift.do` is sent once.
+
+**Mid-turn.** A lift found while a main-loop turn runs has figures from that turn's own
+responses: it runs its actions at once, with no check. Its prompt waits for the turn's end and
+is dropped when the model reads the lift note or a call to one of the freed tools goes through;
+otherwise it is judged at the next idle tick. A prompt the check let through while a turn
+started meanwhile waits for the next idle tick, with no new check, and goes only if the tools are
+still free; its lift note is held back meanwhile, and appended if the prompt is dropped while the
+tools are free (operator input, a freed tool used).
+
+**Refused.** A wake prompt a hook drops (or a submit that throws) is tried again on idle ticks,
+up to three tries in all, with the same text and no new check; then the operator gets the
+`notify` with `the prompt was refused`.
+
+**The woken turn** does not start an idle period: trigger `times` and the cache's period go on, as
+for a `prompt` action's turn. Unlike that turn, it counts as work for `idle`: `idle` does not grow
+during it and counts from its end. A woken turn that hits the brake again can be woken again.
+
+**Lift work and other automatic actions.** A lift check, or a wake prompt waiting to go, does not
+overlap ctx-guard's other automatic actions. It waits while a trigger's prompt waits for its
+retry, a ping is in flight, a compact or a restart runs, or a compact is queued for the end of the
+turn and has not yet found the session busy. A trigger prompt, ping or
+compact that arises while lift work is under way waits for the next idle tick (a compact, for the
+next turn end, or for the lift work to end with no turn). A compact that runs while a wake prompt
+waits to go comes first; the lift is then judged again from rule 1. A wake prompt refused three
+times drops a compact that waited for it.
+
+### The lift check
+
+While a session waits, its usage figures are its own last response's; other sessions on the same
+account keep spending. Before a wake, ctx-guard sends the request a `ping` sends
+(`Reply with OK.`) over the session's context, then reads the usage windows that request
+reported. It shares the ping's request, its 2-minute timeout and its one-at-a-time slot, and none
+of its guards or bookkeeping: it ignores `cache.ping.maxUsage` and `cache.prompt.maxUsage`, runs
+with the cache expired or cold, and leaves `cache.pings`, the countdown and the cold mark as it
+found them.
+
+A check that fails (an API error, an empty reply, nothing to fork yet, the timeout) is tried again
+on each idle tick while the hold still lets go, three tries in all, counted as one attempt. A
+failure whose usage figures moved is judged on those. After the third, the operator gets the
+failed-checks `notify` and the hold stalls: it lifts again only after a new usage report or once
+the earliest known window reset passes (a window read as rolled over resets again one window
+length after it rolled over). The window that fails the check need not be the brake's own: a
+full five-hour window can fail the check of a weekly brake. Leaving the stall is a new attempt,
+judged again from rule 1. The other lifts that waited for the check run on the
+figures at hand. A hot reload or `/clear` during the fork counts it as a failed try; a new module
+starts no check until 2 minutes after the fork began. A request past its timeout still holds the
+slot until it answers, or until 4 minutes after it went.
+
+**Cost.** A lift `prompt` spends usage on its own: the check resends the session's context (after
+hours of waiting the cache has expired, so it writes the whole context once), and the wake prompt
+then runs a turn, which reads that cache warm. When a brake holds on fresh figures, the check is
+the whole cost and no turn runs.
 
 ## Notes and template variables
 
@@ -305,6 +470,10 @@ never file contents. A missing value reads `unknown`; an unknown `{name}` stays 
 | `{readyToken}` | `CTX-READY` | The ready token. |
 | `{idle}` | `3h40m` | Time since the last main-loop turn ended. |
 | `{expiresIn}` | `5m` | Time left before the main thread's prompt cache expires. |
+| `{id}` | `week-60-early` | The trigger's id. |
+| `{tools}` | `Agent, Workflow` | The trigger's deny tools. |
+| `{liftsIn}` | `5h` | When the trigger's condition stops holding: for a `.resetsIn` condition, the time left less its threshold; for usage percents alone, the time until the window reads as rolled over, a minute past its reset (for `limit.any`, the latest among the windows at or past the threshold); `unknown` otherwise. |
+| `{liftReason}` | `the 5-hour usage window reset` | In lift texts only: what let the brake go. `the 5-hour usage window reset` or `the weekly usage window reset` for a window past its reset; `weekly usage is below 60%` for a reported percent; `the weekly reset is less than 4d away` for a `.resetsIn` condition; `its condition no longer holds` for any other metric. For `limit.any` it names the window that held the brake. |
 
 ## Restart
 
@@ -556,8 +725,8 @@ are away.
 | `cache.ttl` | `"auto"`, `"5m"`, `"1h"` | `"auto"` | The cache's lifetime. `"5m"` or `"1h"` overrides detection. |
 | `cache.band.show` | duration, percent of the TTL, `"always"` or `false` | `"25%"` | The countdown shows while the session is idle and the time left is at or below this. `25%` is 15 minutes of a 1-hour TTL and 75 seconds of a 5-minute one. `"always"` shows it for the whole idle period; `false` hides it. |
 | `cache.band.warn` | duration or percent of the TTL | `"10m"` | At or below this the segment takes the warning colour. Claude Code compacts an idle session itself about 6 minutes before a 1-hour cache expires; the default warns 4 minutes ahead of that. |
-| `cache.ping.maxUsage` | percent | `90` | No ping while either usage window is at or above this. |
-| `cache.prompt.maxUsage` | percent | `90` | No prompt from a trigger on a cache metric while either usage window is at or above this. |
+| `cache.ping.maxUsage` | percent | `90` | No ping while either usage window is at or above this. A window a minute past its reset reads 0 % until a response reports it again. |
+| `cache.prompt.maxUsage` | percent | `90` | No prompt from a trigger on a cache metric while either usage window is at or above this. A window a minute past its reset reads 0 % until a response reports it again. |
 
 Unknown keys in `cache` are errors.
 
@@ -609,8 +778,9 @@ a ping or prompt waiting for its retry:
 An idle period begins when the operator's own turn ends, at session start and after `/clear`. It
 resets `cache.pings`, every trigger's `times` count and the `cold` mark of a ping. The turn of a
 `prompt` action is ctx-guard's own: it moves the anchor of the countdown but does not begin a
-period, and `idle` keeps counting from the operator's last turn. A turn after a restart's resume
-is real work and begins one.
+period, and `idle` keeps counting from the operator's last turn. A turn a [lift](#lifts) woke does
+not begin a period either, but `idle` counts from its end. A turn after a restart's resume is real
+work and begins one.
 
 ### Cache misses
 
@@ -765,15 +935,16 @@ before ctx-guard acts on them.
 - `readyToken` and `stateDir`, and, for all roles, `band.probes`;
 - per role: `restart.mode`, `via`, `command`, `prompt`, `peers`, `peerGap`, `selfGap`, `minContext` and `readyChecks`;
   `handoff.path`; `compact.instructions`; every trigger with a `compact`, `ping` or `prompt`
-  action;
+  action, or with `prompt` in its `lift.do`, including its `lift`;
 - the content of every ready-check or band-probe argument that is a file under the project root (SHA-256).
   Editing such a script withdraws the approval. A command outside the root is trusted by name.
   Only files named in `run` are hashed: a module the script imports or a file it reads is not, so
   editing one keeps the approval. Keep a check or probe in one file, or name its helpers in `run`.
 
 **Approving.** The operator types `/ctx-guard trust`. It re-reads the files and prints every
-approved value. ctx-guard keeps the approval in its own store on this machine, keyed by the
-project root. A config with errors cannot be approved.
+approved value, a lift prompt as `lift prompt of trigger week-60-early: lift.times 3, prompt
+default`. ctx-guard keeps the approval in its own store on this machine, keyed by the project
+root. A config with errors cannot be approved.
 
 **Revoking.** Any change to an approved field or script withdraws the approval until the operator
 runs `/ctx-guard trust` again. The report lists what changed (`needs approval: lead.restart,
@@ -864,9 +1035,11 @@ Recipes use generic role names; rename them to fit your project.
 One long-running session, role `main`. `assets/presets/solo.json` spells out the built-in ladder:
 notes at 40 / 60 / 75 % (then every 5 %), usage notes at 80 / 90 %, an early brake that denies
 `Agent` and `Workflow` while the weekly window is at 80 % with two days or more to its reset (90 %
-with one day or more), and a brake at 95 % that also denies `WebSearch` and `WebFetch`. It adds a toast for a prompt cache miss of 50k tokens or more. The handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume, and
-`restart.minContext: "40%"` refuses the ready token below the first context note.
-`/ctx-guard init` writes it to `.claude/ctx-guard.json`; review it, then run `/ctx-guard trust`.
+with one day or more), and a brake at 95 % that also denies `WebSearch` and `WebFetch`; each brake
+notes and notifies when it lifts. It adds a toast for a prompt cache miss of 50k tokens or more. The
+handoff goes to `.ctx-guard/main-handoff.md`, with automatic clear and resume, and
+`restart.minContext: "40%"` refuses the ready token below the first context note. `/ctx-guard init`
+writes it to `.claude/ctx-guard.json`; review it, then run `/ctx-guard trust`.
 
 ### Coordinator and workers
 
@@ -907,6 +1080,7 @@ Two or more long-lived interactive sessions that message each other by name.
 
 - shared triggers, handoff and restart settings in `defaults`;
 - `restart.peers` and `peerGap: "10m"`, so the two never clear within ten minutes of each other;
+- a brake at 95 % that notes and notifies when it lifts;
 - a `notes.suffix` per role telling the session to message its peer before it stops;
 - subagent budgets.
 
@@ -1001,6 +1175,27 @@ themselves once the reset is close enough: at 85 % with 30 hours
 left, `week-80-early` has stopped holding (under two days) and `week-90-early` has not started
 (under 90 %), so subagents run again. A window that reports no reset time leaves the early
 triggers unknown, so they deny nothing; `week-95` still applies.
+
+A session whose work needs subagents ends its turn under the brake and waits. To have it carry on
+when the brake lifts, add a `lift` to each brake:
+
+```jsonc
+{ "id": "week-80-early", …, "lift": { "do": ["note", "notify"] } }
+```
+
+tells the model (if it is working) and the operator. For an unattended run, let the lift wake the
+session:
+
+```jsonc
+{ "id": "week-80-early", …, "lift": { "do": ["note", "prompt"], "times": 3 } }
+```
+
+A wake goes only when the brake touched the work (a refused `Agent` call, or its note read) and
+the operator has not spoken since; it first reads fresh usage with one request over the session's
+context, then starts a turn: both spend usage. Put it on every brake that denies the same tools,
+since a lift waits for the last of them. The note can say when the brake lifts: `"message": "With
+{resetsIn} still to the weekly reset, start no new subagents; they are back in {liftsIn}."` See
+[Lifts](#lifts).
 
 ### A personal override
 

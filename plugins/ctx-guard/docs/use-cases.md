@@ -283,6 +283,31 @@ has not started (under 90 %), so subagents run again. The two early triggers are
 ladder already, beside `limit-stop` at 95 % of either window; copy them into your own `triggers`
 list, since that list replaces the ladder.
 
+**Carrying on when a brake lifts.** A session whose work needs subagents ends its turn under the
+brake and waits until someone says "go on". A `lift` on each brake changes that. With `note` and
+`notify` the model hears the tools are back if it is still working, and you get a notification:
+
+```jsonc
+{ "id": "week-80-early", "when": { "limit.seven_day": 80, "limit.seven_day.resetsIn": "2d" }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "hard",
+  "message": "With {resetsIn} still to the weekly reset, start no new subagents; they are back in {liftsIn}.",
+  "lift": { "do": ["note", "notify"] } }
+```
+
+For an unattended run, let the lift wake the session with `prompt`:
+
+```jsonc
+"lift": { "do": ["note", "prompt"], "times": 3 }
+```
+
+The deny reason then tells the model when `Agent` comes free and that ctx-guard will prompt it,
+so it records where it stopped and ends its turn. When the brake lifts, ctx-guard first sends one
+request over the session's context to read fresh usage (other sessions may have spent the window
+meanwhile); if the tools are still free, it submits a turn asking the model to check where the
+work stands and carry on. A wake goes only when the brake touched the work (a refused call, or
+its note read) and you have not typed since; `times` caps the wakes between two of your inputs.
+**Both the request and the woken turn spend usage**, and the repo needs `/ctx-guard trust`. Give
+every brake on the same tools a `lift`: a lift waits for the last brake on its tools.
+
 ## 10. Absolute thresholds on a large window
 
 Percent thresholds count against `contextWindow`. On a 1M-token model 40 % is 400k, which may

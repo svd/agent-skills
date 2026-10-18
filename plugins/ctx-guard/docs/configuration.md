@@ -148,15 +148,47 @@ on one of `context`, `limit.*` percents or `cost`.
 | `{ "deny": ["Agent", "Workflow"] }` | while the AND holds | Refuses those main-loop tool calls. |
 
 Edge actions fire once when the condition starts to hold, then re-arm when a metric drops below
-its threshold (after `/compact`, after a usage window resets). `/clear` re-arms every trigger with
-a `context` condition.
+its threshold (after `/compact`, when a usage window reports a lower figure). `/clear` re-arms
+every trigger with a `context` condition.
+
+Usage figures are those of the last response. From a minute after a window's reset time, with no
+response since, ctx-guard reads that window as 0 % until the next response reports it: a usage brake
+stops denying, the band and the report show 0 %, and keep-warm pings and cache prompts may run again
+until fresh figures arrive. The estimate re-arms no trigger, so a window still full at the next
+response sends no second note.
 
 **`level`** (`soft`, `hard`, `stop`) picks the note wording; **`message`** adds your own text
 to a note and, for a `prompt` action, replaces the default prompt text, with variables such as `{role}`, `{tokens}`, `{percent}`, `{threshold}`, `{window}`, `{limit}`,
-`{resetsIn}`, `{handoffPath}`, `{readyToken}`, `{idle}` and `{expiresIn}`.
+`{resetsIn}`, `{handoffPath}`, `{readyToken}`, `{idle}`, `{expiresIn}`, `{id}`, `{tools}` and
+`{liftsIn}` (when the brake lifts).
 
 **`times`** caps a trigger at that many fires per idle period; a trigger with `ping` or `prompt`
 must have it.
+
+**`lift`** (on a trigger with a `deny`) says what runs when the brake lets go and its tools are
+free again:
+
+```jsonc
+{ "id": "limit-brake", "when": { "limit.any": 95 }, "do": ["note", { "deny": ["Agent", "Workflow"] }], "level": "stop",
+  "lift": { "do": ["note", "notify"] } }
+```
+
+| `lift.do` | Effect |
+|---|---|
+| `"note"` | The model reads that the tools are back on its next request. |
+| `"toast"`, `"notify"` | You hear of it. |
+| `"prompt"` | An idle session is woken with a turn of its own. Needs trust, `autoActions`, no pause and `lift.times` (the most wake attempts between two of your inputs). |
+
+A wake goes only when the brake touched the work (a refused call, or its note read), a turn ended
+since, and you have not typed since. A brake that never touched the work lifts with its other
+actions alone. If you typed, you get a toast, and the model reads the lift note on your next turn.
+An untrusted repo, `autoActions` off, a pause, a spent `lift.times`, a refused prompt or failed
+usage checks each send you a `notify` with the reason. Before it,
+ctx-guard sends one request over the session's context to read fresh usage, since other sessions
+may have spent the window meanwhile; if a brake holds again, nothing more happens. **A lift prompt
+spends usage on its own**: that request, then the woken turn. Deny reasons tell the model when
+the tool comes free and whether ctx-guard will prompt it then. Details:
+[Lifts](../skills/guide/references/config-reference.md#lifts).
 
 ### Prompt cache
 
@@ -180,6 +212,7 @@ A `deny` takes any main-loop tool by its exact name, built-in or MCP. Rules:
 - Denies apply only once the session has a role.
 - A deny holds while its trigger's condition holds, judged afresh at every call, and lifts by
   itself when the condition stops holding. `/ctx-guard pause` or `blocking: false` lifts it now.
+  A `lift` on the trigger tells the model, you, or wakes the session when it does.
 - A deny cannot share a trigger with `idle` or a `cache.*` metric.
 - It fails open: an unknown metric or a failed check denies nothing.
 

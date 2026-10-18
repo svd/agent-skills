@@ -61,6 +61,12 @@ Keeping the cache warm while you are away is opt-in: a trigger's `ping` action s
 request that refreshes the cache, and its `prompt` action submits a turn that asks the model for
 a handoff. Both are capped by `times` and need `/ctx-guard trust`.
 
+A brake can also say what happens when it **lifts**. A trigger's `lift` tells the model the
+tools are back, notifies you, or wakes an idle session that stopped because of the brake. Before
+a wake, ctx-guard reads fresh usage with one request over the session's context, so a window that
+other sessions filled meanwhile wakes nothing. Waking is opt-in, capped by `lift.times`, needs
+`/ctx-guard trust`, and spends usage on that request and on the woken turn.
+
 ## How a restart works
 
 ```mermaid
@@ -108,8 +114,9 @@ triggers, active blocks and trust. Full walk-through: [Getting started](docs/get
 
 - **Restarts fail closed.** Any failed check refuses the restart, and nothing is cleared.
 - **Nothing runs unattended without your approval.** Automatic restarts, `compact`, `ping` and
-  `prompt` actions, ready checks and band probes need `/ctx-guard trust` per repo. Trust covers
-  the exact settings and the scripts' contents; any change withdraws it until you approve again.
+  `prompt` actions, a lift's `prompt`, ready checks and band probes need `/ctx-guard trust` per
+  repo. Trust covers the exact settings and the scripts' contents; any change withdraws it until you
+  approve again.
 - **The model cannot talk its way out.** `role`, `check`, `trust`, `pause` and `init` work only
   when you type them; ctx-guard refuses them from the model or another plugin.
 - **Blocks fail open and lift themselves.** An unknown metric or a failed check denies nothing,
@@ -122,10 +129,10 @@ triggers, active blocks and trust. Full walk-through: [Getting started](docs/get
 
 ## What it runs, reads, writes and sends
 
-ctx-guard makes no network requests of its own, has no telemetry and fetches nothing. The
-requests it can start are model requests that Claude Code sends like any other: a keep-warm
-`ping`, a `prompt` turn, and the turns that follow its `/clear` and `/compact` (see Sends to the
-model). Every figure comes from Claude Code itself or from files in your project.
+ctx-guard makes no network requests of its own, has no telemetry and fetches nothing. The requests
+it can start are model requests that Claude Code sends like any other: a keep-warm `ping`, a
+`prompt` turn, a lift's check and wake turn, and the turns that follow its `/clear` and `/compact`
+(see Sends to the model). Every figure comes from Claude Code itself or from files in your project.
 
 - **Reads.** Claude Code's own figures for the session through the mod API: context fill, token
   usage, the 5-hour and weekly limit status, running agents and background tasks. Your Claude
@@ -151,7 +158,10 @@ model). Every figure comes from Claude Code itself or from files in your project
   a `times` cap: a `ping`, one tool-less request (`Reply with OK.`) over the session's own
   transcript, made with the engine's `$.model.fork`, whose reply is discarded; and a `prompt`, a
   real turn submitted with the trigger's `message`, or by default a message that starts with
-  `[ctx-guard]`.
+  `[ctx-guard]`. A trigger whose `lift.do` holds `prompt` does both when its brake lets go while
+  the session is idle: first the same tool-less request, to read the account's current usage
+  limits, then, if its tools are still free, a turn asking the model to check where the work
+  stands and carry on. Both spend usage; the turn is capped by `lift.times`.
 - **Runs commands.** Three, and only with `autoActions` on and after `/ctx-guard trust`:
   - `/clear`, when the model ends a reply with the ready token after a context note asked for a
     restart, the role restarts by clear, and every check of the verdict passes;
@@ -184,11 +194,11 @@ What each hook does, and what it may change:
 
 | Hook | What it does |
 | --- | --- |
-| `session.start`, `session.measure`, `session.end`, `turn.start`, `turn.step`, `turn.complete`, `classic.Stop` | Read the figures and evaluate the triggers. Each passes the event on unchanged. |
-| `prompt.submit` | Notes whether the prompt is ctx-guard's own `prompt` action, to tell its turn from yours. Passes the prompt on unchanged. |
-| `tool.call` | Denies a main-loop tool call while a `deny` trigger holds, and a subagent's call once it is past its budget. Every other call passes unchanged. |
+| `session.start`, `session.measure`, `session.end`, `turn.start`, `turn.step`, `turn.complete`, `classic.Stop` | Read the figures and evaluate the triggers. A main-loop `turn.step` also records, for lifts, that the model read a brake's note: a touch. Each passes the event on unchanged. |
+| `prompt.submit` | Notes whether the prompt is ctx-guard's own `prompt` action, to tell its turn from yours, and whether it is your own input (by its origin), which stops a lift from waking the session. Passes the prompt on unchanged. |
+| `tool.call` | Denies a main-loop tool call while a `deny` trigger holds, and a subagent's call once it is past its budget. For lifts, it records a refused call as a touch of the brakes on that tool, and a call of a freed tool drops that lift's wake prompt. Every other call passes unchanged. |
 | `agent.spawn` | Records each new agent's id and type, for its budget. Passes the spawn on unchanged. |
-| `command.run` | Runs `/ctx-guard`. For `/ctx-guard:resume` typed by you, checks its `role=` claim against the role lease, refuses it if another session holds the role, and fills in the role, handoff path and prompt it already knows. For a role's restart command typed by you, refuses it if another session holds the role. Every other command passes unchanged. |
+| `command.run` | Runs `/ctx-guard`. For `/ctx-guard:resume` typed by you, checks its `role=` claim against the role lease, refuses it if another session holds the role, and fills in the role, handoff path and prompt it already knows. For a role's restart command typed by you, refuses it if another session holds the role. Notes that a command you typed is your own input, for lifts. Every other command passes unchanged. |
 | `ui.render` (`AbovePrompt`) | Draws the band. |
 
 ## Pick your setup

@@ -2,6 +2,56 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Trigger key `lift` on a trigger with a `deny`: what runs when the brake lets go and no other
+  trigger still denies its tools. `lift.do` takes `note`, `toast`, `notify` and `prompt`;
+  `lift.times` (required with `prompt`) caps the wake attempts between two operator inputs;
+  `lift.message` replaces the default lift note and wake prompt. Validation: `lift` needs a
+  `deny` in the trigger's `do`, `prompt` in `lift.do` needs `lift.times`, and `lift.times` needs
+  `prompt`.
+- The config schema (`ctx-guard.schema.json`) gains `lift`.
+- A lift `prompt` wakes an idle session that stopped under the brake: only when the brake touched
+  the work (a refused call, or its note read) and a turn ended since, the operator has not spoken
+  since, the repo is trusted, `autoActions` is on and ctx-guard is not paused. A brake that never
+  touched the work lifts with its other actions alone. After operator input, the operator gets a
+  toast and the model the lift note on the next turn. A closed gate (untrusted, `autoActions` off,
+  paused), a spent `lift.times`, a refused prompt or failed checks each send the operator a `notify`
+  saying why the session was not woken. Before the wake, a lift check sends one tool-less request
+  over the session's context (`$.model.fork`, as a `ping` does) to read the account's current usage;
+  a brake that holds on those figures sends nothing. **A lift prompt spends usage**: the check's
+  request, then the woken turn. Three failed checks stall the hold until usage is next reported or a
+  window resets.
+- The woken turn counts as work for `idle`: `idle` stands still through it and counts from its
+  end. It starts no idle period, so trigger `times` and the cache's period go on.
+- Operator input, for lifts: prompts and commands from the `composer`, `bridge`, `sdk`, `peer`,
+  `coordinator`, `channel` and `slack-ping` origins, except `/ctx-guard`.
+- Template variables `{id}`, `{tools}`, `{liftsIn}` (when the trigger's condition stops holding)
+  and, in lift texts, `{liftReason}`.
+- Deny reasons say when the tool comes free, and that ctx-guard will prompt the model then when a
+  brake on it would wake the session. The `guide` skill tells the model to record where it
+  stopped and end its turn then, and how to answer a wake prompt.
+- The built-in `week-80-early`, `week-90-early` and `limit-stop` lift with a note; the `solo` and
+  `peers` presets' brakes lift with a note and a notify.
+- `/ctx-guard trust` lists each lift prompt with its `lift.times` and text; the report's trigger
+  lines show a trigger's lift. A trigger with a lift prompt is part of what trust approves:
+  editing it, its lift prompt included, needs a fresh `/ctx-guard trust`.
+
+### Changed
+
+- A usage window whose reset time passed a minute or more ago reads as rolled over (0 %, reset
+  unknown) until the next response reports it. Usage figures are those of the last response, so
+  before this a window kept its last figure through an idle reset. This changes the call path for
+  every trigger: a percent brake on that window stops denying until a response reports figures, and
+  the first request after the reset is judged on 0 %. The same 0 % feeds `cache.ping.maxUsage` and
+  `cache.prompt.maxUsage`, so keep-warm pings and cache prompts may run again after a reset until
+  fresh figures arrive. The band and the `/ctx-guard` report show 0 %, the report marked as an
+  estimate.
+- A rolled-over window re-arms no trigger: a percent trigger's mark clears on a reported figure
+  below its threshold, or when its lift runs.
+
 ## [0.3.1] - 2026-10-17
 
 ### Fixed

@@ -1,6 +1,6 @@
 ---
 name: guide
-description: Protocol for the ctx-guard context and usage guard, and how to configure it. Use whenever a message starting with "[ctx-guard]" arrives (a context or usage note, a prompt turn saying the user is away, a refused ready token, a blocked tool, a subagent budget note), when asked to write a ctx-guard handoff or end a reply with the ready token (CTX-READY), and when the user asks to set up, explain or change ctx-guard, a context guard or usage guard, its roles, thresholds, triggers, handoff, auto clear or compact, subagent budgets, trust or the /ctx-guard command.
+description: Protocol for the ctx-guard context and usage guard, and how to configure it. Use whenever a message starting with "[ctx-guard]" arrives (a context or usage note, a prompt turn saying the user is away, a refused ready token, a blocked tool, a lifted brake, a subagent budget note), when asked to write a ctx-guard handoff or end a reply with the ready token (CTX-READY), and when the user asks to set up, explain or change ctx-guard, a context guard or usage guard, its roles, thresholds, triggers, handoff, auto clear or compact, subagent budgets, trust or the /ctx-guard command.
 ---
 
 # ctx-guard
@@ -82,6 +82,23 @@ A deny reads `[ctx-guard] <Tool> is blocked by trigger "<id>": …`. Carry on wi
 Do not route around the block with another tool that does the same job. If the work needs the
 tool now, tell the operator; only they can lift it.
 
+The deny says when the tool comes free ("Agent comes free in 5h"). If the remaining work needs
+the denied tool and the deny says "ctx-guard is set to prompt you when the tool comes free":
+record where you stopped (the task list, a commit, or the handoff), say so in one line and end the
+turn. Do not poll, sleep or set a timer of your own to wait for it. If the operator speaks first,
+or fresh usage shows the window still full, no prompt comes.
+
+## When a brake lifts
+
+A note `[ctx-guard] Trigger "<id>" has lifted: <reason>. <Tools> are allowed again.` means the
+tools are usable again. Use them if the work needs them.
+
+A prompt that starts the same way and says you paused your work comes after a wait, often hours.
+The session may have been compacted, and other sessions may have committed since. First check
+where the work stands (task list, `git status`, the handoff if you wrote one), before you start any
+subagent. Then carry on with the work you paused. If nothing is left to do, say so in one line and
+stop; do not invent work. A project may word this prompt itself; follow its text.
+
 ## When you are a subagent and get a budget note
 
 - **Warn** ("past this subagent's … budget"): wrap up. Start no new searches; finish what you
@@ -124,9 +141,9 @@ refuses them unless typed in the prompt box. When one is needed, ask the operato
    `/ctx-guard` reports errors, the effective config, the role and the live figures.
 4. Assign roles: `defaultRole` in the file, `CTX_GUARD_ROLE=<role> claude`, or
    `/ctx-guard role <name>` typed by the operator. Without a role ctx-guard only toasts.
-5. Automatic restart (`restart.mode: "auto"`), ready checks and `compact`, `ping` and `prompt`
-   actions need trust. After any change to them, the operator runs `/ctx-guard trust` and reads
-   what it prints.
+5. Automatic restart (`restart.mode: "auto"`), ready checks, `compact`, `ping` and `prompt` actions,
+   and `prompt` in a trigger's `lift.do` need trust. After any change to them, the operator runs
+   `/ctx-guard trust` and reads what it prints.
 6. `/ctx-guard check` dry-runs the restart guard.
 
 | Command | Does |
