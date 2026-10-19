@@ -568,7 +568,7 @@ test('a /clear that wipes $.state: the next hook writes back the role, pause, ve
   expect(report).toContain('role: lead (from /ctx-guard role, set ')
   expect(report).toContain('last /clear: 0s ago')
   expect(report).toContain('lease: held by this session')
-  expect(report).toContain('self gap: 5m; no restart yet in this session')
+  expect(report).toContain('self gap: 1m; no restart yet in this session')
   // The marks were reset by the clear: a new crossing notes again.
   await measure($, w, 310_000)
   expect(notes(session).length).toBe(2)
@@ -3408,11 +3408,12 @@ test('a usage note never loops a restart: no tail, not-needed, its mark survives
   expect(weekly().length).toBe(1)
   // A context crossing soon after does note, but a token within selfGap is refused.
   await measure($, w, 450_000)
-  await writeHandoff(w, clock, `${STATE}/main-handoff.md`)
+  // A fresh handoff at once: writeHandoff's minute would outlast the 1m selfGap.
+  w.files[`${STATE}/main-handoff.md`] = { text: '# handoff\n', mtimeMs: clock.now() }
   expect(await ctxGuard($, 'check')).toContain('warning: ')
   await ready($, clock)
   expect(refusals(session).at(-1)).toContain('CTX-READY ignored (too-soon): this session restarted')
-  expect(refusals(session).at(-1)).toContain('under selfGap 5m')
+  expect(refusals(session).at(-1)).toContain('under selfGap 1m')
   expect(w.ran.length).toBe(2)
   expect(await ctxGuard($, 'check')).toContain('FAIL too-soon')
 })

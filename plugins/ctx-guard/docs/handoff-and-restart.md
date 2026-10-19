@@ -68,7 +68,7 @@ turn. The first that fails refuses the restart with a toast and a note to the mo
 1. `untrusted`: the repo's restart settings are approved.
 2. `already-busy`: no restart, compact or resume is under way.
 3. `not-needed`: context is at or above `restart.minContext` (default `"off"`: not checked).
-4. `too-soon`: this session's last restart was at least `restart.selfGap` (default `5m`) ago.
+4. `too-soon`: this session's last restart was at least `restart.selfGap` (default `1m`) ago.
 5. `no-restart-command`: the resume command exists in this session.
 6. `agents-running`, `background-tasks`: no subagent, workflow agent or background shell runs.
 7. `role-shared`: no other live session holds this role.

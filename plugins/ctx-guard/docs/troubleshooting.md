@@ -76,7 +76,7 @@ the ones below need you.
 | `agents-running` | A subagent or workflow agent is still running (or was seen in the last 15 min with no end). | Let it finish or stop it. |
 | `background-tasks` | Background shells are running, or no turn end has reported yet. | Stop them; finish one turn. |
 | `not-needed` | Context is below `restart.minContext`. | Nothing to do; the model goes on working. Lower `restart.minContext` or set it to `"off"`. |
-| `too-soon` | This session restarted less than `restart.selfGap` (default `5m`) ago. | Wait, or set `"selfGap": "0"`. |
+| `too-soon` | This session restarted less than `restart.selfGap` (default `1m`) ago. | Wait, or set `"selfGap": "0"`. |
 | `role-shared` | Another live session holds this role's lease. | End the other session or give it another role. A dead session's lease expires after 15 minutes. |
 | `peer-restarting`, `race-lost` | A peer restarted less than `peerGap` ago, or won a simultaneous restart. | Wait out the gap. |
 | `ready-check-failed` | A ready check exited non-zero, timed out or could not start. The reason ends with its output. | Fix what it flags (commit the work). See below for the clean-worktree pitfall. |

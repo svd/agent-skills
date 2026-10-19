@@ -116,7 +116,7 @@ The same keys go in `defaults` and in each entry of `roles`.
 | `restart.prompt` | text | none | Appended to the resume command line. |
 | `restart.peers` | list of role names | `[]` | Roles that must not restart within `peerGap` of this one. |
 | `restart.peerGap` | duration | `"10m"` | Minimum gap between a peer's restart and this role's. |
-| `restart.selfGap` | duration, or `"0"` for none | `"5m"` | Minimum gap between this session's own restarts on the ready token (`too-soon`). |
+| `restart.selfGap` | duration, or `"0"` for none | `"1m"` | Minimum gap between this session's own restarts on the ready token (`too-soon`). |
 | `restart.minContext` | tokens or percent, or `"off"` | `"off"` | Context fill below which the ready token is refused (`not-needed`). Set on its own, never read from the triggers. |
 | `restart.readyChecks` | list of [ready checks](#ready-checks) | `[]` | Commands that must pass before a restart. |
 | `compact.instructions` | text | none | Passed to `/compact`. |

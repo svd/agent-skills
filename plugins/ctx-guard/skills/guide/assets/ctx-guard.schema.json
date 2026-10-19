@@ -1350,7 +1350,7 @@
                   ]
                 },
                 "selfGap": {
-                  "description": "Minimum gap between this session's own restarts on the ready token; \"0\" turns it off. Default 5m.",
+                  "description": "Minimum gap between this session's own restarts on the ready token; \"0\" turns it off. Default 1m.",
                   "anyOf": [
                     {
                       "$ref": "#/$defs/duration"

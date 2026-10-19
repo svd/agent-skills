@@ -41,6 +41,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ### Changed
 
+- The default `restart.selfGap` is 1m (was 5m). `restart.selfGap` is part of what
+  `/ctx-guard trust` approves, so a repo trusted while it was unset at the 5m default reads as
+  untrusted after the update; run `/ctx-guard trust` there again.
 - A usage window whose reset time passed a minute or more ago reads as rolled over (0 %, reset
   unknown) until the next response reports it. Usage figures are those of the last response, so
   before this a window kept its last figure through an idle reset. This changes the call path for

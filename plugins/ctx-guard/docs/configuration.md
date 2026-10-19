@@ -70,7 +70,7 @@ For editor completion, point `$schema` at the schema (ctx-guard ignores the key)
         "via": "clear",                 // clear | compact
         "command": "ctx-guard:resume",  // run after /clear
         "prompt": "Carry out Next action without waiting.",
-        "selfGap": "5m",                // min gap between this session's own restarts
+        "selfGap": "1m",                // min gap between this session's own restarts
         "minContext": "off",            // refuse the ready token below this fill ("40%", "300k")
         "peers": [], "peerGap": "10m",  // roles that must not restart within peerGap
         "readyChecks": []               // commands that must exit 0 before a restart

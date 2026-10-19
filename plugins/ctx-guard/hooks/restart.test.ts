@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import { DEFAULT_SELF_GAP } from './config'
 import {
   CHECK_TAIL_CHARS,
   COMPACT_QUIET_MS,
@@ -114,6 +115,12 @@ describe('verdict: one refusal per code', () => {
     expect(verdict(facts({ lastRestartAt: NOW - 5 * MIN }))).toEqual({ ok: true })
     expect(verdict(facts({ lastRestartAt: NOW - MIN, selfGap: 0 }))).toEqual({ ok: true })
     expect(checkLines(facts({ selfGap: 0 })).find(l => l.code === 'too-soon')?.status).toBe('skip')
+  })
+
+  test('too-soon under the default selfGap of 1m: refused at 30s, allowed at 1m', () => {
+    const at = (ago: number) => verdict(facts({ lastRestartAt: NOW - ago, selfGap: DEFAULT_SELF_GAP }))
+    expect(at(30_000)).toEqual({ ok: false, code: 'too-soon', text: 'this session restarted 30s ago, under selfGap 1m' })
+    expect(at(MIN)).toEqual({ ok: true })
   })
 
   test('renoteRisk: a context past the lowest threshold just after a restart warns, never refuses', () => {

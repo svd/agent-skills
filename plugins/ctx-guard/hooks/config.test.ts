@@ -562,7 +562,7 @@ describe('defaults inheritance', () => {
       prompt: null,
       peers: [],
       peerGap: 600_000,
-      selfGap: 300_000,
+      selfGap: 60_000,
       minContext: null,
       readyChecks: [],
     })
@@ -1126,14 +1126,14 @@ describe('cache config', () => {
   })
 
   test('an approval given before the cache block still matches (hashes computed by the code before it)', () => {
-    expect(trustHash(validate(role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }])).config as Config)).toBe(
-      '494a3f7d85bafc05f6a4d41ec9251e6a3cf0dc73d9dce2910c816de7fb402658',
-    )
+    // selfGap 5m: the default when these hashes were taken.
+    const compactOnly = { version: 1, roles: { lead: { restart: { selfGap: '5m' }, triggers: [{ id: 'c', when: { context: '60%' }, do: ['compact'] }] } } }
+    expect(trustHash(validate(compactOnly).config as Config)).toBe('494a3f7d85bafc05f6a4d41ec9251e6a3cf0dc73d9dce2910c816de7fb402658')
     expect(
       trustHash(
         validate({
           version: 1,
-          roles: { lead: { restart: { mode: 'auto' }, triggers: [{ id: 'c', when: { context: '60%', idle: '5m' }, do: ['toast', 'compact'], level: 'hard', message: 'hi' }] } },
+          roles: { lead: { restart: { mode: 'auto', selfGap: '5m' }, triggers: [{ id: 'c', when: { context: '60%', idle: '5m' }, do: ['toast', 'compact'], level: 'hard', message: 'hi' }] } },
         }).config as Config,
       ),
     ).toBe('d0c30dddc136787f79a39908c5dde975b3aaaa1bb25f3a3df679f68dff3a0f3a')
@@ -1144,13 +1144,18 @@ describe('cache config', () => {
           triggers: [{ id: 'n', when: { context: '50%' }, do: ['note'] }, { id: 'sq', when: { context: '85%' }, do: ['compact'] }],
           notes: { suffix: 's' },
           handoff: { instructions: 'h' },
-          restart: { mode: 'auto', command: 'ctx-guard:resume', prompt: 'go', peers: ['b'], readyChecks: [{ run: ['make', 'ok'] }] },
+          restart: { mode: 'auto', command: 'ctx-guard:resume', prompt: 'go', peers: ['b'], selfGap: '5m', readyChecks: [{ run: ['make', 'ok'] }] },
           compact: { instructions: 'keep tasks' },
         },
       },
       subagents: { '*': { stop: '100k' } },
     }
     expect(trustHash(validate(full).config as Config)).toBe('a7da1ec5f112a4030c57961f540f32b5d12a0df768fcd191f447f51c4c6b7011')
+  })
+
+  test('an approval given under the 5m selfGap default is withdrawn by the 1m default', () => {
+    const unset = validate(role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }])).config as Config
+    expect(trustHash(unset)).not.toBe('494a3f7d85bafc05f6a4d41ec9251e6a3cf0dc73d9dce2910c816de7fb402658')
   })
 })
 
@@ -1248,9 +1253,9 @@ describe('lift', () => {
   })
 
   test('an approval given before lift existed still matches a config without lift', () => {
-    expect(trustHash(validate(role([{ id: 'c', when: { context: '60%' }, do: ['compact'] }])).config as Config)).toBe(
-      '494a3f7d85bafc05f6a4d41ec9251e6a3cf0dc73d9dce2910c816de7fb402658',
-    )
+    // selfGap 5m: the default when this hash was taken.
+    const compactOnly = { version: 1, roles: { lead: { restart: { selfGap: '5m' }, triggers: [{ id: 'c', when: { context: '60%' }, do: ['compact'] }] } } }
+    expect(trustHash(validate(compactOnly).config as Config)).toBe('494a3f7d85bafc05f6a4d41ec9251e6a3cf0dc73d9dce2910c816de7fb402658')
   })
 
   test('a lift prompt puts its trigger in the trust material; adding or editing a lift there needs a fresh trust', () => {
