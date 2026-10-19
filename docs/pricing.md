@@ -10,12 +10,14 @@ table (USD per 1M tokens). Figures are estimates, not billing amounts.
 | Opus 5.5              | 4.00  | 20.00  | 5.00           | 8.00           | 0.20       |
 | Opus 5, Opus 4.5–4.8  | 5.00  | 25.00  | 6.25           | 10.00          | 0.50       |
 | Opus 4, Opus 4.1      | 15.00 | 75.00  | 18.75          | 30.00          | 1.50       |
+| Opus 3                | 15.00 | 75.00  | 18.75          | 30.00          | 1.50       |
 | Sonnet 5.5            | 2.00  | 10.00  | 2.50           | 4.00           | 0.10       |
 | Sonnet 5              | 2.00  | 10.00  | 2.50           | 4.00           | 0.20       |
 | Sonnet 4, 4.5, 4.6    | 3.00  | 15.00  | 3.75           | 6.00           | 0.30       |
 | Haiku 5.5¹            | 0.10  | 0.50   | 0.125          | 0.20           | 0.01       |
 | Haiku 4.5             | 1.00  | 5.00   | 1.25           | 2.00           | 0.10       |
 | Haiku 3.5             | 0.80  | 4.00   | 1.00           | 1.60           | 0.08       |
+| Haiku 3               | 0.25  | 1.25   | 0.30           | 0.50           | 0.03       |
 
 ¹ For prompts up to 100K tokens. A longer request bills every token type at 5×.
 

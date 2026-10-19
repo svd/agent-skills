@@ -585,6 +585,19 @@ def main():
           got == expect, str(got))
     cvx = ps.estimate_cost({**base, "input_tokens": M}, "claude-opus-4@20250514")
     check("pricing: Vertex Opus 4 id priced at $15 input", cvx == 15.0, str(cvx))
+    # Claude 3 Opus and Claude 3 Haiku, by their Claude API, Vertex AI and Bedrock ids.
+    expect = {"claude-3-opus-20240229": "3-opus", "claude-3-opus@20240229": "3-opus",
+              "anthropic.claude-3-opus-20240229-v1:0": "3-opus",
+              "claude-3-haiku-20240307": "3-haiku", "claude-3-haiku@20240307": "3-haiku",
+              "anthropic.claude-3-haiku-20240307-v1:0": "3-haiku"}
+    got = {mid: next((k for k in ps.PRICING if k in mid), None) for mid in expect}
+    check("pricing: Claude 3 Opus and Haiku ids match their own PRICING key",
+          got == expect, str(got))
+    full = {**base, "input_tokens": M, "output_tokens": M, "cache_read_input_tokens": M}
+    c3 = {mid: round(ps.estimate_cost(full, mid), 6)
+          for mid in ("claude-3-opus-20240229", "claude-3-haiku-20240307")}
+    check("pricing: Claude 3 Opus $15/$75/$1.50 read, Claude 3 Haiku $0.25/$1.25/$0.03 read",
+          c3 == {"claude-3-opus-20240229": 91.5, "claude-3-haiku-20240307": 1.53}, str(c3))
 
     # ---------------------------------------------------------------
     # Haiku 5.5 long-context tier: requests with prompt > 100K bill at 5x.

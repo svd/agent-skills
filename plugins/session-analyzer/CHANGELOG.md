@@ -11,6 +11,10 @@ All notable changes to the `session-analyzer` plugin are documented here.
   3x.
 - Claude Haiku 3.5 pricing (`3-5-haiku`: $0.80 / $4 per MTok, cache read $0.08). These sessions
   were matched by the generic `haiku` row and overstated 25%.
+- Claude 3 Opus pricing (`3-opus`: $15 / $75 per MTok, cache read $1.50). These sessions were
+  matched by the generic `opus` row and understated 3x.
+- Claude 3 Haiku pricing (`3-haiku`: $0.25 / $1.25 per MTok, cache write $0.30, cache read $0.03).
+  These sessions were matched by the generic `haiku` row and overstated 4x.
 
 ## [0.7.0] - 2026-10-08
 
