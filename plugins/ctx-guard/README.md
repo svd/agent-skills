@@ -153,7 +153,8 @@ it can start are model requests that Claude Code sends like any other: a keep-wa
   local config and the state folder to `.gitignore`. Handoffs are written by the model, not by
   ctx-guard.
 - **Sends to the model.** Notes that start with `[ctx-guard]`, added to the conversation as
-  user messages: to the main session when a trigger fires, or to a subagent nearing its budget.
+  user messages: to the main session when a trigger fires or a brake lifts, or to a subagent
+  nearing its budget.
   Two more things reach the model, both only after `/ctx-guard trust`, with `autoActions` on and
   a `times` cap: a `ping`, one tool-less request (`Reply with OK.`) over the session's own
   transcript, made with the engine's `$.model.fork`, whose reply is discarded; and a `prompt`, a
