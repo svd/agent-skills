@@ -59,6 +59,8 @@ plugins/ctx-guard/
   hooks/hooks.json                # { "modules": ["./register.tsx"] }
   hooks/register.tsx              # thin wiring: events → pure modules → `$` calls
   hooks/*.ts                      # pure logic (no `$`), each with a *.test.ts beside it
+  hooks/register.<topic>.test.ts  # engine-kit tests of register.tsx, split by topic
+  hooks/register.fixtures.ts      # their shared fake world, helpers and PRESET_TEXT
   types/index.d.ts                # the plugin's PluginState contract
   commands/*.md                   # slash commands (`/ctx-guard:resume`)
 ```
@@ -174,7 +176,9 @@ subcommand directly against real `~/.claude` data and inspecting the JSON output
 care with `remove`, the only destructive subcommand: dry-run first.
 
 `ctx-guard` tests are `hooks/*.test.ts` (pure-module unit tests plus engine-kit tests against a
-fake world, via `claude-code/testing`), run by `claude plugin test`. `claude plugin validate`
+fake world, via `claude-code/testing`), run by `claude plugin test`. The engine-kit tests of
+`register.tsx` are split by topic into `register.<topic>.test.ts`, sharing
+`register.fixtures.ts`; add a topic file before one nears 256 KiB. `claude plugin validate`
 checks the manifest, the module and the `PluginState` contract. Type-check with
 `tsc -p plugins/ctx-guard` once a `claude --plugin-dir plugins/ctx-guard` session has laid
 `.claude-plugin/types/`:
@@ -185,7 +189,7 @@ claude plugin test plugins/ctx-guard
 tsc -p plugins/ctx-guard
 ```
 
-The test kit can't read plugin files, so `register.test.ts` serves inline copies of
+The test kit can't read plugin files, so `register.fixtures.ts` serves inline copies of
 `skills/guide/assets/presets/*.json` to `/ctx-guard init`. When you edit a preset, update its
 copy (`PRESET_TEXT`) to match byte for byte.
 

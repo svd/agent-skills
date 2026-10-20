@@ -2,6 +2,15 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- The engine-kit tests in `hooks/register.test.ts` are split by topic into
+  `hooks/register.{core,restart,subagents,state,cache,lifts}.test.ts`, with their shared
+  fixtures and helpers in `hooks/register.fixtures.ts`, so no file in the plugin reaches the
+  claude.ai plugin directory's 256 KiB limit. No change in behaviour.
+
 ## [0.4.1] - 2026-10-21
 
 ### Fixed
