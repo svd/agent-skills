@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""
+pre-push: before a push to main, check each plugin changed since its last <plugin>-v* tag
+against the claude.ai directory rules (docs/directory-rules.md), then run the checker's smoke
+test. Any failure cancels the push. Pure stdlib.
+
+Enable once per clone: git config core.hooksPath .githooks
+Skip once:             git push --no-verify
+"""
+
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+MAIN = "refs/heads/main"
+ZERO = "0" * 40
+
+
+def git(*args, cwd=None):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def changed_plugins(root, sha):
+    """[(plugin dir, tag or None)] for plugins at sha that differ from their last tag."""
+    out = []
+    for manifest in sorted((git("ls-tree", "-r", "--name-only", sha, "--", "plugins", cwd=root) or "").split("\n")):
+        parts = manifest.split("/")
+        if len(parts) != 4 or parts[2:] != [".claude-plugin", "plugin.json"]:
+            continue
+        sub = "/".join(parts[:2])
+        try:
+            name = json.loads(git("show", f"{sha}:{manifest}", cwd=root) or "{}").get("name") or parts[1]
+        except ValueError:
+            name = parts[1]
+        tags = (git("tag", "--list", f"{name}-v*", "--sort=-v:refname", cwd=root) or "").split()
+        tag = tags[0] if tags else None
+        if tag is None or git("diff", "--name-only", tag, sha, "--", sub, cwd=root):
+            out.append((sub, tag))
+    return out
+
+
+def main():
+    shas = [line.split()[1] for line in sys.stdin.read().splitlines()
+            if len(line.split()) == 4 and line.split()[2] == MAIN and line.split()[1] != ZERO]
+    if not shas:
+        return 0
+    root = Path(git("rev-parse", "--show-toplevel") or ".")
+    sha = shas[-1]
+    plugins = changed_plugins(root, sha)
+    if not plugins:
+        return 0
+
+    # Check the commit being pushed, not the working tree.
+    tree = Path(tempfile.mkdtemp(prefix="pre-push-"))
+    failed = []
+    try:
+        subprocess.run(["git", "worktree", "add", "--detach", "--quiet", str(tree), sha], cwd=root, check=True)
+        checker = tree / "tools" / "check_directory_rules.py"
+        if not checker.exists():
+            return 0
+        for sub, tag in plugins:
+            cmd = [sys.executable, str(checker), "--fail-on", "block", "release", sub]
+            if tag:
+                cmd += ["--since", tag]
+            print(f"pre-push: {' '.join(cmd[1:]).replace(str(tree) + '/', '')}", file=sys.stderr)
+            r = subprocess.run(cmd, cwd=tree, capture_output=True, text=True)
+            sys.stderr.write(r.stdout + r.stderr)
+            if r.returncode != 0:
+                failed.append(f"{sub}: directory rules (release, since {tag or 'no tag'})")
+        smoke = subprocess.run([sys.executable, str(tree / "tools" / "smoke_test_directory_rules.py")],
+                               cwd=tree, capture_output=True, text=True)
+        tail = (smoke.stdout.strip().splitlines() or [""])[-1]
+        print(f"pre-push: checker smoke test: {tail}", file=sys.stderr)
+        if smoke.returncode != 0:
+            sys.stderr.write(smoke.stdout + smoke.stderr)
+            failed.append("tools/smoke_test_directory_rules.py")
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=root, capture_output=True)
+        shutil.rmtree(tree, ignore_errors=True)
+
+    if failed:
+        print("\npre-push: push to main cancelled. The claude.ai directory scans every commit on main,", file=sys.stderr)
+        print("and this one would fail its rules (docs/directory-rules.md):", file=sys.stderr)
+        for f in failed:
+            print(f"  - {f}", file=sys.stderr)
+        print("Fix the findings above and push again, or skip this check once with: git push --no-verify", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

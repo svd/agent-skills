@@ -15,6 +15,11 @@ python3 plugins/session-handoff/skills/session-handoff/scripts/smoke_test.py
 # ctx-guard (TypeScript mod): manifest/module check, then its hooks/*.test.ts suite
 claude plugin validate plugins/ctx-guard
 claude plugin test plugins/ctx-guard
+
+# claude.ai directory rules: a plugin folder, or a release against the last <plugin>-v* tag
+python3 tools/check_directory_rules.py plugin plugins/<plugin>
+python3 tools/check_directory_rules.py release plugins/<plugin>
+python3 tools/smoke_test_directory_rules.py
 ```
 
 ## What this repo is
@@ -38,6 +43,10 @@ plugins/<name>/
     references/*.md               # supplementary docs loaded on demand by the skill
     assets/*                      # templates etc.
 .claude/skills/releasing-a-version/  # repo-local skill for cutting releases (see below)
+.claude/settings.json             # shared hooks: directory-rule check after each plugin edit
+.githooks/pre-push                # directory-rule check before a push to main
+docs/directory-rules.md           # the claude.ai plugin directory's rules, with sources
+tools/check_directory_rules.py    # checker for those rules (stdlib), with its smoke test
 ```
 
 Exception — `plugins/ctx-guard/` is a **mod** (TypeScript hooks module loaded in-process by
@@ -105,6 +114,29 @@ Per-plugin specifics:
   `/clear` + `/ctx-guard:resume` or `/compact`. Auto actions and ready checks need per-repo
   `/ctx-guard trust`. Every key is in `skills/guide/references/config-reference.md`.
 
+## Directory rules (claude.ai/directory)
+
+The plugins are listed in the claude.ai plugin directory, which scans every commit on `main`. Its
+rules, each with a level (block, hold, warn, note) and a source, are in `docs/directory-rules.md`.
+Read them before editing anything under `plugins/<plugin>/`, and above all `plugins/*/hooks/*`:
+the mod rules (`h` and `Fragment` in `.tsx`, how `$` and `on` are passed, `ui.render` in
+`register.tsx`) block a version.
+
+`tools/check_directory_rules.py` checks them:
+
+```bash
+python3 tools/check_directory_rules.py plugin plugins/<plugin>    # official rules + mod rules
+python3 tools/check_directory_rules.py release plugins/<plugin>   # plus version bump and README vs the last tag
+```
+
+Keep every file in a plugin folder, images aside, under 256 KiB: a bigger one holds the version
+for a reviewer. Split a test file before it grows that large.
+
+Two hooks run the checker. `.claude/settings.json` runs `tools/hooks/directory_rules_posttool.py`
+after each Edit or Write in a plugin folder and hands block and hold findings back to the model.
+`.githooks/pre-push` refuses a push to `main` that fails `release` for a changed plugin; it runs
+only once the clone has `git config core.hooksPath .githooks`.
+
 ## Releasing
 
 Use the `releasing-a-version` skill (`.claude/skills/releasing-a-version/SKILL.md`) rather than
@@ -123,6 +155,8 @@ bumping versions by hand — it encodes the exact convention:
 - Run a plugin's `smoke_test.py` (if it has one — currently `session-analyzer` and
   `session-handoff`) before releasing it; for a mod (`hooks/hooks.json`, currently `ctx-guard`),
   run `claude plugin validate` and `claude plugin test` on it instead.
+- Run `python3 tools/check_directory_rules.py release plugins/<plugin> --fail-on hold` and
+  `python3 tools/smoke_test_directory_rules.py` before releasing; exit 1 stops the release.
 
 ## Testing
 
@@ -154,6 +188,13 @@ tsc -p plugins/ctx-guard
 The test kit can't read plugin files, so `register.test.ts` serves inline copies of
 `skills/guide/assets/presets/*.json` to `/ctx-guard init`. When you edit a preset, update its
 copy (`PRESET_TEXT`) to match byte for byte.
+
+The directory-rule checker has its own smoke test, in the same style: a throwaway plugin in a
+temp git repo per rule, once violating it and once clean.
+
+```bash
+python3 tools/smoke_test_directory_rules.py
+```
 
 ## Pricing table (shared across manage-claude-projects and session-analyzer)
 

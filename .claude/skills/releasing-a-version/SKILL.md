@@ -17,9 +17,14 @@ the version and CHANGELOG record what shipped.
 2. Run `git status`. The release commits should hold only the version bump, so if unrelated changes
    are present, ask the user how to handle them. Run each plugin's smoke test if it has one
    (`find plugins/<plugin> -name smoke_test.py`). When the plugin has `hooks/hooks.json` (a mod),
-   run `claude plugin validate plugins/<plugin>` and `claude plugin test plugins/<plugin>`. If a
-   check fails, stop and report: a push would ship it. Run `gh auth status` too: step 7 publishes
-   the GitHub releases with `gh`, so a missing login is better found now than after the tags.
+   run `claude plugin validate plugins/<plugin>` and `claude plugin test plugins/<plugin>`. For
+   every plugin you release, run the claude.ai directory checker,
+   `python3 tools/check_directory_rules.py release plugins/<plugin> --fail-on hold`, and once its
+   smoke test, `python3 tools/smoke_test_directory_rules.py`. The checker doesn't report the
+   mod's expected `MOD_*` Policy holds as holds (they are notes), so don't wait for them. If a
+   check fails or the checker exits 1, stop and report: a push would ship it. Run `gh auth status`
+   too: step 7 publishes the GitHub releases with `gh`, so a missing login is better found now
+   than after the tags.
 3. For each plugin, set `"version"` in `.claude-plugin/plugin.json`, and in `CHANGELOG.md` rename
    `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` (today, `date +%F`), keeping its bullets as they
    are. With no Unreleased section, write one from the commits and their diffs. If the plugin's
@@ -56,8 +61,8 @@ the version and CHANGELOG record what shipped.
    image). For a plugin's first release, put its README's opening paragraph under the pitch.
 6. Stop and ask for approval before pushing, tagging or publishing, because a push ships to users,
    a published tag must never move and a release is public. Show the old and new versions,
-   `git log --stat` of the new commits, the tag names and messages you will create, and each
-   release's notes.
+   `git log --stat` of the new commits, the tag names and messages you will create, each
+   release's notes, and the directory checker's output from step 2.
 7. After approval, push the commits first (`git push origin main`), so no tag points at a commit
    missing from `origin`. Then, per plugin, create an annotated tag on its release commit,
    `git tag -a <plugin>-vX.Y.Z <commit> -m "<plugin> vX.Y.Z: <one-line summary>"`, and push it with
@@ -71,4 +76,6 @@ the version and CHANGELOG record what shipped.
 8. Check: `git status` is clean, `git ls-remote origin` shows `main` at the last release commit and
    every new tag, each tag's version matches its `plugin.json`, and `gh release view <tag>` shows
    each release with its notes. Then stop and report the plugins, versions, commits, tags and
-   release URLs.
+   release URLs, and remind the user to open each plugin's **Versions** tab in the claude.ai
+   developer portal (claude.ai/directory/manage), check the new version's scan result, and select
+   **Publish**.
