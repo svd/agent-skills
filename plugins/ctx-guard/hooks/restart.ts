@@ -119,6 +119,8 @@ export type Facts = {
   // trigger threshold in tokens (null: the role has no context trigger, or one cannot be placed),
   // and its restart.minContext in tokens (null: unset or off, or it cannot be placed).
   context: { tokens: number | null; floor: Placed | null; min: Placed | null }
+  // The operator asked for this restart with /ctx-guard:clear: restart.minContext is not judged.
+  asked: boolean
   // When this session's last restart went through (a /clear or a /compact on the token); null before any.
   lastRestartAt: number | null
   // 0 turns the self gap off.
@@ -182,8 +184,9 @@ function line(code: RefusalCode, fail: string | null, pass: string): CheckLine {
 const skip = (code: RefusalCode, text: string): CheckLine => ({ code, status: 'skip', text })
 
 // A restart frees context: below restart.minContext there is too little to free, and a note on
-// usage alone would only come back after the /clear.
+// usage alone would only come back after the /clear. A restart the operator asked for is needed.
 function neededLine(f: Facts): CheckLine {
+  if (f.asked) return skip('not-needed', 'the operator asked for it with /ctx-guard:clear')
   const { tokens, min } = f.context
   if (min === null) return skip('not-needed', 'restart.minContext is off')
   if (tokens === null) return skip('not-needed', 'context unknown')

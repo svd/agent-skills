@@ -47,6 +47,7 @@ function facts(over: Partial<Facts> = {}): Facts {
     untrustedWhy: 'never approved',
     busy: null,
     context: { tokens: 320_000, floor: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } }, min: { tokens: 300_000, threshold: { kind: 'tokens', value: 300_000 } } },
+    asked: false,
     lastRestartAt: null,
     selfGap: 5 * MIN,
     command: 'ctx-guard:resume',
@@ -104,6 +105,13 @@ describe('verdict: one refusal per code', () => {
     expect(verdict(facts({ context: { tokens: 50_000, floor, min: null } }))).toEqual({ ok: true })
     expect(checkLines(facts({ context: { tokens: 50_000, floor, min: null } })).find(l => l.code === 'not-needed')).toEqual({ code: 'not-needed', status: 'skip', text: 'restart.minContext is off' })
     expect(checkLines(facts({ context: { tokens: null, floor, min } })).find(l => l.code === 'not-needed')).toEqual({ code: 'not-needed', status: 'skip', text: 'context unknown' })
+    // A restart the operator asked for with /ctx-guard:clear is not judged either.
+    expect(verdict(facts({ context: { tokens: 120_000, floor, min }, asked: true }))).toEqual({ ok: true })
+    expect(checkLines(facts({ context: { tokens: 120_000, floor, min }, asked: true })).find(l => l.code === 'not-needed')).toEqual({
+      code: 'not-needed',
+      status: 'skip',
+      text: 'the operator asked for it with /ctx-guard:clear',
+    })
   })
 
   test('too-soon: this session restarted within selfGap; 0 turns it off', () => {

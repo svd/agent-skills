@@ -6,6 +6,7 @@ import {
   DEFAULT_WAKE_PROMPT,
   NOT_WOKEN,
   TEMPLATE_VARS,
+  clearNoteText,
   collapseNotes,
   denyReason,
   effectiveMode,
@@ -352,6 +353,45 @@ describe('restart tail', () => {
   test('suffix with mode off', () => {
     const s = spec({ restart: { mode: 'off' }, notes: { suffix: 'Ping the peer.' }, triggers: [{ id: 's', when: { context: '1k' }, do: ['note'] }] })
     expect(note(s, fires(s)[0] as Fire)).toEndWith('next steps. Ping the peer.')
+  })
+})
+
+describe('clear note', () => {
+  const instructions = 'Rewrite whole. Sections: Goal, State, Next action'
+  const base = (restart: unknown, suffix: string | null = null) =>
+    spec({ restart, handoff: { instructions }, notes: { suffix }, triggers: [{ id: 'stop', when: { context: '1k' }, do: ['note'], level: 'stop' }] })
+
+  test('auto: the stop wording and the restart tail a stop-level context note carries', () => {
+    const s = base({ mode: 'auto' })
+    const text = clearNoteText({ role: 'lead', spec: s, readyToken: 'CTX-READY' }) as string
+    expect(text).toBe(
+      `[ctx-guard] The operator asked for a restart with /ctx-guard:clear. ${levelText('stop', 'context')} ${restartTail(s, 'lead', 'CTX-READY')}`,
+    )
+    expect(note(s, fires(s)[0] as Fire)).toEndWith(`${levelText('stop', 'context')} ${restartTail(s, 'lead', 'CTX-READY')}`)
+  })
+
+  test('the effective mode: manual tells the operator and names no token', () => {
+    const s = base({ mode: 'auto' })
+    const text = clearNoteText({ role: 'lead', spec: s, readyToken: 'CTX-READY', mode: 'manual' }) as string
+    expect(text).toEndWith("Then tell the operator 'ready for /clear'.")
+    expect(text).not.toContain('CTX-READY')
+  })
+
+  test('via compact: no handoff, the token compacts', () => {
+    const text = clearNoteText({ role: 'lead', spec: base({ mode: 'auto', via: 'compact' }), readyToken: 'R' }) as string
+    expect(text).not.toContain('handoff')
+    expect(text).toEndWith('end your reply with a line holding only `R`; ctx-guard then compacts the session.')
+  })
+
+  test('mode off: no note', () => {
+    expect(clearNoteText({ role: 'lead', spec: base({ mode: 'off' }), readyToken: 'R' })).toBeNull()
+  })
+
+  test('the suffix closes the note: role, path and token filled, figures unknown', () => {
+    const s = base({ mode: 'auto' }, 'Tell main ({role}, {handoffPath}, {readyToken}) at {tokens}. Keep {x}')
+    expect(clearNoteText({ role: 'lead', spec: s, readyToken: 'R' })).toEndWith(
+      'Then end your reply with a line holding only `R`. Tell main (lead, .ctx-guard/lead-handoff.md, R) at unknown. Keep {x}',
+    )
   })
 })
 

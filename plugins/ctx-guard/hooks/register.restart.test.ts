@@ -20,6 +20,7 @@ import {
   STATE,
   HANDOFF,
   RESUME,
+  RESTART_COMMANDS,
   autoConfig,
   restartWorld,
   writeHandoff,
@@ -34,6 +35,7 @@ import {
   mainTurnEnd,
   status,
 } from './register.fixtures'
+import type { World } from './register.fixtures'
 
 // ---- restart: ready token → clear + resume ----------------------------------
 
@@ -557,6 +559,75 @@ test('a typed resume with no role= takes the session\'s role; with none it is re
     'ctx-guard:resume role=lead handoff=docs/handoff/lead-now.md Go on.',
     'ctx-guard:resume role=lead handoff=x.md Check ListAgents first.',
   ])
+})
+
+// ---- /ctx-guard:clear: the operator asks for the restart -------------------
+
+const CLEAR_COMMANDS: World['commands'] = [...RESTART_COMMANDS, { name: 'ctx-guard:clear', source: 'plugin', plugin: 'ctx-guard' }]
+const CLEAR_TAIL =
+  'At the next safe point — no subagents running, current work recorded — write the handoff to `.ctx-guard/lead-handoff.md`: ' +
+  'Sections: Goal, State, Next action. Then end your reply with a line holding only `CTX-READY`.'
+const CLEAR_NOTE = `[ctx-guard] The operator asked for a restart with /ctx-guard:clear. Stop: dispatch nothing new and start no new work. ${CLEAR_TAIL}`
+
+const clearRun = ($: Engine, args = '', kind = 'composer') =>
+  $.command.run({ command: 'ctx-guard:clear', args, origin: { kind } as never, presentation: { isFullscreen: false, columns: 120 } })
+
+test('a typed /ctx-guard:clear sends the restart tail a context note carries; the token then restarts as usual', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS })
+  const { clock, session } = await armed($, on, w)
+  await clearRun($)
+  await clearRun($, 'Commit the test first.')
+  expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`, `ctx-guard:clear ${CLEAR_NOTE}\n\nCommit the test first.`])
+  // The 300k trigger's note, re-armed now the repo is trusted, ends with the same tail.
+  await measure($, w, 250_000)
+  await measure($, w, 320_000)
+  expect(notes(session).at(-1)).toEndWith(`${JSON.stringify(CLEAR_TAIL).slice(1, -1)}"}]`)
+  await ready($, clock)
+  expect(w.ran.slice(2)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear lets the token past restart.minContext until the operator speaks again', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await armed($, on, w, autoConfig({ minContext: '200k' }))
+  await measure($, w, 100_000)
+  // Any other input of the operator's ends the ask: the token meets restart.minContext again.
+  await clearRun($)
+  await $.prompt.submit({ text: 'Not yet.', origin: { kind: 'composer' } } as never)
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain('CTX-READY ignored (not-needed): context is at 100k, under restart.minContext 200k')
+  expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
+  await clearRun($)
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`, 'clear', RESUME])
+})
+
+test('/ctx-guard:clear not typed by the person is refused and runs nothing', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS })
+  await armed($, on, w)
+  for (const kind of ['plugin', 'peer', 'sdk']) {
+    expect((await clearRun($, '', kind)).text).toBe(
+      '[ctx-guard] /ctx-guard:clear refused: only the operator can run it, typed in the prompt box. Nothing ran.',
+    )
+  }
+  expect(w.ran).toEqual([])
+})
+
+test('/ctx-guard:clear with no role or restart off is refused; untrusted, the note asks the operator to clear', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS })
+  writeConfig(w, { ...autoConfig(), roles: { ...autoConfig().roles, quiet: { restart: { mode: 'off' } } } })
+  world(on, w)
+  await start($)
+  expect((await clearRun($)).text).toBe(
+    '[ctx-guard] /ctx-guard:clear refused: this session has no role; set one with /ctx-guard role <name>. Nothing ran.',
+  )
+  await ctxGuard($, 'role quiet')
+  expect((await clearRun($)).text).toBe('[ctx-guard] /ctx-guard:clear refused: restart.mode is off for role "quiet". Nothing ran.')
+  expect(w.ran).toEqual([])
+  await ctxGuard($, 'role lead')
+  await clearRun($)
+  expect(w.ran.length).toBe(1)
+  expect(w.ran[0]).toEndWith("Sections: Goal, State, Next action. Then tell the operator 'ready for /clear'.")
+  expect(w.ran[0]).not.toContain('CTX-READY')
 })
 
 test('a typed resume with no role= takes a role from CTX_GUARD_ROLE too', async ($, on) => {

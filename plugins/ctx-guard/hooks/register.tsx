@@ -85,6 +85,7 @@ import type { Effective, EngineWindow, FileLayer, ScriptHashes, TrustRecord, Tru
 import {
   NOT_WOKEN,
   PREFIX,
+  clearNoteText,
   collapseNotes,
   denyReason,
   effectiveMode,
@@ -196,6 +197,7 @@ const CONFIG = { plugin: 'ctx-guard', key: 'config' } as const
 const PAUSE = { plugin: 'ctx-guard', key: 'pause' } as const
 const LAST_CLEAR = { plugin: 'ctx-guard', key: 'lastClearAt' } as const
 const LAST_RESTART = { plugin: 'ctx-guard', key: 'lastRestartAt' } as const
+const CLEAR_ASKED = { plugin: 'ctx-guard', key: 'clearAskedAt' } as const
 const ACTIVITY = { plugin: 'ctx-guard', key: 'activity' } as const
 const PENDING = { plugin: 'ctx-guard', key: 'pendingResume' } as const
 const LAST_VERDICT = { plugin: 'ctx-guard', key: 'lastVerdict' } as const
@@ -453,6 +455,7 @@ const emptyMem = (): Stored => ({
   pause: null,
   lastClearAt: null,
   lastRestartAt: null,
+  clearAskedAt: null,
   lastVerdict: null,
   lease: null,
   work: null,
@@ -503,6 +506,8 @@ function stateSet($: EngineInterface, key: Key, value: unknown): Promise<unknown
       return $.state.set(LAST_CLEAR, value as Stored['lastClearAt'])
     case 'lastRestartAt':
       return $.state.set(LAST_RESTART, value as Stored['lastRestartAt'])
+    case 'clearAskedAt':
+      return $.state.set(CLEAR_ASKED, value as Stored['clearAskedAt'])
     case 'lastVerdict':
       return $.state.set(LAST_VERDICT, value as Stored['lastVerdict'])
     case 'lease':
@@ -549,7 +554,7 @@ const writesSettled = (): Promise<unknown> => Promise.all(Object.values(writing)
 
 // Shape-checked, as another version may have written them; a key never written is its default.
 async function readStored($: EngineInterface): Promise<Stored> {
-  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache, lifts] = await Promise.all([
+  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, clearAskedAt, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache, lifts] = await Promise.all([
     $.state.get(BAND),
     $.state.get(MARKS),
     $.state.get(ROLE_CLAIM),
@@ -560,6 +565,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     $.state.get(PAUSE),
     $.state.get(LAST_CLEAR),
     $.state.get(LAST_RESTART),
+    $.state.get(CLEAR_ASKED),
     $.state.get(LAST_VERDICT),
     $.state.get(LEASE),
     $.state.get(WORK),
@@ -582,6 +588,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     pause: pause.value ?? null,
     lastClearAt: num(lastClearAt.value),
     lastRestartAt: num(lastRestartAt.value),
+    clearAskedAt: num(clearAskedAt.value),
     lastVerdict: lastVerdict.value ?? null,
     lease: asLease(lease.value),
     work: opt(work.value, asWork),
@@ -1551,6 +1558,12 @@ async function contextFact($: EngineInterface, role: string, spec: RoleSpec): Pr
   }
 }
 
+// The operator's /ctx-guard:clear, with no input of theirs and no restart since.
+function clearAsked(): boolean {
+  const at = mem.clearAskedAt
+  return at !== null && (mem.lastRestartAt === null || mem.lastRestartAt < at)
+}
+
 /** Every fact the verdict needs, read fresh: nothing cached by a timer is trusted. */
 async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: string | null): Promise<Gathered> {
   // Fresh: a ready-check script edited since the last config load must not run under the old approval.
@@ -1568,6 +1581,7 @@ async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: st
     untrustedWhy: untrustedWhy(),
     busy,
     context: await contextFact($, role, spec),
+    asked: clearAsked(),
     lastRestartAt: mem.lastRestartAt,
     // A config another version stored may lack it.
     selfGap: spec.restart.selfGap ?? DEFAULT_SELF_GAP,
@@ -3420,6 +3434,26 @@ function filledArgs(typed: string): string | null {
 }
 
 /**
+ * `/ctx-guard:clear` typed by the person: the note a stop-level context
+ * trigger would send this role, by its effective restart mode, so the model
+ * writes the handoff and ends with the ready token. Answers the note, or the
+ * refusal text when no note can go.
+ */
+async function clearNote($: EngineInterface, origin: string): Promise<{ note: string } | { refusal: string }> {
+  const declined = (why: string) => ({ refusal: `${PREFIX} /ctx-guard:clear refused: ${why}. Nothing ran.` })
+  if (origin !== 'composer') return declined('only the operator can run it, typed in the prompt box')
+  const eff = mod.eff
+  if (!mod.commandOwned || !active() || !eff) return declined('ctx-guard is not active in this session; /ctx-guard says why')
+  const role = mod.role.role
+  if (role === null) return declined('this session has no role; set one with /ctx-guard role <name>')
+  const spec = roleSpec(eff.config, role)
+  if (!spec) return declined(`role "${role}" is not in the config`)
+  const mode = effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: paused(await $.clock.now()) })
+  const note = clearNoteText({ role, spec, readyToken: eff.config.readyToken, mode })
+  return note === null ? declined(`restart.mode is off for role "${role}"`) : { note }
+}
+
+/**
  * A role's own restart command typed by the person (`/restart-lead`) claims
  * that role, by the same rules as `/ctx-guard:resume role=`. Answers the
  * refusal text, or null to let the command run; a command that is no single
@@ -3656,6 +3690,8 @@ export const register: Register = (on, options) => {
     if (operatorInput(e.origin?.kind, e.command?.name ?? null)) {
       if (needsReady()) await quietly(() => ready($))
       await quietly(() => onOperator($, e.command?.name ?? null))
+      // Any other input of the operator's ends their /ctx-guard:clear ask.
+      if (e.command?.name !== 'ctx-guard:clear' && mem.clearAskedAt !== null) await quietly(() => put($, 'clearAskedAt', null))
     }
     return next(e)
   })
@@ -3791,6 +3827,17 @@ export const register: Register = (on, options) => {
     // A claim that could not be judged never lets the resume through unchecked.
     next.called ? next(e) : { text: `${PREFIX} /ctx-guard:resume could not check its role= claim; nothing ran. Try again, or set the role with /ctx-guard role first.` },
   )
+
+  // A clear typed by the person: the role's restart note goes to the model as the command's arguments.
+  on('command.run', { command: 'ctx-guard:clear' }, async ($, e, next) => {
+    if (needsReady()) await quietly(() => ready($))
+    if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command))
+    const r = await clearNote($, e.origin.kind)
+    if ('refusal' in r) return { text: r.refusal }
+    await put($, 'clearAskedAt', await $.clock.now())
+    const typed = e.args.trim()
+    return next({ ...e, args: typed ? `${r.note}\n\n${typed}` : r.note })
+  }).catch(($, e, next) => (next.called ? next(e) : { text: `${PREFIX} /ctx-guard:clear failed; nothing ran.` }))
 
   // A role's own restart command typed by the person claims that role. Every
   // other command passes straight through; a claim that cannot be judged lets

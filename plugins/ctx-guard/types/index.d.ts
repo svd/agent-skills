@@ -406,6 +406,8 @@ declare module 'claude-code' {
       lastClearAt: number | null
       // When this session's last restart on the ready token went through: none follows within selfGap.
       lastRestartAt: number | null
+      // When the operator last ran /ctx-guard:clear; it holds until their next input or the next restart.
+      clearAskedAt: number | null
       lastVerdict: LastVerdict | null
       lease: LeaseState | null
       work: Work | null

@@ -284,6 +284,21 @@ export function noteText(input: NoteInput): string {
   return collapseNotes([{ trigger, vars, step: 0, actions: ['note'] }], opts) as string
 }
 
+/**
+ * The note `/ctx-guard:clear` sends: the stop wording and the restart tail a
+ * context note at that level carries, then `notes.suffix` (figures in it read
+ * unknown). Null when the role's restart mode is off: there is no tail to ask for.
+ */
+export function clearNoteText(opts: NoteOptions): string | null {
+  const { role, spec, readyToken } = opts
+  const tail = restartTail(spec, role, readyToken, opts.mode ?? spec.restart.mode)
+  if (!tail) return null
+  const vars: Record<string, string> = Object.fromEntries(TEMPLATE_VARS.map(k => [k, UNKNOWN]))
+  const suffix = spec.notes.suffix ? render(spec.notes.suffix, { ...vars, role, handoffPath: handoffPathFor(spec, role), readyToken }).trim() : ''
+  const parts = ['The operator asked for a restart with /ctx-guard:clear.', levelText('stop', 'context', spec.restart.via), tail, suffix]
+  return `${PREFIX} ${parts.filter(Boolean).join(' ')}`
+}
+
 // "1 ping", "3 pings".
 const pingsText = (n: number | null): string => `${n ?? 0} ${n === 1 ? 'ping' : 'pings'}`
 
