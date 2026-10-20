@@ -108,7 +108,8 @@ role restarted recently or wins a simultaneous restart; or any of your own ready
    Review and commit `.claude/ctx-guard.json`: it is the team file.
 
 Type `/ctx-guard` any time for a report: role, config and its errors, live figures, fired
-triggers, active blocks and trust. Full walk-through: [Getting started](docs/getting-started.md).
+triggers, active blocks and trust. Type `/ctx-guard:clear` to have the session write its handoff
+and restart now, before any note asks for it. Full walk-through: [Getting started](docs/getting-started.md).
 
 ## Safety by design
 
@@ -199,7 +200,7 @@ What each hook does, and what it may change:
 | `prompt.submit` | Notes whether the prompt is ctx-guard's own `prompt` action, to tell its turn from yours, and whether it is your own input (by its origin), which stops a lift from waking the session. Passes the prompt on unchanged. |
 | `tool.call` | Denies a main-loop tool call while a `deny` trigger holds, and a subagent's call once it is past its budget. For lifts, it records a refused call as a touch of the brakes on that tool, and a call of a freed tool drops that lift's wake prompt. Every other call passes unchanged. |
 | `agent.spawn` | Records each new agent's id and type, for its budget. Passes the spawn on unchanged. |
-| `command.run` | Runs `/ctx-guard`. For `/ctx-guard:resume` typed by you, checks its `role=` claim against the role lease, refuses it if another session holds the role, and fills in the role, handoff path and prompt it already knows. For a role's restart command typed by you, refuses it if another session holds the role. Notes that a command you typed is your own input, for lifts. Every other command passes unchanged. |
+| `command.run` | Runs `/ctx-guard`. For `/ctx-guard:resume` typed by you, checks its `role=` claim against the role lease, refuses it if another session holds the role, and fills in the role, handoff path and prompt it already knows. For a role's restart command typed by you, refuses it if another session holds the role. For `/ctx-guard:clear` typed by you, hands the model your role's restart note as the command's text; from anyone else, refuses it. Notes that a command you typed is your own input, for lifts. Every other command passes unchanged. |
 | `ui.render` (`AbovePrompt`) | Draws the band. |
 
 ## Pick your setup

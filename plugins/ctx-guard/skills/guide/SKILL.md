@@ -37,6 +37,9 @@ The note states the figure, what to do now (by level), and how to end. Follow it
 Never send the ready token otherwise: not before the handoff is written, not in a sentence, not
 from a subagent, and not without a note asking for it. The token clears the session.
 
+`/ctx-guard:clear`, typed by the operator, brings such a note in the command's own text: it counts
+as a note asking for the token. Follow it as above.
+
 A note may end with a role rule (`notes.suffix`), such as "message the peer session before you
 stop". Do that before the last line.
 
@@ -156,6 +159,7 @@ refuses them unless typed in the prompt box. When one is needed, ask the operato
 | `/ctx-guard reload` | Re-read the config files. |
 | `/ctx-guard pause [30m\|off]` | Lift blocks and automatic actions for a while; notes go on. |
 | `/ctx-guard init [solo\|peers]` | Copy a preset to the config path if no file is there. |
+| `/ctx-guard:clear [note]` | Ask this session for its handoff and the ready token now. |
 
 Example scripts live in `assets/ready-checks/` (`clean-worktree.sh`, `handoff-committed.sh`,
 `worktrees-committed.sh`, `handoff-after-worktrees.sh`, `jobs-quiet.py`) and `assets/probes/`

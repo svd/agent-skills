@@ -288,6 +288,7 @@ time (a lease in `.ctx-guard/<role>.owner`); a second one gets a warning and can
 | `/ctx-guard pause [30m\|off]` | you | Lift blocks and automatic actions for a while (default 30 min); notes go on. |
 | `/ctx-guard init [solo\|peers]` | you | Write a starter config if there is none, plus `.gitignore` lines. |
 | `/ctx-guard:resume [role=<r>] [handoff=<path>] [prompt]` | ctx-guard or you | Resume from a handoff after `/clear`. What you leave out comes from the config: the session's role, its handoff path and restart prompt. |
+| `/ctx-guard:clear [note]` | you | Ask the session for its handoff and the ready token now, as a `stop`-level context note would; your note follows it. Refused with no role or with restart off. |
 | `/ctx-guard:guide` | anyone | The skill: how the model answers notes, and how to configure ctx-guard. |
 
 "You" means typed in the prompt box. ctx-guard refuses these subcommands when the model or

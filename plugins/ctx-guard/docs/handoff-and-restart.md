@@ -59,6 +59,12 @@ The model asks for a restart by ending its reply with a line holding only the to
 the token inside a sentence, or in a subagent's answer, never counts. The `guide` skill tells
 the model never to send it before the handoff is written or without a note asking for it.
 
+To restart before any trigger asks, type `/ctx-guard:clear` (text after it reaches the model too).
+ctx-guard sends the note a `stop`-level context trigger would send your role, so the model writes
+the handoff and ends with the token, or, in manual mode, tells you 'ready for /clear'. The token
+then meets the usual verdict, except `restart.minContext`: you asked, so the restart is needed. The
+command needs a role and a restart mode other than `off`.
+
 ### The verdict
 
 When the token arrives in `auto` mode, ctx-guard runs these checks in order right after the

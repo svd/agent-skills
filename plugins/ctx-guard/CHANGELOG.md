@@ -4,6 +4,15 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Command `/ctx-guard:clear [note]`: the operator asks the session to restart now. ctx-guard hands
+  the model the note a `stop`-level context trigger would send the session's role (the restart
+  tail by the effective mode, then `notes.suffix`), ahead of any text typed after the command.
+  The ready token then meets the usual verdict, except `restart.minContext`, which is not judged
+  until the operator's next input or the next restart. Refused, with nothing run, unless typed in
+  the prompt box, and with no role or with the role's `restart.mode` off.
+
 ### Changed
 
 - The engine-kit tests in `hooks/register.test.ts` are split by topic into
