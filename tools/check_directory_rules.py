@@ -1,0 +1,1169 @@
+#!/usr/bin/env python3
+"""
+Check a plugin against the claude.ai plugin directory rules in docs/directory-rules.md.
+Pure stdlib; reads TypeScript and JavaScript with its own small lexer, not tsc.
+
+Usage:
+  python3 tools/check_directory_rules.py files <path>...            # R1-R6 on these files
+  python3 tools/check_directory_rules.py plugin <plugin-dir>        # official rules + R1-R6
+  python3 tools/check_directory_rules.py release <plugin-dir> [--since <tag>]   # plugin + P1-P2
+
+Options: --json, --fail-on block|hold|warn (default block).
+Prints one finding per line, `file:line LEVEL RULE message`, and exits 1 when a finding is at
+or above --fail-on.
+"""
+
+import argparse
+import bisect
+import json
+import os
+import re
+import subprocess
+import sys
+import unicodedata
+from pathlib import Path
+
+LEVELS = ["note", "warn", "hold", "block"]
+CAPABILITY_CODE = "MOD_CAPABILITY_USE_NOT_PLAIN"
+# Portal codes; a rule without one prints its own id.
+CODES = {"R1": CAPABILITY_CODE, "R2": CAPABILITY_CODE}
+
+SOURCE_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"}
+JSX_EXT = {".tsx", ".jsx"}
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+FONT_EXT = {".ttf", ".otf", ".woff", ".woff2", ".eot"}
+SCRIPT_EXT = {".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".rb", ".pl"}
+SYSTEM_FILES = {".ds_store", "thumbs.db", "desktop.ini"}
+DEVICE_NAMES = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+RESERVED_NAMES = {"claude", "anthropic", "official", "plugin", "mcp", "test"}
+COMPONENT_KEYS = ["commands", "agents", "skills", "hooks", "mcpServers", "lspServers", "outputStyles"]
+REWRITING_ATTRS = {"filter", "ident", "working-tree-encoding", "eol", "text", "crlf"}
+PACKAGE_SOURCE_FILES = {".npmrc", "bunfig.toml", "uv.toml", "pip.conf", ".yarnrc", ".yarnrc.yml", ".pypirc"}
+DISCLOSURE_HEADING = "What it runs, reads, writes and sends"
+
+KIB = 1024
+MIB = 1024 * KIB
+
+
+class Finding:
+    def __init__(self, rule, level, file, line, message):
+        self.rule, self.level, self.file, self.line, self.message = rule, level, file, line, message
+
+    def code(self):
+        return CODES.get(self.rule, self.rule)
+
+    def text(self):
+        prefix = f"[{self.rule}] " if self.rule in CODES else ""
+        return f"{self.file}:{self.line} {self.level} {self.code()} {prefix}{self.message}"
+
+    def as_json(self):
+        return {"file": self.file, "line": self.line, "level": self.level, "rule": self.rule,
+                "code": self.code(), "message": self.message}
+
+
+# ---- lexer ---------------------------------------------------------------------------------
+
+REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^")
+REGEX_KEYWORDS = {"return", "typeof", "case", "in", "of", "new", "delete", "void", "throw", "yield", "await", "else", "do"}
+
+
+def strip_code(src):
+    """Blank comments, string and regex literals, and template-literal text, keeping offsets and
+    newlines. Quote delimiters stay, so a call still shows where its string argument was; the
+    code inside `${...}` stays, with its `$` blanked."""
+    out = list(src)
+    n = len(src)
+    tmpl = []  # brace depth inside each open `${`
+    last = ""  # last code character
+    last_word = ""
+
+    def blank(a, b):
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def template_text(i):
+        # From just inside a backtick (or a closing `}` of `${`): blank to the end or the next `${`.
+        start = i
+        while i < n:
+            c = src[i]
+            if c == "\\":
+                i += 2
+                continue
+            if c == "`":
+                blank(start, i)
+                return i + 1, False
+            if c == "$" and i + 1 < n and src[i + 1] == "{":
+                blank(start, i + 1)  # the `$` too; `{` stays as code
+                return i + 2, True
+            i += 1
+        blank(start, n)
+        return n, False
+
+    i = 0
+    while i < n:
+        c = src[i]
+        if c in " \t\r\n":
+            i += 1
+            continue
+        if tmpl and c == "}" and tmpl[-1] == 0:
+            tmpl.pop()
+            i, opened = template_text(i + 1)
+            if opened:
+                tmpl.append(0)
+            last, last_word = "`", ""
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            blank(i, j)
+            i = j
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            blank(i, j)
+            i = j
+            continue
+        if c in "'\"":
+            j = i + 1
+            while j < n and src[j] != c and src[j] != "\n":
+                j += 2 if src[j] == "\\" else 1
+            blank(i + 1, j)
+            i = j + 1
+            last, last_word = c, ""
+            continue
+        if c == "`":
+            i, opened = template_text(i + 1)
+            if opened:
+                tmpl.append(0)
+            last, last_word = "`", ""
+            continue
+        if c == "/" and (last == "" or last in REGEX_BEFORE or last_word in REGEX_KEYWORDS):
+            j, in_class = i + 1, False
+            while j < n and src[j] != "\n":
+                if src[j] == "\\":
+                    j += 2
+                    continue
+                if src[j] == "[":
+                    in_class = True
+                elif src[j] == "]":
+                    in_class = False
+                elif src[j] == "/" and not in_class:
+                    break
+                j += 1
+            blank(i + 1, j)
+            j += 1
+            while j < n and (src[j].isalnum()):
+                j += 1
+            i = j
+            last, last_word = "/", ""
+            continue
+        if c.isalnum() or c in "_$":
+            j = i
+            while j < n and (src[j].isalnum() or src[j] in "_$"):
+                j += 1
+            last, last_word = src[j - 1], src[i:j]
+            i = j
+            continue
+        if tmpl:
+            if c == "{":
+                tmpl[-1] += 1
+            elif c == "}":
+                tmpl[-1] -= 1
+        last, last_word = c, ""
+        i += 1
+    return "".join(out)
+
+
+TOKEN_RE = re.compile(r"[A-Za-z_$][\w$]*|\d[\w.]*|=>|\.\.\.|\?\.|[^\s\w]")
+OPEN, CLOSE = "([{", ")]}"
+
+
+class Source:
+    """A lexed source file: blanked code, tokens, and each token's innermost open bracket."""
+
+    def __init__(self, path, text):
+        self.path, self.text = path, text
+        self.code = strip_code(text)
+        self.newlines = [m.start() for m in re.finditer("\n", text)]
+        self.toks = [(m.group(), m.start()) for m in TOKEN_RE.finditer(self.code)]
+        self.encl = []  # index of the innermost open bracket token, or -1
+        self.match = {}
+        stack = []
+        for k, (t, _) in enumerate(self.toks):
+            if t in CLOSE:
+                if stack:
+                    o = stack.pop()
+                    self.match[o], self.match[k] = k, o
+                self.encl.append(stack[-1] if stack else -1)
+            else:
+                self.encl.append(stack[-1] if stack else -1)
+                if t in OPEN:
+                    stack.append(k)
+
+    def line(self, pos):
+        return bisect.bisect_left(self.newlines, pos) + 1
+
+    def tok(self, k):
+        return self.toks[k][0] if 0 <= k < len(self.toks) else ""
+
+    def bracket(self, k):
+        e = self.encl[k]
+        return self.tok(e) if e >= 0 else ""
+
+    def is_key(self, k):
+        # `{ name: ...}` or `{ name?: ...}`: an object or type key, not a binding.
+        nxt = self.tok(k + 1)
+        nxt = self.tok(k + 2) if nxt == "?" else nxt
+        return nxt == ":" and self.bracket(k) == "{" and self.tok(k - 1) in ("{", ",")
+
+    def is_member(self, k):
+        return self.tok(k - 1) in (".", "?.")
+
+    def before_generics(self, k):
+        """The token index before k, stepping back over a type-parameter list `<...>`."""
+        j = k - 1
+        if self.tok(j) != ">":
+            return j
+        depth = 0
+        while j >= 0:
+            t = self.tok(j)
+            depth += t == ">"
+            depth -= t == "<"
+            if depth == 0:
+                return j - 1
+            if t in (";", "{", "}", "="):
+                return k - 1
+            j -= 1
+        return k - 1
+
+    def is_params(self, open_k):
+        """Whether the `(` at open_k opens a parameter list rather than call arguments."""
+        b = self.before_generics(open_k)
+        if b != open_k - 1:
+            open_k_name = b
+            if self.tok(open_k_name - 1) in ("function", "*") or self.tok(open_k_name) in ("function",):
+                return True
+        before = self.tok(open_k - 1)
+        if before in ("function", "*"):
+            return True
+        if self.tok(open_k - 2) == "function" or (self.tok(open_k - 2) == "*" and self.tok(open_k - 3) == "function"):
+            return True
+        close = self.match.get(open_k)
+        if close is None:
+            return False
+        after = self.tok(close + 1)
+        if after == "=>":
+            return True
+        if after == ":":
+            # `(...): Type =>` or a method `(...): Type {`
+            for k in range(close + 2, min(close + 60, len(self.toks))):
+                t = self.tok(k)
+                if t == "=>":
+                    return True
+                if t in (";", ")", ","):
+                    return False
+            return False
+        # A method or function body: `name(...) {` with no `.` before the name.
+        return after == "{" and before not in ("if", "for", "while", "switch", "catch", "with") and not self.is_member(open_k - 1)
+
+    def string_at(self, k):
+        """The original text of a string literal whose opening quote is token k."""
+        t, pos = self.toks[k]
+        if t not in ("'", '"', "`"):
+            return None
+        end = self.text.find(t, pos + 1)
+        return self.text[pos + 1:end] if end > 0 else None
+
+    def top_level_functions(self):
+        """{name: takes_dollar} for functions declared at the top of the file."""
+        out = {}
+        for k, (t, _) in enumerate(self.toks):
+            if self.encl[k] != -1:
+                continue
+            if t == "function":
+                j = k + 1 if self.tok(k + 1) != "*" else k + 2
+                name = self.tok(j)
+                o = j + 1
+                if self.tok(o) == "<":
+                    while o < len(self.toks) and self.tok(o) != "(":
+                        o += 1
+                if re.match(r"[A-Za-z_$]", name) and self.tok(o) == "(":
+                    out[name] = self.tok(o + 1) == "$"
+            elif t in ("const", "let", "var") and self.tok(k + 2) == "=":
+                name = self.tok(k + 1)
+                j = k + 3 if self.tok(k + 3) != "async" else k + 4
+                if self.tok(j) == "(" and self.is_params(j):
+                    out[name] = self.tok(j + 1) == "$"
+                elif self.tok(j) == "function":
+                    out[name] = self.tok(j + 2) == "$" or self.tok(j + 3) == "$"
+        return out
+
+    def imported_names(self):
+        names = set()
+        for m in re.finditer(r"^\s*import\b([^;]*?)\bfrom\b", self.code, re.M | re.S):
+            names.update(re.findall(r"[A-Za-z_$][\w$]*", m.group(1)))
+        return names - {"type", "as"}
+
+    def register_param(self):
+        """The name `register` gives its first parameter (the `on` function), or None."""
+        for k, (t, _) in enumerate(self.toks):
+            if t != "register" or self.encl[k] != -1:
+                continue
+            j = k + 1
+            if self.tok(j) == "(":
+                return self.tok(j + 1) or None
+            while j < len(self.toks) and self.tok(j) != "=" and j < k + 8:
+                j += 1
+            j += 1
+            if self.tok(j) == "async":
+                j += 1
+            if self.tok(j) == "(":
+                return self.tok(j + 1) or None
+            if self.tok(j) == "function":
+                return self.tok(j + 2) or None
+        return None
+
+    def registrations(self, on_name):
+        """[(token index of `on`, event, options text, open-paren index)] for `on("event", ...)` calls."""
+        out = []
+        for k, (t, _) in enumerate(self.toks):
+            if t == on_name and self.tok(k + 1) == "(" and not self.is_member(k) and not self.is_params(k + 1):
+                event = self.string_at(k + 2)
+                if event is None:
+                    continue
+                opts = ""
+                if self.tok(k + 4) == "," and self.tok(k + 5) == "{":
+                    close = self.match.get(k + 5)
+                    if close:
+                        opts = re.sub(r"\s+", " ", self.text[self.toks[k + 5][1]:self.toks[close][1] + 1])
+                out.append((k, event, opts, k + 1))
+        return out
+
+    def capability_calls(self):
+        calls = set()
+        for k, (t, _) in enumerate(self.toks):
+            if t == "$" and not self.is_member(k) and self.tok(k + 1) == "." and self.tok(k + 3) == ".":
+                calls.add(f"$.{self.tok(k + 2)}.{self.tok(k + 4)}")
+        return calls
+
+
+def is_test(path):
+    return re.search(r"\.(test|spec)\.[cm]?[jt]sx?$", str(path)) is not None
+
+
+def is_source(path):
+    return Path(path).suffix in SOURCE_EXT and not str(path).endswith(".d.ts")
+
+
+# ---- R1-R6 -------------------------------------------------------------------------------
+
+def check_r1(src, rel, out):
+    """h and Fragment: never declared or used as a value in .tsx/.jsx; h may only be called."""
+    for k, (t, pos) in enumerate(src.toks):
+        if t not in ("h", "Fragment") or src.is_member(k) or src.is_key(k):
+            continue
+        prev = src.tok(k - 1)
+        declared = prev in ("function", "const", "let", "var", "class") or (prev == "*" and src.tok(k - 2) == "function")
+        if t == "h" and src.tok(k + 1) == "(" and not declared:
+            continue
+        out.append(Finding("R1", "block", rel, src.line(pos),
+                           f"`{t}` is declared or used as a value; JSX compiles to `h` and `Fragment`, so rename it ({'only call h(...)' if t == 'h' else 'use <>...</>'})"))
+
+
+def whole_argument(src, k):
+    return src.tok(k - 1) in ("(", ",") and src.tok(k + 1) in (",", ")")
+
+
+def check_passed(src, k, name, tops, imported, rel, out, what):
+    """A bare `$` or `on` inside call arguments: allowed only as one whole argument to a function
+    declared at the top of this file."""
+    open_k = src.encl[k]
+    callee_k = open_k - 1
+    callee = src.tok(callee_k)
+    if not whole_argument(src, k):
+        out.append(Finding("R2", "block", rel, src.line(src.toks[k][1]),
+                           f"`{name}` is not passed as one whole argument; {what}"))
+    elif src.is_member(callee_k) or callee not in tops or callee in imported:
+        why = "an imported function" if callee in imported else "a method" if src.is_member(callee_k) else f"`{callee}`, not a function declared at the top of this file"
+        out.append(Finding("R2", "block", rel, src.line(src.toks[k][1]),
+                           f"`{name}` is passed to {why}; {what}"))
+
+
+def check_r2(src, rel, out):
+    what = "pass $ or on only as one whole argument to a function declared at the top of the same file"
+    tops = src.top_level_functions()
+    imported = src.imported_names()
+    for k, (t, pos) in enumerate(src.toks):
+        if t != "$" or src.is_member(k):
+            continue
+        line = src.line(pos)
+        if src.tok(k + 1) in (".", "?."):
+            if src.tok(k + 1) == "?." or not re.match(r"[A-Za-z_]", src.tok(k + 2)) or src.tok(k + 3) != "." \
+                    or not re.match(r"[A-Za-z_]", src.tok(k + 4)) or src.tok(k + 5) in (".", "?.", "["):
+                out.append(Finding("R2", "block", rel, line, "write each capability call as $.noun.method(...)"))
+            continue
+        if src.tok(k + 1) == "=>":
+            continue  # the parameter of `$ => ...`
+        prev = src.tok(k - 1)
+        if prev in ("=", "const", "let", "var") or src.tok(k + 1) == "=":
+            out.append(Finding("R2", "block", rel, line, "`$` is aliased or assigned; use $ itself"))
+            continue
+        bracket = src.bracket(k)
+        if bracket in ("{", "["):
+            out.append(Finding("R2", "block", rel, line, f"`$` is put in an object or array; {what}"))
+            continue
+        if bracket != "(":
+            out.append(Finding("R2", "block", rel, line, f"`$` is used as a value; {what}"))
+            continue
+        if src.tok(k + 1) == ":" or src.is_params(src.encl[k]):
+            continue
+        check_passed(src, k, "$", tops, imported, rel, out, what)
+
+    # A top-level function that takes `$` lends its name to nothing else in the file.
+    for name, takes in tops.items():
+        if not takes:
+            continue
+        for k, (t, pos) in enumerate(src.toks):
+            if t != name or src.is_member(k) or src.is_key(k):
+                continue
+            if src.tok(k - 1) == "function" and src.encl[k] == -1:
+                continue  # the declaration itself
+            if src.tok(k + 1) == "(" and src.tok(k - 1) not in ("const", "let", "var"):
+                continue  # a call
+            if src.tok(k - 1) in ("const", "let", "var") and src.encl[k] == -1:
+                continue  # the top-level declaration `const name = (...) =>`
+            out.append(Finding("R2", "block", rel, src.line(pos),
+                               f"`{name}` names the top-level function that receives $; give this other use another name"))
+
+    on_name = src.register_param()
+    if not on_name:
+        return
+    regs = {r[0] for r in src.registrations(on_name)}
+    for k, (t, pos) in enumerate(src.toks):
+        if t != on_name or src.is_member(k) or src.is_key(k):
+            continue
+        line = src.line(pos)
+        if k in regs:
+            start = src.text.rfind("\n", 0, pos) + 1
+            if src.code[start:pos].strip():
+                out.append(Finding("R2", "block", rel, line, f"put each registration `{on_name}(\"event\", hook)` on a line of its own"))
+            continue
+        if src.tok(k + 1) == "=>" or (src.bracket(k) == "(" and src.is_params(src.encl[k])):
+            continue
+        if src.bracket(k) == "(":
+            check_passed(src, k, on_name, tops, imported, rel, out, what)
+        else:
+            out.append(Finding("R2", "block", rel, line, f"`{on_name}` is used as a value; {what}"))
+
+
+def check_r3(sources, entries, out):
+    """ui.render is registered in the entry module itself."""
+    for rel, src in sources.items():
+        on_name = src.register_param() or "on"
+        regs = [r for r in src.registrations(on_name) if r[1] == "ui.render"]
+        others = [k for k, (t, _) in enumerate(src.toks)
+                  if t not in (on_name,) and src.tok(k + 1) == "(" and src.string_at(k + 2) == "ui.render"
+                  and not (src.is_member(k) and src.tok(k - 2) == "ui")]
+        if rel in entries:
+            uses_ui = "$.ui.resolve" in src.code or re.search(r"\$\.ui\.invalidate\(\s*'\s*'", src.code) and "ui.render" in src.text
+            if uses_ui and not regs:
+                out.append(Finding("R3", "block", rel, 1, "the module draws UI but registers no on('ui.render', ...) in this entry module"))
+        else:
+            for k in [r[0] for r in regs] + others:
+                out.append(Finding("R3", "block", rel, src.line(src.toks[k][1]),
+                                   "register ui.render in the entry module named in hooks/hooks.json, not here"))
+
+
+def check_r4(text, rel, out):
+    for m in re.finditer(r"__proto__", text):
+        out.append(Finding("R4", "block", rel, text.count("\n", 0, m.start()) + 1,
+                           "`__proto__` literal; check own keys with Object.hasOwn or a Set of names"))
+
+
+PIPE_TO_SHELL = re.compile(r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:env\s+)?(?:ba|z|k|da|fi)?sh\b")
+
+
+def check_r5(text, rel, out):
+    for m in PIPE_TO_SHELL.finditer(text):
+        out.append(Finding("R5", "block", rel, text.count("\n", 0, m.start()) + 1,
+                           "pipe-to-shell (curl/wget ... | sh); link the installer page instead"))
+
+
+R6_EVENTS = {"agent.spawn"}
+
+
+def check_r6(src, rel, out):
+    """An agent.spawn hook names its parameters with names used nowhere else in the file."""
+    on_name = src.register_param()
+    if not on_name:
+        return
+    for k, event, _opts, open_k in src.registrations(on_name):
+        if event not in R6_EVENTS:
+            continue
+        close = src.match.get(open_k)
+        params_open = next((j for j in range(open_k + 1, close or open_k) if src.tok(j) == "(" and src.is_params(j)), None)
+        if params_open is None or close is None:
+            continue
+        p_close = src.match[params_open]
+        params = [src.tok(j) for j in range(params_open + 1, p_close)
+                  if re.match(r"[A-Za-z_]", src.tok(j)) and src.tok(j - 1) in ("(", ",")]
+        for name in params:
+            if name == "$":
+                continue
+            outside = [j for j, (t, _) in enumerate(src.toks)
+                       if t == name and not (open_k <= j <= close) and not src.is_member(j) and not src.is_key(j)]
+            if outside:
+                out.append(Finding("R6", "warn", rel, src.line(src.toks[k][1]),
+                                   f"{event} hook parameter `{name}` is also used at line {src.line(src.toks[outside[0]][1])}; name it uniquely in this file"))
+
+
+def check_sources(paths_rel, read, entries=frozenset()):
+    """R1-R6 on the given files. paths_rel: [(path, rel)]; read: path -> text."""
+    out, sources = [], {}
+    for path, rel in paths_rel:
+        text = read(path)
+        if text is None:
+            continue
+        check_r5(text, rel, out)
+        if not is_source(path) and not str(path).endswith(".d.ts"):
+            continue
+        if is_test(path):
+            continue
+        check_r4(text, rel, out)
+        if str(path).endswith(".d.ts"):
+            continue
+        src = Source(rel, text)
+        sources[rel] = src
+        if Path(path).suffix in JSX_EXT:
+            check_r1(src, rel, out)
+        check_r2(src, rel, out)
+        check_r6(src, rel, out)
+    check_r3(sources, entries, out)
+    return out, sources
+
+
+# ---- files in the plugin folder ----------------------------------------------------------------
+
+def git(args, cwd):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True)
+    return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
+
+
+def git_bytes(args, cwd):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def repo_root(path):
+    out = git(["rev-parse", "--show-toplevel"], path)
+    return Path(out.strip()) if out else None
+
+
+def list_entries(root, sub=""):
+    """[(rel_path_from_root, mode)] for tracked and untracked-not-ignored files under sub."""
+    entries = {}
+    staged = git(["ls-files", "-z", "-s", "--", sub or "."], root) or ""
+    for rec in staged.split("\0"):
+        if rec:
+            meta, path = rec.split("\t", 1)
+            entries[path] = meta.split()[0]
+    others = git(["ls-files", "-z", "--others", "--exclude-standard", "--", sub or "."], root) or ""
+    for path in others.split("\0"):
+        if path:
+            full = root / path
+            entries[path] = "120000" if full.is_symlink() else "100644"
+    return sorted((p, m) for p, m in entries.items() if (root / p).exists() or (root / p).is_symlink() or m == "160000")
+
+
+def read_text(path):
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    if b"\0" in data[:8192]:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def image_magic(data):
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return data.rstrip(b"\0").endswith(b"IEND\xaeB`\x82")
+    if data.startswith(b"\xff\xd8\xff"):
+        return data.rstrip(b"\0").endswith(b"\xff\xd9")
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return data.rstrip(b"\0").endswith(b";")
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return int.from_bytes(data[4:8], "little") + 8 <= len(data)
+    return False
+
+
+def font_magic(data):
+    return data[:4] in (b"\x00\x01\x00\x00", b"OTTO", b"true", b"wOFF", b"wOF2", b"ttcf")
+
+
+def line_of(text, pos):
+    return text.count("\n", 0, pos) + 1
+
+
+def strip_fences(text):
+    return re.sub(r"^(```|~~~)[^\n]*\n.*?^\1[^\n]*$", "", text, flags=re.M | re.S)
+
+
+def check_names(rels, out, root_label):
+    seen = {}
+    for rel in rels:
+        parts = rel.split("/")
+        for i, part in enumerate(parts):
+            path = "/".join(parts[:i + 1])
+            low = path.lower()
+            if low in seen and seen[low] != path:
+                out.append(Finding("O3", "block", path, 1, f"differs from `{seen[low]}` only by capitalization (validation stops)"))
+            seen.setdefault(low, path)
+            if ":" in part or part.endswith((".", " ")) or part.split(".")[0].lower() in DEVICE_NAMES or any(c in part for c in '<>"\\|?*'):
+                out.append(Finding("O3", "block", path, 1, "name not valid on Windows or macOS: colon, trailing dot or space, or a device name (validation stops)"))
+
+
+def check_frontmatter(text, rel, out):
+    if not text.startswith("---"):
+        out.append(Finding("O11", "warn", rel, 1, "no YAML front matter"))
+        return
+    lines = text.split("\n")
+    end = next((i for i in range(1, len(lines)) if lines[i].rstrip() == "---"), None)
+    if end is None:
+        out.append(Finding("O11", "block", rel, 1, "front matter doesn't parse: no closing ---"))
+        return
+    desc = False
+    for i in range(1, end):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#") or line[0] in " \t":
+            continue
+        m = re.match(r"([^\s:#][^:]*?)\s*:(?:\s+(.*))?$", line)
+        if not m:
+            out.append(Finding("O11", "block", rel, i + 1, "front matter doesn't parse: line is not `key: value`"))
+            continue
+        key, value = m.group(1), (m.group(2) or "").strip()
+        if value and value[0] not in "'\"|>[{" and (": " in value or value.endswith(":") or value[0] in "@`%"):
+            out.append(Finding("O11", "block", rel, i + 1, f"front matter doesn't parse: plain value of `{key}` holds `: ` or starts with a reserved character; quote it"))
+        if value[:1] in ("'", '"') and not (len(value) > 1 and value.endswith(value[0])):
+            out.append(Finding("O11", "block", rel, i + 1, f"front matter doesn't parse: unclosed quote in `{key}`"))
+        if key == "description":
+            desc = True
+            nxt = next((lines[j] for j in range(i + 1, end) if lines[j].strip()), "")
+            if value.startswith(("[", "{")) or (not value and re.match(r"\s+-\s", nxt)):
+                out.append(Finding("O11", "block", rel, i + 1, "description is a list or mapping, not text"))
+            elif not value and not re.match(r"\s", nxt):
+                out.append(Finding("O11", "warn", rel, i + 1, "description is empty"))
+    if not desc:
+        out.append(Finding("O11", "warn", rel, 1, "no description in front matter"))
+
+
+LAUNCHER_RE = re.compile(r"(?<![\w-])(npx|bunx|pnpm\s+dlx|yarn\s+dlx|uvx|pipx\s+run|uv\s+run)\b([^\n\"'`;|&]*)")
+
+
+def check_launchers(text, rel, out):
+    found = False
+    for m in LAUNCHER_RE.finditer(text):
+        found = True
+        launcher, rest = re.sub(r"\s+", " ", m.group(1)), m.group(2)
+        args = rest.split()
+        if launcher == "uv run":
+            if "--locked" not in args and "--frozen" not in args:
+                out.append(Finding("O12", "block", rel, line_of(text, m.start()), "`uv run` without --locked or --frozen"))
+            continue
+        pkg = next((a for a in args if not a.startswith("-")), "")
+        if launcher in ("uvx", "pipx run"):
+            pinned = re.search(r"(==|@)\d+(\.\d+)*$", pkg) is not None
+        else:
+            pinned = re.search(r".@\d+\.\d+\.\d+([-+][\w.]+)?$", pkg) is not None
+        if not pinned:
+            out.append(Finding("O12", "block", rel, line_of(text, m.start()),
+                               f"`{launcher} {pkg}` is not pinned to an exact version"))
+    return found
+
+
+SECRET_RES = [
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{36}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{40,}"),
+    re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\bsk-[A-Za-z0-9]{32,}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"AIza[0-9A-Za-z_-]{35}"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
+]
+ENV_CREDENTIAL_RE = re.compile(r"\$\{?[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|API_KEY|APIKEY|PASSWORD|PASSWD)\}?")
+
+
+def check_command_paths(cmd, rel, where, out):
+    if not isinstance(cmd, str):
+        return
+    rest = cmd.replace("${CLAUDE_PLUGIN_ROOT}", "")
+    problems = []
+    if re.search(r"\$\{?[A-Za-z_]", rest):
+        problems.append("a variable other than ${CLAUDE_PLUGIN_ROOT}")
+    if "$(" in rest or "`" in rest:
+        problems.append("a command substitution")
+    if re.search(r"[*?\[]", rest):
+        problems.append("a wildcard")
+    if re.search(r"(^|\s)-[ce](\s|$)", rest):
+        problems.append("an inline program (-c/-e)")
+    for p in problems:
+        out.append(Finding("O14", "block", rel, 1, f"{where} command has {p}; write each path in full from ${{CLAUDE_PLUGIN_ROOT}}"))
+
+
+def check_plugin_files(plugin_dir, out):
+    plugin_dir = plugin_dir.resolve()
+    root = repo_root(plugin_dir) or plugin_dir
+    sub = os.path.relpath(plugin_dir, root)
+    sub = "" if sub == "." else sub
+    label = lambda p: os.path.relpath(root / p)  # noqa: E731
+    in_git = (root / ".git").exists()
+    if in_git:
+        entries = list_entries(root, sub)
+        repo_entries = list_entries(root)
+    else:
+        entries = []
+        for dp, dns, fns in os.walk(plugin_dir):
+            for f in fns + [d for d in dns if os.path.islink(os.path.join(dp, d))]:
+                full = Path(dp) / f
+                entries.append((os.path.relpath(full, root), "120000" if full.is_symlink() else "100644"))
+        repo_entries = entries
+    rels = [p for p, _ in entries]
+
+    # O4 folder names on the path to the plugin
+    for part in Path(sub).parts:
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", part):
+            out.append(Finding("O4", "block", label(sub), 1, f"folder `{part}` on the plugin path uses characters other than letters, digits, . - _ (validation stops)"))
+
+    # O3 names (plugin path and everything in the plugin folder)
+    check_names(rels, out, sub)
+
+    # O5 .gitattributes
+    plugin_ancestors = {""} | {"/".join(Path(sub).parts[:i]) for i in range(1, len(Path(sub).parts) + 1)}
+    for rel, _ in repo_entries:
+        if Path(rel).name != ".gitattributes":
+            continue
+        text = read_text(root / rel) or ""
+        folder = str(Path(rel).parent).replace(".", "") if str(Path(rel).parent) == "." else str(Path(rel).parent)
+        near = folder in plugin_ancestors or (sub and (folder + "/").startswith(sub + "/"))
+        for i, line in enumerate(text.splitlines(), 1):
+            if line.strip().startswith("#"):
+                continue
+            attrs = {re.split(r"[=]", a.lstrip("-!"))[0] for a in line.split()[1:]}
+            if attrs & {"export-ignore", "export-subst"}:
+                out.append(Finding("O5", "block", label(rel), i, "export-ignore/export-subst in .gitattributes (validation stops)"))
+            if near and attrs & REWRITING_ATTRS:
+                out.append(Finding("O5", "block", label(rel), i, f"attribute that rewrites file contents ({', '.join(sorted(attrs & REWRITING_ATTRS))}) at the root, above or inside the plugin folder (validation stops)"))
+
+    # O6 repository size
+    count = len({p for p, _ in repo_entries} | {str(Path(p).parent) for p, _ in repo_entries})
+    if count >= 10000:
+        out.append(Finding("O6", "block", label(""), 0, f"{count} files and folders in the repository; keep it under 10,000 (validation stops)"))
+    unpacked = sum((root / p).stat().st_size for p, m in repo_entries if m not in ("160000", "120000") and (root / p).is_file())
+    if unpacked >= 256 * MIB:
+        out.append(Finding("O6", "block", label(""), 0, f"repository is {unpacked // MIB} MiB unpacked; keep it under 256 MiB (validation stops)"))
+    if in_git:
+        archive = subprocess.run(["sh", "-c", "git archive --format=tar.gz HEAD | wc -c"], cwd=root, capture_output=True, text=True)
+        size = int(archive.stdout.strip() or 0) if archive.returncode == 0 else 0
+        if size >= 50 * MIB:
+            out.append(Finding("O6", "block", label(""), 0, f"repository archive is {size // MIB} MiB; keep it under 50 MiB (validation stops)"))
+
+    # O7 file count
+    files = [(p, m) for p, m in entries if m not in ("160000",)]
+    if len(files) > 512:
+        out.append(Finding("O7", "hold", label(sub), 0, f"{len(files)} files in the plugin; keep it to 512 or fewer"))
+
+    texts = {}
+    images = []
+    package_source = []
+    launcher_found = False
+    install_found = False
+    for rel, mode in entries:
+        full = root / rel
+        name = Path(rel).name
+        in_plugin = os.path.relpath(rel, sub) if sub else rel
+        top = in_plugin.split("/")[0]
+        # O1 system files
+        if name.lower() in SYSTEM_FILES or "__MACOSX" in Path(rel).parts:
+            out.append(Finding("O1", "block", label(rel), 1, "This is a macOS or Windows system file; remove it from the plugin folder"))
+        # O2 symlinks, submodules, LFS pointers
+        kind = {"120000": "symbolic link", "160000": "Git submodule"}.get(mode)
+        if not kind and full.is_file() and full.stat().st_size < 1024:
+            head = full.read_bytes()[:64]
+            if head.startswith(b"version https://git-lfs.github.com/spec/v1"):
+                kind = "Git LFS pointer"
+        if kind:
+            loaded = top in ("hooks", "skills", "commands", "agents", ".claude-plugin", "scripts", "bin", ".mcp.json", ".lsp.json", "output-styles")
+            out.append(Finding("O2", "block" if loaded else "warn", label(rel), 1, f"{kind}; commit a regular file{'' if loaded else ' (outside what the plugin loads: warning)'}"))
+            continue
+        if not full.is_file():
+            continue
+        size = full.stat().st_size
+        ext = Path(rel).suffix.lower()
+        data = full.read_bytes()
+        is_image, is_font = ext in IMAGE_EXT, ext in FONT_EXT
+        # O6 per-file limit, O8 text-file size
+        if size >= 5 * MIB:
+            out.append(Finding("O6", "block", label(rel), 1, f"{size / MIB:.1f} MiB; keep every file in the plugin folder under 5 MiB (validation stops)"))
+        elif not (is_image or is_font):
+            if size >= 256 * KIB:
+                out.append(Finding("O8", "hold", label(rel), 1, f"{size / KIB:.0f} KiB; keep every file that isn't an image or font under 256 KiB"))
+            elif size >= 200 * KIB:
+                out.append(Finding("O8", "warn", label(rel), 1, f"{size / KIB:.0f} KiB; close to the 256 KiB limit"))
+        # O9 binary types
+        text = None
+        if b"\0" not in data[:8192]:
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+        if text is None:
+            if not (image_magic(data) or (is_font and font_magic(data))):
+                out.append(Finding("O9", "hold", label(rel), 1, "binary file other than a complete PNG/JPEG/GIF/WebP image or a font"))
+            if is_image:
+                images.append(rel)
+            continue
+        if is_image:
+            images.append(rel)
+        texts[rel] = text
+        if name in PACKAGE_SOURCE_FILES:
+            package_source.append(rel)
+        # O13 secrets
+        for rx in SECRET_RES:
+            for m in rx.finditer(text):
+                out.append(Finding("O13", "block", label(rel), line_of(text, m.start()), "looks like a real credential; ask for it through userConfig with sensitive: true"))
+        for m in ENV_CREDENTIAL_RE.finditer(text):
+            out.append(Finding("O13", "hold", label(rel), line_of(text, m.start()), f"reads `{m.group()}` from the user's environment; ask for it through userConfig instead"))
+        # O12 launchers in what the plugin runs
+        runs = ext in SCRIPT_EXT or name in ("plugin.json", ".mcp.json", "hooks.json", ".lsp.json") or (ext == ".md" and top in ("skills", "commands", "agents"))
+        if runs and not is_test(rel):
+            scan = text if ext != ".md" else "\n".join(l for l in text.splitlines() if "!`" in l)
+            launcher_found |= check_launchers(scan, label(rel), out)
+            install_found |= re.search(r"\b(npm|pnpm|yarn|bun)\s+(install|i|add)\b|\bpip3?\s+install\b|\buv\s+(pip\s+install|sync|add)\b", scan) is not None
+        # O16 minified
+        if ext in SOURCE_EXT or ext in (".py", ".sh"):
+            lines = text.splitlines() or [""]
+            if len(text) > 4096 and len(text) / len(lines) > 200:
+                out.append(Finding("O16", "hold", label(rel), 1, "looks compiled, packed or minified; commit readable source"))
+
+    # O15 package-manager configuration beside a launcher or install
+    for rel in package_source:
+        if launcher_found:
+            out.append(Finding("O15", "block", label(rel), 1, "package-manager configuration in a plugin that uses a launcher"))
+        elif install_found:
+            out.append(Finding("O15", "hold", label(rel), 1, "package-manager configuration in a plugin that runs a package install"))
+
+    # O10 images referenced only by Markdown image syntax in the README
+    for img in images:
+        base = Path(img).name
+        for rel, text in texts.items():
+            if base not in text:
+                continue
+            in_plugin = os.path.relpath(rel, sub) if sub else rel
+            top = in_plugin.split("/")[0]
+            ext = Path(rel).suffix.lower()
+            if top in ("commands", "hooks") or "/scripts/" in "/" + in_plugin or ext in SCRIPT_EXT:
+                out.append(Finding("O10", "hold", label(rel), line_of(text, text.find(base)), f"bundled image `{base}` referenced from a command, hook or script"))
+            elif ext == ".md":
+                code = re.finditer(r"^(```|~~~)[^\n]*\n.*?^\1[^\n]*$|`[^`\n]*`", text, re.M | re.S)
+                for m in code:
+                    if base in m.group():
+                        out.append(Finding("O10", "hold", label(rel), line_of(text, m.start()), f"bundled image `{base}` written in backticks or a code block"))
+                if Path(rel).name.lower().startswith("readme"):
+                    prose = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", strip_fences(text))
+                    prose = re.sub(r"`[^`\n]*`", "", prose)
+                    if base in prose:
+                        out.append(Finding("O10", "hold", label(rel), 1, f"bundled image `{base}` referenced other than with Markdown image syntax"))
+    return root, sub, entries, texts
+
+
+def check_manifest(plugin_dir, root, texts, out):
+    plugin_dir = plugin_dir.resolve()
+    mpath = plugin_dir / ".claude-plugin" / "plugin.json"
+    rel = os.path.relpath(mpath)
+    try:
+        manifest = json.loads(mpath.read_text())
+    except (OSError, ValueError) as e:
+        out.append(Finding("O0", "block", rel, 1, f"no readable .claude-plugin/plugin.json: {e}"))
+        return {}
+    name = manifest.get("name", "")
+    if not isinstance(name, str) or not name.isascii():
+        out.append(Finding("O17", "block", rel, 1, "Non-ASCII identifier: name"))
+    elif not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?", name):
+        out.append(Finding("O17", "warn", rel, 1, "name: lowercase letters, digits and hyphens, up to 64 characters, starting and ending with a letter or digit"))
+    if name in RESERVED_NAMES:
+        out.append(Finding("O17", "block", rel, 1, f"Name is taken: `{name}` is a reserved word"))
+    elif name and all(w in RESERVED_NAMES for w in name.split("-")):
+        out.append(Finding("O17", "hold", rel, 1, f"Name may be confused with an existing listing: `{name}` is made only of generic words"))
+    for field in ("description", "author", "version"):
+        if not manifest.get(field):
+            out.append(Finding("O18", "warn", rel, 1, f"set `{field}` in plugin.json"))
+    author = manifest.get("author")
+    for field, value in (("displayName", manifest.get("displayName")), ("author.name", author.get("name") if isinstance(author, dict) else author)):
+        if not isinstance(value, str):
+            continue
+        scripts = {unicodedata.name(c, "?").split()[0] for c in value if c.isalpha()}
+        invisible = [c for c in value if unicodedata.category(c) == "Cf"]
+        if len(scripts) > 1 or invisible:
+            out.append(Finding("O19", "block", rel, 1, f"{field} mixes writing systems ({', '.join(sorted(scripts))}) or holds invisible characters"))
+    # component keys
+    norm = {k.lower().replace("_", "").replace("-", ""): k for k in COMPONENT_KEYS}
+    for key in manifest:
+        want = norm.get(key.lower().replace("_", "").replace("-", ""))
+        if want and key != want:
+            out.append(Finding("O20", "block", rel, 1, f"component key `{key}` must be spelled `{want}`"))
+    exp = manifest.get("experimental")
+    if isinstance(exp, dict):
+        for key in exp:
+            if key in COMPONENT_KEYS:
+                out.append(Finding("O20", "block", rel, 1, f"component key `{key}` inside `experimental`"))
+    for key in COMPONENT_KEYS + ["icon"]:
+        values = manifest.get(key)
+        values = [values] if isinstance(values, str) else values if isinstance(values, list) else []
+        for v in values:
+            if isinstance(v, str) and not (plugin_dir / v).resolve().is_relative_to(plugin_dir):
+                out.append(Finding("O21", "block", rel, 1, f"`{key}` path `{v}` points outside the plugin folder"))
+            if key == "hooks" and isinstance(v, str) and os.path.normpath(v) == os.path.normpath("hooks/hooks.json"):
+                out.append(Finding("O22", "warn", rel, 1, "leave hooks/hooks.json out of `hooks`; Claude Code loads it automatically"))
+    servers = manifest.get("mcpServers") if isinstance(manifest.get("mcpServers"), dict) else {}
+    mcp = plugin_dir / ".mcp.json"
+    if mcp.exists():
+        try:
+            data = json.loads(mcp.read_text())
+            servers = {**servers, **data.get("mcpServers", data)}
+        except ValueError:
+            out.append(Finding("O23", "block", os.path.relpath(mcp), 1, ".mcp.json can’t be parsed"))
+    for sname, spec in servers.items():
+        if isinstance(spec, dict):
+            check_command_paths(" ".join([str(spec.get("command", ""))] + [str(a) for a in spec.get("args", [])]), rel, f"MCP server `{sname}`", out)
+            url = spec.get("url")
+            if isinstance(url, str) and url and not url.startswith(("https://", "wss://", "${user_config.")):
+                out.append(Finding("O23", "block", rel, 1, f"MCP server URL is not https: `{sname}`"))
+
+    # README and license
+    readmes = [p for p in plugin_dir.iterdir() if p.name.lower().startswith("readme") and p.is_file()]
+    if not readmes:
+        out.append(Finding("O24", "block", os.path.relpath(plugin_dir), 0, "README missing"))
+    else:
+        words = len(strip_fences(readmes[0].read_text(errors="replace")).split())
+        if words < 40:
+            out.append(Finding("O24", "block", os.path.relpath(readmes[0]), 1, f"README too short: {words} words outside code blocks, needs 40"))
+    if not any(p.name.lower().startswith(("license", "licence")) for p in plugin_dir.iterdir()) and not manifest.get("license"):
+        out.append(Finding("O25", "block", os.path.relpath(plugin_dir), 0, "License missing: add LICENSE or set `license` in plugin.json"))
+    return manifest
+
+
+def check_hooks_json(plugin_dir, out):
+    path = plugin_dir / "hooks" / "hooks.json"
+    if not path.exists():
+        return []
+    rel = os.path.relpath(path)
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        out.append(Finding("O26", "block", rel, 1, "hooks.json is invalid"))
+        return []
+    hooks, modules = (data.get("hooks"), data.get("modules")) if isinstance(data, dict) else (None, None)
+    if not (isinstance(hooks, dict) or isinstance(modules, list)) or (hooks is not None and not isinstance(hooks, dict)) \
+            or (modules is not None and not isinstance(modules, list)):
+        out.append(Finding("O26", "block", rel, 1, "hooks.json is invalid: needs a `hooks` object, a `modules` array, or both"))
+    for event, groups in (hooks or {}).items() if isinstance(hooks, dict) else []:
+        for group in groups if isinstance(groups, list) else []:
+            for h in group.get("hooks", []) if isinstance(group, dict) else []:
+                if not isinstance(h, dict):
+                    continue
+                if h.get("type") == "command":
+                    check_command_paths(h.get("command"), rel, f"{event} hook", out)
+                if h.get("type") == "http" and not str(h.get("url", "")).startswith("https://"):
+                    out.append(Finding("O26", "block", rel, 1, f"{event} HTTP hook needs an https:// URL"))
+    entries = []
+    for m in modules or []:
+        if isinstance(m, str):
+            entries.append(os.path.relpath((path.parent / m).resolve()))
+    return entries
+
+
+def expected_holds(sources, readme, readme_rel, manifest, manifest_rel, out):
+    calls = set()
+    for src in sources.values():
+        calls |= src.capability_calls()
+    has_section = readme is not None and re.search(rf"^#+\s*{re.escape(DISCLOSURE_HEADING)}\s*$", readme, re.M | re.I)
+    holds = []
+    if "$.process.run" in calls:
+        holds += ["MOD_RUNS_PROCESS", "MOD_PROCESS_COMMAND_COMPUTED"]
+    if "$.fs.write" in calls:
+        holds.append("MOD_WRITES_BUILD_FILE")
+    if calls & {"$.process.run", "$.model.fork", "$.prompt.submit"}:
+        holds += ["MOD_LOCAL_DATA_LEAVES", "MOD_SESSION_DATA_LEAVES"]
+    if holds and not has_section:
+        out.append(Finding("O27", "warn", readme_rel, 1, f"expected Policy holds ({', '.join(holds)}) need a README section \"{DISCLOSURE_HEADING}\""))
+    for code in holds:
+        out.append(Finding(code, "note", readme_rel, 1, f"expected Policy hold, answered by \"{DISCLOSURE_HEADING}\""))
+    if "types" in manifest:
+        out.append(Finding("UNKNOWN_KEY", "note", manifest_rel, 1, "expected warning on `types`, the mod's PluginState contract"))
+
+
+def run_plugin(plugin_dir):
+    plugin_dir = Path(plugin_dir).resolve()
+    out = []
+    root, sub, entries, texts = check_plugin_files(plugin_dir, out)
+    manifest = check_manifest(plugin_dir, root, texts, out)
+    mod_entries = check_hooks_json(plugin_dir, out)
+    for rel, text in texts.items():
+        in_plugin = os.path.relpath(rel, sub) if sub else rel
+        parts = in_plugin.split("/")
+        if rel.endswith(".md") and (
+            (parts[0] == "skills" and parts[-1] == "SKILL.md") or parts[0] in ("commands", "agents")):
+            check_frontmatter(text, os.path.relpath(root / rel), out)
+    paths = [(root / rel, os.path.relpath(root / rel)) for rel in texts]
+    src_out, sources = check_sources(paths, lambda p: texts.get(os.path.relpath(p, root)), set(mod_entries))
+    out += src_out
+    if mod_entries:
+        readme = plugin_dir / "README.md"
+        expected_holds(sources, readme.read_text() if readme.exists() else None, os.path.relpath(readme), manifest,
+                       os.path.relpath(plugin_dir / ".claude-plugin" / "plugin.json"), out)
+    return out, manifest, root, sub, mod_entries
+
+
+# ---- P1-P2 ---------------------------------------------------------------------------------
+
+def version_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v).split("-")[0])[:3])
+
+
+def surface(texts):
+    """{"$.noun.method"} and {"on event opts"} across non-test sources."""
+    calls, hooks = set(), set()
+    for rel, text in texts.items():
+        if not is_source(rel) or is_test(rel):
+            continue
+        src = Source(rel, text)
+        calls |= src.capability_calls()
+        on_name = src.register_param()
+        if on_name:
+            hooks |= {f"{e} {o}".strip() for _, e, o, _ in src.registrations(on_name)}
+    return calls, hooks
+
+
+def run_release(plugin_dir, since):
+    out, manifest, root, sub, mod_entries = run_plugin(plugin_dir)
+    plugin_dir = Path(plugin_dir).resolve()
+    name = manifest.get("name") or plugin_dir.name
+    mrel = os.path.relpath(plugin_dir / ".claude-plugin" / "plugin.json")
+    tag = since
+    if not tag:
+        tags = (git(["tag", "--list", f"{name}-v*", "--sort=-v:refname"], root) or "").split()
+        tag = tags[0] if tags else None
+    if not tag:
+        out.append(Finding("P1", "note", mrel, 1, f"no {name}-v* tag yet; nothing to compare"))
+        return out
+    prefix = f"{sub}/" if sub else ""
+    changed = [p for p in (git(["diff", "--name-only", tag, "--", sub or "."], root) or "").split("\n") if p]
+    changed += [p for p in (git(["ls-files", "--others", "--exclude-standard", "--", sub or "."], root) or "").split("\n") if p]
+    if not changed:
+        out.append(Finding("P1", "note", mrel, 1, f"no changes since {tag}"))
+        return out
+    old_manifest = git(["show", f"{tag}:{prefix}.claude-plugin/plugin.json"], root)
+    old_version = json.loads(old_manifest).get("version") if old_manifest else None
+    new_version = manifest.get("version")
+    if old_version and version_tuple(new_version) <= version_tuple(old_version):
+        out.append(Finding("P1", "block", mrel, 1, f"{len(changed)} changed files since {tag} but version {new_version} is not above {old_version}; raise version with every release"))
+
+    # P2: the capability calls and hooks against the tag
+    old_files = [p for p in (git(["ls-tree", "-r", "--name-only", tag, "--", sub or "."], root) or "").split("\n") if p]
+    old_texts = {}
+    for p in old_files:
+        if is_source(p) and not is_test(p):
+            data = git_bytes(["show", f"{tag}:{p}"], root)
+            if data is not None:
+                old_texts[p] = data.decode("utf-8", "replace")
+    new_texts = {}
+    for p, _ in list_entries(root, sub):
+        if is_source(p) and not is_test(p):
+            t = read_text(root / p)
+            if t is not None:
+                new_texts[p] = t
+    old_calls, old_hooks = surface(old_texts)
+    new_calls, new_hooks = surface(new_texts)
+    delta = [f"+{c}" for c in sorted(new_calls - old_calls)] + [f"-{c}" for c in sorted(old_calls - new_calls)] \
+        + [f"+on {h}" for h in sorted(new_hooks - old_hooks)] + [f"-on {h}" for h in sorted(old_hooks - new_hooks)]
+    readme_rel = f"{prefix}README.md"
+    readme_path = os.path.relpath(root / readme_rel)
+    if delta and readme_rel not in changed:
+        out.append(Finding("P2", "block", readme_path, 1,
+                           f"capability calls or hooks changed since {tag} ({', '.join(delta)}) but README.md did not; update \"{DISCLOSURE_HEADING}\" and the hook table"))
+    readme = read_text(root / readme_rel) or ""
+    for h in sorted(new_hooks - old_hooks):
+        event = h.split()[0]
+        if f"`{event}`" not in readme:
+            out.append(Finding("P2", "block", readme_path, 1, f"new hook `{event}` is not in the README hook table"))
+    return out
+
+
+# ---- CLI -----------------------------------------------------------------------------------
+
+def find_plugin_dir(path):
+    p = Path(path).resolve()
+    for d in [p] + list(p.parents):
+        if (d / ".claude-plugin" / "plugin.json").exists():
+            return d
+    return None
+
+
+def run_files(paths):
+    out = []
+    by_plugin = {}
+    for p in paths:
+        by_plugin.setdefault(find_plugin_dir(Path(p).parent), []).append(p)
+    for plugin_dir, ps in by_plugin.items():
+        entries = set()
+        if plugin_dir is not None:
+            scratch = []
+            entries = set(check_hooks_json(plugin_dir, scratch))
+        res, _ = check_sources([(Path(p), os.path.relpath(p)) for p in ps], read_text, entries)
+        out += res
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Check a plugin against the claude.ai plugin directory rules.")
+    ap.add_argument("--json", action="store_true", help="print findings as JSON")
+    ap.add_argument("--fail-on", choices=["block", "hold", "warn"], default="block")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    f = sub.add_parser("files", help="R1-R6 on the given files")
+    f.add_argument("paths", nargs="+")
+    p = sub.add_parser("plugin", help="official rules and R1-R6 on a plugin folder")
+    p.add_argument("plugin_dir")
+    r = sub.add_parser("release", help="plugin, plus P1-P2 against the last <plugin>-v* tag")
+    r.add_argument("plugin_dir")
+    r.add_argument("--since", help="tag to compare with (default: the last <plugin>-v* tag)")
+    for s in (f, p, r):
+        s.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        s.add_argument("--fail-on", choices=["block", "hold", "warn"], default=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+
+    if args.cmd == "files":
+        out = run_files(args.paths)
+    elif args.cmd == "plugin":
+        out = run_plugin(args.plugin_dir)[0]
+    else:
+        out = run_release(args.plugin_dir, args.since)
+    seen = set()
+    out = [x for x in out if not ((x.file, x.line, x.rule, x.message) in seen or seen.add((x.file, x.line, x.rule, x.message)))]
+    out.sort(key=lambda x: (-LEVELS.index(x.level), x.file, x.line, x.rule))
+    if args.json:
+        print(json.dumps([x.as_json() for x in out], indent=2))
+    else:
+        for x in out:
+            print(x.text())
+    floor = LEVELS.index(args.fail_on)
+    return 1 if any(LEVELS.index(x.level) >= floor for x in out) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
