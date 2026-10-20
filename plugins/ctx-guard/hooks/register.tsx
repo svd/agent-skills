@@ -971,7 +971,7 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
   const isPaused = paused(now)
   const noted = await act($, planActions(capped.fire), isPaused, metrics)
   if (role !== null) {
-    if (noted.length) await putLifts($, l => ({ ...l, holds: stamp(l.holds, noted, h => ({ ...h, notedAt: now })) }))
+    if (noted.length) await putLifts($, l => ({ ...l, holds: stamp(l.holds, noted, hold => ({ ...hold, notedAt: now })) }))
     await quietly(() => judgeLifts($, metrics, isPaused, check))
   }
   // A pause that ran out frees a blocked compact here.
@@ -1038,7 +1038,7 @@ async function onMeasure($: EngineInterface, e: Reading & { changed: readonly st
   }
   await rememberMain($, num(e.context.tokens), await $.clock.now())
   // A usage report: a stalled hold waits for one.
-  if (e.changed.includes('rateLimits') && Object.values(liftsNow().holds).some(h => h.phase === 'stalled')) {
+  if (e.changed.includes('rateLimits') && Object.values(liftsNow().holds).some(hold => hold.phase === 'stalled')) {
     await putLifts($, l => ({ ...l, reports: l.reports + 1 }))
   }
   await evaluateNow($, e, 'changed')
@@ -2017,7 +2017,7 @@ async function tryCompact($: EngineInterface): Promise<void> {
     // A wake prompt waiting to go is judged again from the start once the context is compacted, as
     // the same attempt: its hold keeps the attempt charged (`tries` 1), so the new check counts nothing.
     if (liftsNow().pending) {
-      await putLifts($, l => (l.pending ? { ...l, pending: null, holds: stamp(l.holds, [l.pending.triggerId], h => ({ ...h, tries: 1 })) } : l))
+      await putLifts($, l => (l.pending ? { ...l, pending: null, holds: stamp(l.holds, [l.pending.triggerId], hold => ({ ...hold, tries: 1 })) } : l))
     }
     $.ui.toast(`ctx-guard: compacting ${role} (trigger "${p.triggerId}")`)
     try {
@@ -2334,11 +2334,11 @@ async function putLifts($: EngineInterface, fn: (l: Lifts) => Lifts): Promise<vo
 }
 
 // `holds` with `fn` applied to each of `ids` it has.
-function stamp(holds: Readonly<Record<string, Hold>>, ids: readonly string[], fn: (h: Hold, id: string) => Hold): Record<string, Hold> {
+function stamp(holds: Readonly<Record<string, Hold>>, ids: readonly string[], fn: (hold: Hold, id: string) => Hold): Record<string, Hold> {
   const out = { ...holds }
   for (const id of ids) {
-    const h = Object.hasOwn(out, id) ? out[id] : undefined
-    if (h) out[id] = fn(h, id)
+    const hold = Object.hasOwn(out, id) ? out[id] : undefined
+    if (hold) out[id] = fn(hold, id)
   }
   return out
 }
@@ -2404,9 +2404,9 @@ async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Me
     return t && !onEstimate(t, m) && whenState(t, m) !== null ? t : null
   }
   // What let each new lift go, in words, read on the figures it lifted on.
-  const lifted = stamp(step.holds, step.lifted, (h, id) => {
+  const lifted = stamp(step.holds, step.lifted, (hold, id) => {
     const t = byId.get(id)
-    return t ? { ...h, reason: liftReason(t, m, h.window) } : h
+    return t ? { ...hold, reason: liftReason(t, m, hold.window) } : hold
   })
   const exempt = new Set(
     l.estimatedLift.filter(id => {
@@ -2462,7 +2462,7 @@ async function runLifts($: EngineInterface, items: readonly LiftItem[], m: Metri
   await putLifts($, l => ({
     ...l,
     holds: without(
-      stamp(l.holds, [...keep], (h, id) => ({ ...h, ran: true, liftNotedAt: notedIds.includes(id) ? m.now : h.liftNotedAt })),
+      stamp(l.holds, [...keep], (hold, id) => ({ ...hold, ran: true, liftNotedAt: notedIds.includes(id) ? m.now : hold.liftNotedAt })),
       ended,
     ),
     estimatedLift: [...new Set([...l.estimatedLift, ...estimated])],
@@ -2487,8 +2487,8 @@ async function judgeLifts($: EngineInterface, m: Metrics, isPaused: boolean, che
   if (stale) await putLifts($, x => ({ ...x, pending: null }))
   const pending = stale ? null : p
   const items: LiftItem[] = triggers.flatMap(t => {
-    const h = Object.hasOwn(l.holds, t.id) ? l.holds[t.id] : undefined
-    return t.lift && h?.phase === 'lifting' ? [{ trigger: t, hold: h, why: null, steer: false, wake: false }] : []
+    const hold = Object.hasOwn(l.holds, t.id) ? l.holds[t.id] : undefined
+    return t.lift && hold?.phase === 'lifting' ? [{ trigger: t, hold: hold, why: null, steer: false, wake: false }] : []
   })
   if (!items.length) return
   const running = turnRunningIn(activity(), m.now)
@@ -2536,10 +2536,10 @@ async function startCheck($: EngineInterface, charged: LiftItem, ids: string[]):
   })
   const id = charged.trigger.id
   await putLifts($, l => {
-    const h = Object.hasOwn(l.holds, id) ? l.holds[id] : undefined
-    if (!h) return l
-    const attempts = h.tries === 0 ? { ...l.attempts, [id]: (l.attempts[id] ?? 0) + 1 } : l.attempts
-    return { ...l, forkAt: now, attempts, holds: { ...l.holds, [id]: { ...h, tries: h.tries + 1 } } }
+    const hold = Object.hasOwn(l.holds, id) ? l.holds[id] : undefined
+    if (!hold) return l
+    const attempts = hold.tries === 0 ? { ...l.attempts, [id]: (l.attempts[id] ?? 0) + 1 } : l.attempts
+    return { ...l, forkAt: now, attempts, holds: { ...l.holds, [id]: { ...hold, tries: hold.tries + 1 } } }
   })
   runLiftCheck($, new Set(ids), before, now)
 }
@@ -2617,7 +2617,7 @@ async function afterCheck($: EngineInterface, items: readonly LiftItem[], m: Met
   const chosen = free.find(i => i.wake && i.hold.tries > 0) ?? free.find(i => i.wake) ?? null
   // The check answered: its tries are spent, whatever it found.
   const answered = free.map(i => i.trigger.id)
-  await putLifts($, l => ({ ...l, holds: stamp(l.holds, answered, h => ({ ...h, tries: 0 })) }))
+  await putLifts($, l => ({ ...l, holds: stamp(l.holds, answered, hold => ({ ...hold, tries: 0 })) }))
   if (!chosen) return await runLifts($, free, m)
   const id = chosen.trigger.id
   const pending: LiftPending = { triggerId: id, text: wakePromptText(liftInput(chosen, m), ctx), tries: 0, at: chosen.hold.liftedAt ?? m.now }
@@ -2630,7 +2630,7 @@ async function afterCheck($: EngineInterface, items: readonly LiftItem[], m: Met
 async function checksFailed($: EngineInterface, items: readonly LiftItem[], m: Metrics): Promise<void> {
   const stalls = items.filter(i => i.wake).map(i => i.trigger.id)
   const until = earliestReset(m)
-  await putLifts($, l => ({ ...l, holds: stamp(l.holds, stalls, h => ({ ...h, phase: 'stalled', stall: { reports: l.reports, until } })) }))
+  await putLifts($, l => ({ ...l, holds: stamp(l.holds, stalls, hold => ({ ...hold, phase: 'stalled', stall: { reports: l.reports, until } })) }))
   if (stalls.length) await quietly(() => $.ui.notify(liftCheckFailedText(stalls)))
   await runLifts($, items.filter(i => !i.wake), m)
 }
@@ -2649,7 +2649,7 @@ async function tryPending($: EngineInterface, item: LiftItem, m: Metrics, isPaus
   if (state === null) return await pendingUnknown($, id, m)
   if (!toolsFree(item.trigger, triggers, m)) {
     // Braked again before the prompt went: no lift happened.
-    return await putLifts($, l => ({ ...l, pending: null, holds: stamp(l.holds, [id], h => ({ ...h, phase: 'waiting', tries: 0 })) }))
+    return await putLifts($, l => ({ ...l, pending: null, holds: stamp(l.holds, [id], hold => ({ ...hold, phase: 'waiting', tries: 0 })) }))
   }
   // The operator spoke since the touch: their input may be in ahead of the drop it scheduled.
   const operatorAt = liftsNow().operatorAt
@@ -2671,7 +2671,7 @@ async function pendingUnknown($: EngineInterface, id: string, m: Metrics): Promi
   const tries = p.tries + 1
   if (tries < LIFT_TRIES) return await putLifts($, l => (l.pending ? { ...l, pending: { ...l.pending, tries } } : l))
   const until = earliestReset(m)
-  await putLifts($, l => ({ ...l, pending: null, holds: stamp(l.holds, [id], h => ({ ...h, phase: 'stalled', stall: { reports: l.reports, until } })) }))
+  await putLifts($, l => ({ ...l, pending: null, holds: stamp(l.holds, [id], hold => ({ ...hold, phase: 'stalled', stall: { reports: l.reports, until } })) }))
   await quietly(() => $.ui.notify(liftCheckFailedText([id])))
 }
 
@@ -2710,10 +2710,10 @@ async function endPending($: EngineInterface, m: Metrics | null, why: NotWoken |
   if (!p) return
   await putLifts($, x => ({ ...x, pending: null }))
   const t = liftTriggers().find(x => x.id === p.triggerId)
-  const h = Object.hasOwn(l.holds, p.triggerId) ? l.holds[p.triggerId] : undefined
-  if (!t || !h) return
+  const hold = Object.hasOwn(l.holds, p.triggerId) ? l.holds[p.triggerId] : undefined
+  if (!t || !hold) return
   const metrics = m ?? (await metricsFor($, await currentReading($), await $.clock.now()))
-  await runLifts($, [{ trigger: t, hold: h, why, steer, wake: false }], metrics)
+  await runLifts($, [{ trigger: t, hold: hold, why, steer, wake: false }], metrics)
 }
 
 /**
@@ -2741,22 +2741,22 @@ async function onOperator($: EngineInterface, command: string | null): Promise<v
 async function liftsOnClear($: EngineInterface): Promise<void> {
   await putLifts($, l => {
     const unseen = Object.entries(l.holds)
-      .filter(([, h]) => l.operatorAt === null || h.touchedAt === null || l.operatorAt <= h.touchedAt)
+      .filter(([, hold]) => l.operatorAt === null || hold.touchedAt === null || l.operatorAt <= hold.touchedAt)
       .map(([id]) => id)
     const pending = l.pending && unseen.includes(l.pending.triggerId) ? null : l.pending
-    return { ...l, pending, holds: stamp(l.holds, unseen, h => ({ ...h, touchedAt: null, notedAt: null, liftNotedAt: null })) }
+    return { ...l, pending, holds: stamp(l.holds, unseen, hold => ({ ...hold, touchedAt: null, notedAt: null, liftNotedAt: null })) }
   })
 }
 
 // A refused call of one of a hold's tools touches it, whichever trigger refused the call.
 async function touchHolds($: EngineInterface, tool: string, now: number): Promise<void> {
-  await putLifts($, l => ({ ...l, holds: stamp(l.holds, Object.keys(l.holds).filter(id => l.holds[id]?.tools.includes(tool)), h => ({ ...h, touchedAt: now })) }))
+  await putLifts($, l => ({ ...l, holds: stamp(l.holds, Object.keys(l.holds).filter(id => l.holds[id]?.tools.includes(tool)), hold => ({ ...hold, touchedAt: now })) }))
 }
 
 // A main step's work for the lifts: a hold's note read, a lift note read mid-turn, a usage report for a stall.
 function liftStepDue(): boolean {
   return Object.values(liftsNow().holds).some(
-    h => (h.notedAt !== null && (h.touchedAt === null || h.touchedAt < h.notedAt)) || (h.phase === 'lifting' && h.ran && h.liftNotedAt !== null) || h.phase === 'stalled',
+    hold => (hold.notedAt !== null && (hold.touchedAt === null || hold.touchedAt < hold.notedAt)) || (hold.phase === 'lifting' && hold.ran && hold.liftNotedAt !== null) || hold.phase === 'stalled',
   )
 }
 
@@ -2770,18 +2770,18 @@ async function onLiftStep($: EngineInterface, sentAt: Promise<number | null> | n
   const at = (await sentAt) ?? (await $.clock.now())
   await putLifts($, l => {
     const holds: Record<string, Hold> = {}
-    for (const [id, h] of Object.entries(l.holds)) {
-      if (h.phase === 'lifting' && h.ran && h.liftNotedAt !== null && at > h.liftNotedAt && l.pending?.triggerId !== id) continue
-      holds[id] = h.notedAt !== null && at > h.notedAt && (h.touchedAt === null || h.touchedAt < h.notedAt) ? { ...h, touchedAt: at } : h
+    for (const [id, hold] of Object.entries(l.holds)) {
+      if (hold.phase === 'lifting' && hold.ran && hold.liftNotedAt !== null && at > hold.liftNotedAt && l.pending?.triggerId !== id) continue
+      holds[id] = hold.notedAt !== null && at > hold.notedAt && (hold.touchedAt === null || hold.touchedAt < hold.notedAt) ? { ...hold, touchedAt: at } : hold
     }
-    return { ...l, holds, reports: Object.values(l.holds).some(h => h.phase === 'stalled') ? l.reports + 1 : l.reports }
+    return { ...l, holds, reports: Object.values(l.holds).some(hold => hold.phase === 'stalled') ? l.reports + 1 : l.reports }
   })
 }
 
 // A freed tool's call went through: a lift seen mid-turn, or a pending wake prompt, on that tool is over.
 function liftFreedBy(tool: string): boolean {
   const l = liftsNow()
-  return Object.entries(l.holds).some(([id, h]) => h.phase === 'lifting' && (h.ran || l.pending?.triggerId === id) && h.tools.includes(tool))
+  return Object.entries(l.holds).some(([id, hold]) => hold.phase === 'lifting' && (hold.ran || l.pending?.triggerId === id) && hold.tools.includes(tool))
 }
 
 async function onFreedTool($: EngineInterface, tool: string): Promise<void> {

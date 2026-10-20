@@ -2,6 +2,15 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- The plugin passes the claude.ai plugin directory's check on JSX names (`MOD_CAPABILITY_USE_NOT_PLAIN`):
+  the lift code in `register.tsx` no longer names a variable or parameter `h`, the name JSX
+  compiles to. No change in behaviour.
+- README: "Sends to the model" names the lift note, sent when a brake lets go.
+
 ## [0.4.0] - 2026-10-20
 
 ### Added
