@@ -3487,7 +3487,7 @@ async function clearNote($: EngineInterface, origin: string): Promise<{ note: st
   const declined = (why: string) => ({ refusal: `${PREFIX} /ctx-guard:clear refused: ${why}. Nothing ran.` })
   if (origin !== 'composer') return declined('only the operator can run it, typed in the prompt box')
   const eff = mod.eff
-  if (!mod.commandOwned || !active() || !eff) return declined('ctx-guard is not active in this session; /ctx-guard says why')
+  if (!active() || !eff) return declined('ctx-guard is not active in this session; /ctx-guard says why')
   const role = mod.role.role
   if (role === null) return declined('this session has no role; set one with /ctx-guard role <name>')
   const spec = roleSpec(eff.config, role)
@@ -3877,6 +3877,8 @@ export const register: Register = (on, options) => {
 
   // A clear typed by the person: the role's restart note goes to the model as the command's arguments.
   on('command.run', { command: 'ctx-guard:clear' }, async ($, e, next) => {
+    // A copy that does not own /ctx-guard leaves the command to the copy that does.
+    if (!mod.commandOwned) return next(e)
     if (needsReady()) await quietly(() => ready($))
     if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command))
     const r = await clearNote($, e.origin.kind)

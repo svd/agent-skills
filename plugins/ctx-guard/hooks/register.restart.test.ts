@@ -681,6 +681,15 @@ test('/ctx-guard:clear in manual mode records no ask', async ($, on) => {
   expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
+test('/ctx-guard:clear in a copy that does not own /ctx-guard passes through untouched', async ($, on) => {
+  const w = restartWorld({ commands: [...CLEAR_COMMANDS, { name: 'ctx-guard', source: 'plugin', plugin: 'someone-else' }] })
+  writeConfig(w, autoConfig())
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  expect((await clearRun($, 'from the other copy')).text).toBe('')
+  expect(w.ran).toEqual(['ctx-guard:clear from the other copy'])
+})
+
 test('/ctx-guard:clear not typed by the person is refused and runs nothing', async ($, on) => {
   const w = restartWorld({ commands: CLEAR_COMMANDS })
   await armed($, on, w)

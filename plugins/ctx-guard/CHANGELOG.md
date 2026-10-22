@@ -18,6 +18,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
   `/clear` came since.
 - `/ctx-guard:clear` is the operator's command only: its frontmatter sets
   `disable-model-invocation: true`, so the model cannot run it through the Skill tool.
+- A second ctx-guard copy that does not own `/ctx-guard` (a `--plugin-dir` copy beside the
+  installed one) passes `/ctx-guard:clear` on to the copy that does, instead of refusing it.
 
 ## [0.5.0] - 2026-10-21
 
