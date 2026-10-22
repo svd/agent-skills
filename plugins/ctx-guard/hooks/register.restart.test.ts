@@ -681,6 +681,16 @@ test('/ctx-guard:clear in manual mode records no ask', async ($, on) => {
   expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
+test('/ctx-guard:clear fills notes.suffix from the live reading', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS })
+  const base = autoConfig()
+  const { clock } = await armed($, on, w, { ...base, roles: { ...base.roles, lead: { ...base.roles.lead, notes: { suffix: 'Context {tokens}, {percent} of {window}.' } } } })
+  await measure($, w, 250_000)
+  await clock.settle()
+  await clearRun($)
+  expect(w.ran[0]).toEndWith('Context 250k, 25% of 1M.')
+})
+
 test('/ctx-guard:clear in a copy that does not own /ctx-guard passes through untouched', async ($, on) => {
   const w = restartWorld({ commands: [...CLEAR_COMMANDS, { name: 'ctx-guard', source: 'plugin', plugin: 'someone-else' }] })
   writeConfig(w, autoConfig())

@@ -284,6 +284,26 @@ function varsOf(trigger: Trigger, cs: readonly Condition[], step: number, m: Met
   }
 }
 
+/** The figures of `m` as a context note's variables, with no trigger behind them (/ctx-guard:clear). */
+export function readingVars(m: Metrics): FireVars {
+  return {
+    metric: 'context',
+    threshold: { kind: 'tokens', value: m.tokens ?? 0 },
+    tokens: m.tokens,
+    percent: contextPercent(m),
+    window: m.window,
+    limit: null,
+    cost: m.cost,
+    idleMs: m.idleMs,
+    expiresIn: m.cache.expiresIn,
+    miss: m.cache.miss,
+    missCause: m.cache.missCause,
+    pings: m.cache.pings,
+    now: m.now,
+    liftsIn: null,
+  }
+}
+
 /** What a text about the trigger needs on `m`, as for a fire at its first threshold (a lift's texts). */
 export function fireVars(trigger: Trigger, m: Metrics): FireVars | null {
   const cs = conditions(trigger, m)

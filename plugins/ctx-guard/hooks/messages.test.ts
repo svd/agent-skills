@@ -36,7 +36,7 @@ import {
   toastText,
   wakePromptText,
 } from './messages'
-import { NO_CACHE, evaluate } from './triggers'
+import { NO_CACHE, evaluate, readingVars } from './triggers'
 import type { Fire, FireVars, Metrics } from './triggers'
 import type { RoleSpec } from '../types'
 
@@ -360,10 +360,12 @@ describe('clear note', () => {
   const instructions = 'Rewrite whole. Sections: Goal, State, Next action'
   const base = (restart: unknown, suffix: string | null = null) =>
     spec({ restart, handoff: { instructions }, notes: { suffix }, triggers: [{ id: 'stop', when: { context: '1k' }, do: ['note'], level: 'stop' }] })
+  // The live figures: 120k of a 200k window.
+  const vars = readingVars({ tokens: 120_000, window: 200_000, limits: { five_hour: null, seven_day: null }, cost: null, idleMs: null, cache: { ...NO_CACHE }, now: 0 })
 
   test('auto: the stop wording and the restart tail a stop-level context note carries', () => {
     const s = base({ mode: 'auto' })
-    const text = clearNoteText({ role: 'lead', spec: s, readyToken: 'CTX-READY' }) as string
+    const text = clearNoteText({ role: 'lead', spec: s, readyToken: 'CTX-READY', vars }) as string
     expect(text).toBe(
       `[ctx-guard] The operator asked for a restart with /ctx-guard:clear. ${levelText('stop', 'context')} ${restartTail(s, 'lead', 'CTX-READY')}`,
     )
@@ -372,26 +374,33 @@ describe('clear note', () => {
 
   test('the effective mode: manual tells the operator and names no token', () => {
     const s = base({ mode: 'auto' })
-    const text = clearNoteText({ role: 'lead', spec: s, readyToken: 'CTX-READY', mode: 'manual' }) as string
+    const text = clearNoteText({ role: 'lead', spec: s, readyToken: 'CTX-READY', mode: 'manual', vars }) as string
     expect(text).toEndWith("Then tell the operator 'ready for /clear'.")
     expect(text).not.toContain('CTX-READY')
   })
 
   test('via compact: no handoff, the token compacts', () => {
-    const text = clearNoteText({ role: 'lead', spec: base({ mode: 'auto', via: 'compact' }), readyToken: 'R' }) as string
+    const text = clearNoteText({ role: 'lead', spec: base({ mode: 'auto', via: 'compact' }), readyToken: 'R', vars }) as string
     expect(text).not.toContain('handoff')
     expect(text).toEndWith('end your reply with a line holding only `R`; ctx-guard then compacts the session.')
   })
 
   test('mode off: no note', () => {
-    expect(clearNoteText({ role: 'lead', spec: base({ mode: 'off' }), readyToken: 'R' })).toBeNull()
+    expect(clearNoteText({ role: 'lead', spec: base({ mode: 'off' }), readyToken: 'R', vars })).toBeNull()
   })
 
-  test('the suffix closes the note: role, path and token filled, figures unknown', () => {
-    const s = base({ mode: 'auto' }, 'Tell main ({role}, {handoffPath}, {readyToken}) at {tokens}. Keep {x}')
-    expect(clearNoteText({ role: 'lead', spec: s, readyToken: 'R' })).toEndWith(
-      'Then end your reply with a line holding only `R`. Tell main (lead, .ctx-guard/lead-handoff.md, R) at unknown. Keep {x}',
+  test('the suffix closes the note: role, path and token filled, figures from the live reading', () => {
+    const s = base({ mode: 'auto' }, 'Tell main ({role}, {handoffPath}, {readyToken}) at {tokens}, {percent} of {window}. Keep {x}')
+    expect(clearNoteText({ role: 'lead', spec: s, readyToken: 'R', vars })).toEndWith(
+      'Then end your reply with a line holding only `R`. Tell main (lead, .ctx-guard/lead-handoff.md, R) at 120k, 60% of 200k. Keep {x}',
     )
+  })
+
+  test('the close is the stop-level context note\'s: the same tail and suffix', () => {
+    const s = base({ mode: 'auto' }, 'Ping the peer ({role}).')
+    const close = `${restartTail(s, 'lead', 'CTX-READY')} Ping the peer (lead).`
+    expect(clearNoteText({ role: 'lead', spec: s, readyToken: 'CTX-READY', vars })).toEndWith(close)
+    expect(note(s, fires(s)[0] as Fire)).toEndWith(close)
   })
 })
 

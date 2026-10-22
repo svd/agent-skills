@@ -494,10 +494,10 @@ to ask the operator.
 The operator can ask for a restart before any trigger does. `/ctx-guard:clear [note]`, typed in
 the prompt box, hands the model the note a `stop`-level context trigger would send the session's
 role: the stop wording, the restart tail for the role's effective mode, then `notes.suffix` (its
-figures read `unknown`). The note travels as the command's text; anything typed after the command
-follows it. In `auto` mode (trusted, `autoActions` on, not paused) the model writes the handoff and
-ends with the ready token; otherwise it tells the operator 'ready for /clear' (or '/compact'). The
-token then meets the verdict below like any other, `selfGap` included, except `restart.minContext`:
+figures read from the current context). The note travels as the command's text; anything typed
+after the command follows it. In `auto` mode (trusted, `autoActions` on, not paused) the model
+writes the handoff and ends with the ready token; otherwise it tells the operator 'ready for
+/clear' (or '/compact'). The token then meets the verdict below like any other, `selfGap` included, except `restart.minContext`:
 the operator asked for the restart, so it is not judged. In `auto` mode the ask holds through the
 first main-loop turn after the command, whatever else arrives during it; it ends when that turn
 ends, token or not, on any `/clear` (ctx-guard's restart or the operator's), and when the session's

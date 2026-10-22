@@ -272,10 +272,14 @@ export function collapseNotes(fires: readonly Fire[], opts: NoteOptions): string
   for (const f of fires) if (f.trigger.message !== null) parts.push(unprefixed(render(f.trigger.message, tvOf(f)).trim()))
   // A restart frees context only: a note on usage, cost or idle alone asks for none, or a /clear would
   // land back on the same figure and the same note.
-  if (fires.some(f => f.trigger.when.context !== null)) parts.push(restartTail(spec, role, readyToken, opts.mode ?? spec.restart.mode))
-  const suffixVars = tvOf(top ?? (fires[0] as Fire))
-  if (spec.notes.suffix) parts.push(render(spec.notes.suffix, suffixVars).trim())
-  return `${PREFIX} ${parts.filter(Boolean).join(' ')}`
+  const asks = fires.some(f => f.trigger.when.context !== null)
+  return `${PREFIX} ${[...parts, ...noteClose(opts, asks, tvOf(top ?? (fires[0] as Fire)))].filter(Boolean).join(' ')}`
+}
+
+// A note's close: the restart tail (when it asks for a restart), then `notes.suffix` filled from `vars`.
+function noteClose(opts: NoteOptions, asks: boolean, vars: Readonly<Record<string, string>>): string[] {
+  const { role, spec, readyToken } = opts
+  return [asks ? restartTail(spec, role, readyToken, opts.mode ?? spec.restart.mode) : '', spec.notes.suffix ? render(spec.notes.suffix, vars).trim() : '']
 }
 
 /** The note for one fired trigger; see collapseNotes. */
@@ -285,17 +289,16 @@ export function noteText(input: NoteInput): string {
 }
 
 /**
- * The note `/ctx-guard:clear` sends: the stop wording and the restart tail a
- * context note at that level carries, then `notes.suffix` (figures in it read
- * unknown). Null when the role's restart mode is off: there is no tail to ask for.
+ * The note `/ctx-guard:clear` sends: the stop wording, then the close a
+ * stop-level context note carries (restart tail, `notes.suffix` filled from
+ * `vars`, the live figures). Null when the role's restart mode is off: there
+ * is no tail to ask for.
  */
-export function clearNoteText(opts: NoteOptions): string | null {
+export function clearNoteText(opts: NoteOptions & { vars: FireVars }): string | null {
   const { role, spec, readyToken } = opts
-  const tail = restartTail(spec, role, readyToken, opts.mode ?? spec.restart.mode)
-  if (!tail) return null
-  const vars: Record<string, string> = Object.fromEntries(TEMPLATE_VARS.map(k => [k, UNKNOWN]))
-  const suffix = spec.notes.suffix ? render(spec.notes.suffix, { ...vars, role, handoffPath: handoffPathFor(spec, role), readyToken }).trim() : ''
-  const parts = ['The operator asked for a restart with /ctx-guard:clear.', levelText('stop', 'context', spec.restart.via), tail, suffix]
+  if (!restartTail(spec, role, readyToken, opts.mode ?? spec.restart.mode)) return null
+  const vars = templateVars(opts.vars, { role, handoffPath: handoffPathFor(spec, role), readyToken })
+  const parts = ['The operator asked for a restart with /ctx-guard:clear.', levelText('stop', 'context', spec.restart.via), ...noteClose(opts, true, vars)]
   return `${PREFIX} ${parts.filter(Boolean).join(' ')}`
 }
 

@@ -157,6 +157,7 @@ import {
   onEstimate,
   placeContext,
   planActions,
+  readingVars,
   resetMarks,
   stepHolds,
   stepTokens,
@@ -3495,8 +3496,10 @@ async function clearNote($: EngineInterface, origin: string): Promise<{ note: st
   if (role === null) return declined('this session has no role; set one with /ctx-guard role <name>')
   const spec = roleSpec(eff.config, role)
   if (!spec) return declined(`role "${role}" is not in the config`)
-  const mode = effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: paused(await $.clock.now()) })
-  const note = clearNoteText({ role, spec, readyToken: eff.config.readyToken, mode })
+  const now = await $.clock.now()
+  const mode = effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: paused(now) })
+  const vars = readingVars(await metricsFor($, await currentReading($), now))
+  const note = clearNoteText({ role, spec, readyToken: eff.config.readyToken, mode, vars })
   if (note === null) return declined(`restart.mode is off for role "${role}"`)
   // Only auto mode asks for the token; in manual mode the note asks the operator to clear.
   return { note, ask: mode === 'auto' ? { at: await $.clock.now(), role } : null }

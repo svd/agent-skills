@@ -20,6 +20,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
   `disable-model-invocation: true`, so the model cannot run it through the Skill tool.
 - A second ctx-guard copy that does not own `/ctx-guard` (a `--plugin-dir` copy beside the
   installed one) passes `/ctx-guard:clear` on to the copy that does, instead of refusing it.
+- `notes.suffix` in the `/ctx-guard:clear` note fills `{tokens}`, `{percent}` and `{window}` from
+  the current context; they read `unknown` before.
 
 ## [0.5.0] - 2026-10-21
 
