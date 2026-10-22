@@ -38,6 +38,7 @@ import {
   trustedKeepWarm,
   ownPrompts,
   compacts,
+  WIPE,
 } from './register.fixtures'
 import type {
   Limit,
@@ -214,6 +215,22 @@ for (const [what, input] of [
     await input($)
     await clock.advance(PAST_RESET)
     expect([forks.length, wakePrompts(w).length]).toEqual([0, 0])
+  })
+}
+
+// What the engine raises for a typed command: command.run, then a second later here, the prompt.submit of its prompt.
+for (const command of ['ctx-guard:resume', 'ctx-guard:clear', 'review']) {
+  test(`a typed /${command} is one operator input: the lifts are written once`, { plugins: [WIPE] }, async ($, on) => {
+    const w = brakeWorld()
+    const { clock } = await braked($, on, w)
+    await touch($, clock)
+    await $.command.run({ command: 'wipe', args: '', origin: { kind: 'plugin', name: 'test' } as never, presentation: { isFullscreen: false, columns: 120 } })
+    await $.command.run({ command, args: 'role=lead', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+    await clock.advance(1000)
+    await $.prompt.submit({ text: `/${command} role=lead`, origin: { kind: 'composer' }, command: { name: command, args: 'role=lead' } } as never)
+    await clock.settle()
+    const r = await $.command.run({ command: 'wipe-sets', args: '', origin: { kind: 'plugin', name: 'test' } as never, presentation: { isFullscreen: false, columns: 120 } })
+    expect(JSON.parse(r.text ?? '{}').lifts).toBe(1)
   })
 }
 

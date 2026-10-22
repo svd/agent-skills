@@ -2778,6 +2778,9 @@ async function endPending($: EngineInterface, m: Metrics | null, why: NotWoken |
  * lift note. Their /clear would wipe that note: the prompt is dropped after
  * the clear, by their next input or the next idle tick (tryPending).
  */
+// The commands whose own command.run handlers run onOperator.
+const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guard:clear'])
+
 async function onOperator($: EngineInterface, command: string | null): Promise<void> {
   if (!active() || mod.role.role === null || !liftTriggers().length) return
   const now = await $.clock.now()
@@ -3733,7 +3736,8 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     await quietly(async () => noteOwnPrompt(e))
     // The operator's own input: it resets the wake count and steers past a pending wake.
-    if (operatorInput(e.origin?.kind, e.command?.name ?? null)) {
+    // A command's submission is its command.run's, which counted it already.
+    if (e.command === undefined && operatorInput(e.origin?.kind, null)) {
       if (needsReady()) await quietly(() => ready($))
       await quietly(() => onOperator($, e.command?.name ?? null))
     }
@@ -3893,7 +3897,8 @@ export const register: Register = (on, options) => {
   // the command run, as it did before restart commands claimed roles.
   on('command.run', async ($, e, next) => {
     // The operator's command (their /clear too): it resets the wake count and steers past a pending wake.
-    if (operatorInput(e.origin.kind, e.command) && mod.eff && liftTriggers().length) {
+    // /ctx-guard:resume and /ctx-guard:clear count it in their own handlers.
+    if (!OWN_COMMANDS.has(e.command) && operatorInput(e.origin.kind, e.command) && mod.eff && liftTriggers().length) {
       if (needsReady()) await quietly(() => ready($))
       await quietly(() => onOperator($, e.command))
     }
