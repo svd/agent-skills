@@ -1337,6 +1337,34 @@ test('the brake\'s note read by a later main step touches the hold: the lift wak
   expect([forks.length, wakePrompts(w).length]).toEqual([1, 1])
 })
 
+// The five-hour brake with no lift: a reload adds one while it holds.
+const STOP_NO_LIFT = { version: 1, roles: { lead: { triggers: [{ id: 'stop', when: { 'limit.five_hour': 95 }, do: ['note', { deny: ['Agent'] }], level: 'stop' }] } } }
+
+test('a reload adds the lift while the brake holds: its note, read before the reload, touches the new hold and the lift wakes', async ($, on) => {
+  const w = brakeWorld()
+  usageBottom(on, [{ read: 100_000, write: 0 }])
+  const { clock, forks } = await braked($, on, w, { config: STOP_NO_LIFT })
+  await turn($, 'start')
+  await clock.advance(1000)
+  await step($, clock)
+  await mainTurnEnd($, clock)
+  writeConfig(w, STOP())
+  await ctxGuard($, 'reload')
+  await ctxGuard($, 'trust')
+  await clock.advance(PAST_RESET)
+  expect([forks.length, wakePrompts(w).length]).toEqual([1, 1])
+})
+
+test('a reload adds the lift while the brake holds, its note never read: no wake', async ($, on) => {
+  const w = brakeWorld()
+  const { clock, forks } = await braked($, on, w, { config: STOP_NO_LIFT })
+  writeConfig(w, STOP())
+  await ctxGuard($, 'reload')
+  await ctxGuard($, 'trust')
+  await clock.advance(PAST_RESET)
+  expect([forks.length, wakePrompts(w).length]).toEqual([0, 0])
+})
+
 test('a step that went out before the note was appended reads nothing: no touch', async ($, on) => {
   const w = brakeWorld()
   usageBottom(on, [{ read: 100_000, write: 0 }])

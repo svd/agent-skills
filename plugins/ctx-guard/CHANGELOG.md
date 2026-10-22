@@ -2,6 +2,15 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- A lift added by a reload while its brake already held never woke the session: the new hold
+  had no record of the brake's note, so it read as never touched. Such a hold now takes the
+  note its brake fired before the reload, read when a main-loop step ended after it and no
+  `/clear` came since.
+
 ## [0.5.0] - 2026-10-21
 
 ### Added

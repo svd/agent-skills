@@ -24,6 +24,7 @@ import type {
   LiftPending,
   Lifts,
   MainReading,
+  Mark,
   Marks,
   Pause,
   PendingCompact,
@@ -969,7 +970,7 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
     await put($, 'marks', ev.marks)
     await quietly(() => dropRearmedCompact($, ev.marks))
   }
-  const exempt = role === null ? new Set<string>() : await stepLifts($, triggers, metrics)
+  const exempt = role === null ? new Set<string>() : await stepLifts($, triggers, metrics, prev)
   // Counted before acting too: a fire counts toward its trigger's `times` whether or not its actions succeed.
   const fired = cacheState().fired
   const capped = applyTimes(ev.fire, fired, exempt)
@@ -2408,11 +2409,12 @@ function noteContext(): NoteContext | null {
  * figures: the first reported figures show them holding, and that fire does
  * not count in their `times`.
  */
-async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Metrics): Promise<Set<string>> {
+async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Metrics, marks: Marks | null): Promise<Set<string>> {
   const l = liftsNow()
   if (!triggers.some(t => t.lift) && !Object.keys(l.holds).length && !l.estimatedLift.length) return new Set()
   const byId = new Map(triggers.map(t => [t.id, t]))
-  const step = stepHolds(l.holds, triggers, m, { blocking: mod.eff?.blocking === true, reports: l.reports, frozen: mod.checking ?? undefined })
+  const stepped = stepHolds(l.holds, triggers, m, { blocking: mod.eff?.blocking === true, reports: l.reports, frozen: mod.checking ?? undefined })
+  const step = { ...stepped, holds: inheritNotes(stepped.holds, l.holds, byId, marks) }
   const reported = (id: string): Trigger | null => {
     const t = byId.get(id)
     return t && !onEstimate(t, m) && whenState(t, m) !== null ? t : null
@@ -2431,6 +2433,27 @@ async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Me
   const estimatedLift = l.estimatedLift.filter(id => byId.has(id) && reported(id) === null)
   await putLifts($, x => ({ ...x, holds: lifted, estimatedLift }))
   return exempt
+}
+
+/**
+ * A hold that starts while its brake already fired (a reload gave the trigger
+ * its lift): the note that rising edge appended counts as this hold's note, and
+ * as read when a main step ended after it with no /clear since.
+ */
+function inheritNotes(holds: Record<string, Hold>, prev: Readonly<Record<string, Hold>>, byId: ReadonlyMap<string, Trigger>, marks: Marks | null): Record<string, Hold> {
+  const role = mod.role.role
+  if (role === null || marks === null || marks.role !== role) return holds
+  const a = activity()
+  const ids = Object.keys(holds).filter(id => {
+    const t = byId.get(id)
+    const mark = Object.hasOwn(marks.byId, id) ? marks.byId[id] : undefined
+    return !Object.hasOwn(prev, id) && holds[id]?.notedAt === null && t?.do.includes('note') === true && mark !== undefined && mark.at < (holds[id]?.startedAt ?? 0)
+  })
+  return stamp(holds, ids, (hold, id) => {
+    const at = (marks.byId[id] as Mark).at
+    const read = a.lastMainEndAt !== null && a.lastMainEndAt > at && (mem.lastClearAt === null || mem.lastClearAt < at)
+    return { ...hold, notedAt: at, touchedAt: read ? at : null }
+  })
 }
 
 type LiftItem = { trigger: Trigger; hold: Hold; why: NotWoken | null; steer: boolean; wake: boolean }
