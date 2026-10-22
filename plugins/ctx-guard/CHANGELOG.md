@@ -10,6 +10,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
   had no record of the brake's note, so it read as never touched. Such a hold now takes the
   note its brake fired before the reload, read when a main-loop step ended after it and no
   `/clear` came since.
+- `/ctx-guard:clear` is the operator's command only: its frontmatter sets
+  `disable-model-invocation: true`, so the model cannot run it through the Skill tool.
 
 ## [0.5.0] - 2026-10-21
 
