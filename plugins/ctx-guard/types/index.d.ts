@@ -218,6 +218,9 @@ export type Band = {
 
 // One trigger's rising-edge mark: the highest `every` step fired (0 is the
 // first threshold) and when.
+// The operator's /ctx-guard:clear: when it ran and the session's role then.
+export type ClearAsk = { at: number; role: string }
+
 export type Mark = { step: number; at: number }
 
 export type Marks = { role: string | null; byId: { [triggerId: string]: Mark } }
@@ -406,8 +409,9 @@ declare module 'claude-code' {
       lastClearAt: number | null
       // When this session's last restart on the ready token went through: none follows within selfGap.
       lastRestartAt: number | null
-      // When the operator last ran /ctx-guard:clear; it holds until their next input or the next restart.
-      clearAskedAt: number | null
+      // The operator's last /ctx-guard:clear in auto mode, and the role it was for. It holds until
+      // the first main turn after it ends, a /clear (ctx-guard's restart or the operator's), or a role change.
+      clearAsk: ClearAsk | null
       lastVerdict: LastVerdict | null
       lease: LeaseState | null
       work: Work | null

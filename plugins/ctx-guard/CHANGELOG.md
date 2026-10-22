@@ -4,6 +4,12 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- The `/ctx-guard:clear` ask holds through the first main-loop turn after the command and ends
+  when that turn ends, token or not, on any `/clear`, and when the session's role changes. A peer
+  session's message or a prompt typed during that turn leaves it. In `manual` mode no ask is kept.
+
 ### Fixed
 
 - A lift added by a reload while its brake already held never woke the session: the new hold

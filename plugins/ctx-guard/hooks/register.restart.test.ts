@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import type { Engine, MockClock } from 'claude-code/testing'
+import type { Engine, MockClock, MockSession } from 'claude-code/testing'
+import type { On } from 'claude-code'
 import {
   NOW,
   ROOT,
@@ -586,19 +587,98 @@ test('a typed /ctx-guard:clear sends the restart tail a context note carries; th
   expect(w.ran.slice(2)).toEqual(['clear', RESUME])
 })
 
-test('/ctx-guard:clear lets the token past restart.minContext until the operator speaks again', async ($, on) => {
-  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
-  const { clock, session } = await armed($, on, w, autoConfig({ minContext: '200k' }))
+// What the engine raises for a typed /ctx-guard:clear: command.run, then the prompt.submit of its rendered prompt.
+async function typedClear($: Engine, args = ''): Promise<void> {
+  const r = await clearRun($, args)
+  if (r.text) return
+  await $.prompt.submit({ text: `/ctx-guard:clear ${args}`.trim(), origin: { kind: 'composer' }, command: { name: 'ctx-guard:clear', args } } as never)
+}
+
+const MIN_CONTEXT_REFUSAL = 'CTX-READY ignored (not-needed): context is at 100k, under restart.minContext 200k'
+
+// A lead at 100k under restart.minContext 200k: the token restarts only while a /ctx-guard:clear ask holds.
+async function underMinimum($: Engine, on: On, w: World): Promise<{ clock: MockClock; session: MockSession }> {
+  const env = await armed($, on, w, autoConfig({ minContext: '200k' }))
   await measure($, w, 100_000)
-  // Any other input of the operator's ends the ask: the token meets restart.minContext again.
-  await clearRun($)
-  await $.prompt.submit({ text: 'Not yet.', origin: { kind: 'composer' } } as never)
+  return env
+}
+
+test('/ctx-guard:clear lets the token of the next turn past restart.minContext', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await typedClear($)
+  await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain('CTX-READY ignored (not-needed): context is at 100k, under restart.minContext 200k')
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear holds for one turn: a turn that ends with no token ends it', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await turn($, 'start')
+  await ready($, clock, 'Still on it.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
   expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
-  await clearRun($)
+})
+
+for (const [what, input] of [
+  ['a peer session\'s message', { text: 'from the reviewer', origin: { kind: 'peer' } }],
+  ['the operator typing', { text: 'and commit first', origin: { kind: 'composer' } }],
+] as const) {
+  test(`/ctx-guard:clear: ${what} during its turn leaves the ask`, async ($, on) => {
+    const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+    const { clock } = await underMinimum($, on, w)
+    await typedClear($)
+    await turn($, 'start')
+    await $.prompt.submit({ ...input, turnId: 't1' } as never)
+    await ready($, clock)
+    expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+  })
+}
+
+test('/ctx-guard:clear: a role change ends the ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await ctxGuard($, 'role reviewer')
+  await ctxGuard($, 'role lead')
+  await turn($, 'start')
   await ready($, clock)
-  expect(w.ran.slice(1)).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`, 'clear', RESUME])
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+})
+
+test('/ctx-guard:clear: the operator\'s own /clear ends the ask, and the flush after it does not bring it back', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await $.command.run({ command: 'clear', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await clock.settle()
+  await measure($, w, 100_000)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+})
+
+test('/ctx-guard:clear in manual mode records no ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  writeConfig(w, autoConfig({ mode: 'manual', minContext: '200k' }))
+  const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ctxGuard($, 'trust')
+  await writeHandoff(w, clock)
+  await measure($, w, 100_000)
+  await typedClear($)
+  expect(w.ran[0]).not.toContain('CTX-READY')
+  writeConfig(w, autoConfig({ minContext: '200k' }))
+  await ctxGuard($, 'reload')
+  await ctxGuard($, 'trust')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
 test('/ctx-guard:clear not typed by the person is refused and runs nothing', async ($, on) => {

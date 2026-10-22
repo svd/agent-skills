@@ -18,6 +18,7 @@ import type {
   HeldStamp,
   Hold,
   ConfigFile,
+  ClearAsk,
   ConfigState,
   LastCompact,
   LeaseState,
@@ -198,7 +199,7 @@ const CONFIG = { plugin: 'ctx-guard', key: 'config' } as const
 const PAUSE = { plugin: 'ctx-guard', key: 'pause' } as const
 const LAST_CLEAR = { plugin: 'ctx-guard', key: 'lastClearAt' } as const
 const LAST_RESTART = { plugin: 'ctx-guard', key: 'lastRestartAt' } as const
-const CLEAR_ASKED = { plugin: 'ctx-guard', key: 'clearAskedAt' } as const
+const CLEAR_ASK = { plugin: 'ctx-guard', key: 'clearAsk' } as const
 const ACTIVITY = { plugin: 'ctx-guard', key: 'activity' } as const
 const PENDING = { plugin: 'ctx-guard', key: 'pendingResume' } as const
 const LAST_VERDICT = { plugin: 'ctx-guard', key: 'lastVerdict' } as const
@@ -275,6 +276,8 @@ type Mod = {
   trust: TrustState | null
   // A restart flow is running in this environment.
   restarting: boolean
+  // The main turn ending now is the first since /ctx-guard:clear: its end ends the ask.
+  askEnds: boolean
   // A /compact this copy sent has not answered yet.
   compacting: boolean
   // A queued compact is being tried; one try at a time.
@@ -355,6 +358,7 @@ const fresh = (): Mod => ({
   measures: 0,
   trust: null,
   restarting: false,
+  askEnds: false,
   compacting: false,
   compactTrying: false,
   compactTimer: null,
@@ -415,6 +419,12 @@ const drawsBand = (surface: RenderSurface): boolean =>
   active() && mod.eff?.display === 'band' && (surface === 'terminal' || surface === 'desktop')
 
 // Activity comes back from $.state, which another version may have written.
+function asClearAsk(v: unknown): ClearAsk | null {
+  const o = typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {}
+  const at = num(o.at)
+  return at !== null && typeof o.role === 'string' ? { at, role: o.role } : null
+}
+
 function asActivity(v: unknown): Activity {
   const o = typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {}
   const lm = typeof o.lastMain === 'object' && o.lastMain !== null ? (o.lastMain as Record<string, unknown>) : null
@@ -456,7 +466,7 @@ const emptyMem = (): Stored => ({
   pause: null,
   lastClearAt: null,
   lastRestartAt: null,
-  clearAskedAt: null,
+  clearAsk: null,
   lastVerdict: null,
   lease: null,
   work: null,
@@ -507,8 +517,8 @@ function stateSet($: EngineInterface, key: Key, value: unknown): Promise<unknown
       return $.state.set(LAST_CLEAR, value as Stored['lastClearAt'])
     case 'lastRestartAt':
       return $.state.set(LAST_RESTART, value as Stored['lastRestartAt'])
-    case 'clearAskedAt':
-      return $.state.set(CLEAR_ASKED, value as Stored['clearAskedAt'])
+    case 'clearAsk':
+      return $.state.set(CLEAR_ASK, value as Stored['clearAsk'])
     case 'lastVerdict':
       return $.state.set(LAST_VERDICT, value as Stored['lastVerdict'])
     case 'lease':
@@ -555,7 +565,7 @@ const writesSettled = (): Promise<unknown> => Promise.all(Object.values(writing)
 
 // Shape-checked, as another version may have written them; a key never written is its default.
 async function readStored($: EngineInterface): Promise<Stored> {
-  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, clearAskedAt, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache, lifts] = await Promise.all([
+  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, clearAsk, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache, lifts] = await Promise.all([
     $.state.get(BAND),
     $.state.get(MARKS),
     $.state.get(ROLE_CLAIM),
@@ -566,7 +576,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     $.state.get(PAUSE),
     $.state.get(LAST_CLEAR),
     $.state.get(LAST_RESTART),
-    $.state.get(CLEAR_ASKED),
+    $.state.get(CLEAR_ASK),
     $.state.get(LAST_VERDICT),
     $.state.get(LEASE),
     $.state.get(WORK),
@@ -589,7 +599,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     pause: pause.value ?? null,
     lastClearAt: num(lastClearAt.value),
     lastRestartAt: num(lastRestartAt.value),
-    clearAskedAt: num(clearAskedAt.value),
+    clearAsk: asClearAsk(clearAsk.value),
     lastVerdict: lastVerdict.value ?? null,
     lease: asLease(lease.value),
     work: opt(work.value, asWork),
@@ -783,6 +793,8 @@ async function resolveNow($: EngineInterface): Promise<RoleResolution> {
   }
   // Stored lifts of another role are dropped as soon as this role is resolved, so a role switched back to starts with none.
   if (mem.lifts && mem.lifts.role !== r.role) await put($, 'lifts', emptyLifts(r.role))
+  // So is a /ctx-guard:clear ask: switching back does not bring it back.
+  if (mem.clearAsk && mem.clearAsk.role !== r.role) await put($, 'clearAsk', null)
   mod.role = r
   if (r.problem && active()) await noticeOnce($, `role:${r.problem}`, `ctx-guard: ${r.problem}`)
   return r
@@ -1559,14 +1571,18 @@ async function contextFact($: EngineInterface, role: string, spec: RoleSpec): Pr
   }
 }
 
-// The operator's /ctx-guard:clear, with no input of theirs and no restart since.
+// The operator's /ctx-guard:clear for the session's role, with no restart since.
 function clearAsked(): boolean {
-  const at = mem.clearAskedAt
-  return at !== null && (mem.lastRestartAt === null || mem.lastRestartAt < at)
+  const ask = mem.clearAsk
+  return ask !== null && ask.role === mod.role.role && (mem.lastRestartAt === null || mem.lastRestartAt < ask.at)
 }
 
-/** Every fact the verdict needs, read fresh: nothing cached by a timer is trusted. */
-async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: string | null): Promise<Gathered> {
+/**
+ * Every fact the verdict needs, read fresh: nothing cached by a timer is
+ * trusted. `asked` is the clear ask as the token's turn ended, when a token's
+ * restart gathers.
+ */
+async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: string | null, asked = clearAsked()): Promise<Gathered> {
   // Fresh: a ready-check script edited since the last config load must not run under the old approval.
   try {
     await readTrust($, await $.session.root())
@@ -1582,7 +1598,7 @@ async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: st
     untrustedWhy: untrustedWhy(),
     busy,
     context: await contextFact($, role, spec),
-    asked: clearAsked(),
+    asked,
     lastRestartAt: mem.lastRestartAt,
     // A config another version stored may lack it.
     selfGap: spec.restart.selfGap ?? DEFAULT_SELF_GAP,
@@ -1736,7 +1752,7 @@ async function resume($: EngineInterface, p: PendingResume, gen: Mod): Promise<v
  * /clear → resume → cleared. Fails closed: nothing is cleared unless every
  * check held, and a refusal after the stamp was written puts the old one back.
  */
-async function restartFlow($: EngineInterface, tokenAt: number): Promise<void> {
+async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean): Promise<void> {
   const gen = mod
   const eff = mod.eff
   const role = mod.role.role
@@ -1750,7 +1766,7 @@ async function restartFlow($: EngineInterface, tokenAt: number): Promise<void> {
   let retryCompact = true
   try {
     if (busy === null) busy = await pendingBusy($, await $.clock.now())
-    const g = await gather($, role, spec, busy)
+    const g = await gather($, role, spec, busy, asked)
     const v = await judge($, g, spec)
     if (!v.ok) return await refuse($, v.code, v.text)
     if (gen !== mod) return
@@ -1830,7 +1846,9 @@ async function onReadyToken($: EngineInterface, e: TurnCompleteInput): Promise<b
   if (paused(now)) return false
   // This turn's end, just recorded: any later turn means the session moved on.
   const tokenAt = activity().lastMainEndAt ?? now
-  $.clock.after(0, () => void quietly(() => timed($, () => restartFlow($, tokenAt))))
+  // Read now: the turn's end also ends the ask.
+  const asked = clearAsked()
+  $.clock.after(0, () => void quietly(() => timed($, () => restartFlow($, tokenAt, asked))))
   return true
 }
 
@@ -3100,6 +3118,8 @@ async function onClear($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await put($, 'marks', resetMarks(mod.role.role, mem.marks, roleTriggers()))
   await put($, 'lastClearAt', now)
+  // The context the ask was for is gone, whoever cleared it.
+  await put($, 'clearAsk', null)
   mod.gates = null
   // The context starts over and is unknown until the next response; the usage windows go on.
   const reading: MainReading = { tokens: null, at: now }
@@ -3202,7 +3222,8 @@ async function onTurnStart($: EngineInterface, main: boolean): Promise<void> {
 // a lift's wake rule reads.
 async function onMainTurnEnd($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
-  const { ownTurn: own, wokenTurn: woken } = activity()
+  const { ownTurn: own, wokenTurn: woken, mainTurnAt } = activity()
+  mod.askEnds = mem.clearAsk !== null && (mainTurnAt === null || mainTurnAt >= mem.clearAsk.at)
   await patchActivity($, a => ({
     ...a,
     mainTurnAt: null,
@@ -3462,7 +3483,7 @@ function filledArgs(typed: string): string | null {
  * writes the handoff and ends with the ready token. Answers the note, or the
  * refusal text when no note can go.
  */
-async function clearNote($: EngineInterface, origin: string): Promise<{ note: string } | { refusal: string }> {
+async function clearNote($: EngineInterface, origin: string): Promise<{ note: string; ask: ClearAsk | null } | { refusal: string }> {
   const declined = (why: string) => ({ refusal: `${PREFIX} /ctx-guard:clear refused: ${why}. Nothing ran.` })
   if (origin !== 'composer') return declined('only the operator can run it, typed in the prompt box')
   const eff = mod.eff
@@ -3473,7 +3494,9 @@ async function clearNote($: EngineInterface, origin: string): Promise<{ note: st
   if (!spec) return declined(`role "${role}" is not in the config`)
   const mode = effectiveMode(spec, { autoActions: eff.autoActions, trusted: mod.trust?.trusted === true, paused: paused(await $.clock.now()) })
   const note = clearNoteText({ role, spec, readyToken: eff.config.readyToken, mode })
-  return note === null ? declined(`restart.mode is off for role "${role}"`) : { note }
+  if (note === null) return declined(`restart.mode is off for role "${role}"`)
+  // Only auto mode asks for the token; in manual mode the note asks the operator to clear.
+  return { note, ask: mode === 'auto' ? { at: await $.clock.now(), role } : null }
 }
 
 /**
@@ -3713,8 +3736,6 @@ export const register: Register = (on, options) => {
     if (operatorInput(e.origin?.kind, e.command?.name ?? null)) {
       if (needsReady()) await quietly(() => ready($))
       await quietly(() => onOperator($, e.command?.name ?? null))
-      // Any other input of the operator's ends their /ctx-guard:clear ask.
-      if (e.command?.name !== 'ctx-guard:clear' && mem.clearAskedAt !== null) await quietly(() => put($, 'clearAskedAt', null))
     }
     return next(e)
   })
@@ -3774,6 +3795,9 @@ export const register: Register = (on, options) => {
       await quietly(async () => {
         restarting = await onReadyToken($, e)
       })
+      // The first main turn after /ctx-guard:clear ends its ask, once the token's restart has read it.
+      if (mod.askEnds) await quietly(() => put($, 'clearAsk', null))
+      mod.askEnds = false
       // A restart on the ready token goes first; a queued compact waits for the next turn end.
       if (!restarting) await quietly(() => compactAtTurnEnd($))
     } else {
@@ -3857,7 +3881,7 @@ export const register: Register = (on, options) => {
     if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command))
     const r = await clearNote($, e.origin.kind)
     if ('refusal' in r) return { text: r.refusal }
-    await put($, 'clearAskedAt', await $.clock.now())
+    if (r.ask) await put($, 'clearAsk', r.ask)
     const typed = e.args.trim()
     return next({ ...e, args: typed ? `${r.note}\n\n${typed}` : r.note })
   }).catch(($, e, next) => (next.called ? next(e) : { text: `${PREFIX} /ctx-guard:clear failed; nothing ran.` }))

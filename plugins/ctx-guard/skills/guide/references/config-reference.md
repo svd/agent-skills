@@ -498,8 +498,10 @@ figures read `unknown`). The note travels as the command's text; anything typed 
 follows it. In `auto` mode (trusted, `autoActions` on, not paused) the model writes the handoff and
 ends with the ready token; otherwise it tells the operator 'ready for /clear' (or '/compact'). The
 token then meets the verdict below like any other, `selfGap` included, except `restart.minContext`:
-the operator asked for the restart, so it is not judged. The ask holds until the operator's next
-input or the next restart.
+the operator asked for the restart, so it is not judged. In `auto` mode the ask holds through the
+first main-loop turn after the command, whatever else arrives during it; it ends when that turn
+ends, token or not, on any `/clear` (ctx-guard's restart or the operator's), and when the session's
+role changes. In `manual` mode the note asks for no token, and no ask is kept.
 
 For role `main` with `handoff.instructions` "Sections: Goal, State, Next action.", no
 `notes.suffix`, in `auto` mode, `/ctx-guard:clear Commit the test first.` reaches the model as the
@@ -529,7 +531,7 @@ With `via: compact` it ends "Nothing was compacted."
 |---|---|---|
 | `untrusted` | The repo's restart settings are not approved, or changed since. | The operator reads `/ctx-guard` and runs `/ctx-guard trust`. |
 | `already-busy` | A restart or compact is under way, a resume is pending (under 5 min old), or a turn started after the token. | Wait for it to finish. Do not repeat the token. |
-| `not-needed` | The context is known and below `restart.minContext` (a percent read against the window): a restart would free too little. Not judged when `restart.minContext` is off (the default), when the context is unknown, or when the operator asked for the restart with `/ctx-guard:clear` (until their next input). | Go on working; a context note asks for the restart when it is due. Lower `restart.minContext`, or set it to `"off"`. |
+| `not-needed` | The context is known and below `restart.minContext` (a percent read against the window): a restart would free too little. Not judged when `restart.minContext` is off (the default), when the context is unknown, or when the operator asked for the restart with `/ctx-guard:clear` (through the first turn after it). | Go on working; a context note asks for the restart when it is due. Lower `restart.minContext`, or set it to `"off"`. |
 | `too-soon` | This session's own last restart on the ready token (a `/clear` or a `/compact`) was less than `restart.selfGap` ago. | Go on working; do not repeat the token. Set `selfGap: "0"` to turn the gap off. |
 | `no-restart-command` | `/<restart.command>` (`/compact` for `via: compact`) is not among the session's commands. | Fix `restart.command`, or install the plugin or project command it names. |
 | `agents-running` | A listed agent is pending, running or waiting, or an agent was seen stepping in the last 15 min with no end (this covers workflow agents). | Let the agents finish or stop them, then send the token again. |
