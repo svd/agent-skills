@@ -350,8 +350,13 @@ export type MainReading = { tokens: number | null; at: number }
 export type Activity = {
   // When the last main-loop turn ended; null before the first. Idle counts from it.
   lastMainEndAt: number | null
-  // When the running main-loop turn started; null between turns.
+  // When the running turn started, a subagent's start included; null between turns.
   mainTurnAt: number | null
+  // When the running main-loop turn itself started; null between main turns.
+  mainStartAt: number | null
+  // When the last closing main turn started: one not on ctx-guard's own prompt that ended with
+  // no ready token. Written at its end; a turn whose start is unknown is none.
+  lastClosingStartAt: number | null
   // The running main turn is ctx-guard's own prompt: idle keeps counting through it.
   ownTurn: boolean
   // The running own turn is a lift's wake prompt: idle does not grow during it.

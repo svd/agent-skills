@@ -277,8 +277,6 @@ type Mod = {
   trust: TrustState | null
   // A restart flow is running in this environment.
   restarting: boolean
-  // The main turn ending now is the first since /ctx-guard:clear: its end ends the ask.
-  askEnds: boolean
   // A /compact this copy sent has not answered yet.
   compacting: boolean
   // A queued compact is being tried; one try at a time.
@@ -359,7 +357,6 @@ const fresh = (): Mod => ({
   measures: 0,
   trust: null,
   restarting: false,
-  askEnds: false,
   compacting: false,
   compactTrying: false,
   compactTimer: null,
@@ -433,6 +430,8 @@ function asActivity(v: unknown): Activity {
   return {
     lastMainEndAt: num(o.lastMainEndAt),
     mainTurnAt: num(o.mainTurnAt),
+    mainStartAt: num(o.mainStartAt),
+    lastClosingStartAt: num(o.lastClosingStartAt),
     ownTurn: o.ownTurn === true,
     wokenTurn: o.wokenTurn === true,
     lastWokenEndAt: num(o.lastWokenEndAt),
@@ -794,8 +793,6 @@ async function resolveNow($: EngineInterface): Promise<RoleResolution> {
   }
   // Stored lifts of another role are dropped as soon as this role is resolved, so a role switched back to starts with none.
   if (mem.lifts && mem.lifts.role !== r.role) await put($, 'lifts', emptyLifts(r.role))
-  // So is a /ctx-guard:clear ask: switching back does not bring it back.
-  if (mem.clearAsk && mem.clearAsk.role !== r.role) await put($, 'clearAsk', null)
   mod.role = r
   if (r.problem && active()) await noticeOnce($, `role:${r.problem}`, `ctx-guard: ${r.problem}`)
   return r
@@ -1572,10 +1569,18 @@ async function contextFact($: EngineInterface, role: string, spec: RoleSpec): Pr
   }
 }
 
-// The operator's /ctx-guard:clear for the session's role, with no restart since.
+/**
+ * The operator's /ctx-guard:clear holds: it was for the session's role, and
+ * since it came no restart, no /clear, no role claim (/ctx-guard role, or a
+ * typed resume or restart command) and no closing main turn (one that started
+ * after it, not on ctx-guard's own prompt, and ended with no ready token).
+ */
 function clearAsked(): boolean {
   const ask = mem.clearAsk
-  return ask !== null && ask.role === mod.role.role && (mem.lastRestartAt === null || mem.lastRestartAt < ask.at)
+  const role = mod.role.role
+  if (ask === null || role === null || ask.role !== role) return false
+  const since = (at: number | null | undefined): boolean => typeof at === 'number' && at >= ask.at
+  return !since(mem.lastRestartAt) && !since(mem.lastClearAt) && !since(mem.roleClaim?.at) && !since(activity().lastClosingStartAt)
 }
 
 /**
@@ -1835,11 +1840,10 @@ async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean):
 
 // The main loop's answer ends on the ready token, and ctx-guard may act on it.
 // Answers whether a restart was scheduled.
-async function onReadyToken($: EngineInterface, e: TurnCompleteInput): Promise<boolean> {
+async function onReadyToken($: EngineInterface, token: boolean): Promise<boolean> {
   const eff = mod.eff
   const role = mod.role.role
-  if (!active() || !eff || role === null || e.reason !== 'answer') return false
-  if (!isReadyAnswer(e.answer, eff.config.readyToken)) return false
+  if (!token || !active() || !eff || role === null) return false
   const spec = roleSpec(eff.config, role)
   // Manual mode, auto actions off or a pause: the notes already told the model to ask the operator.
   if (!spec || spec.restart.mode !== 'auto' || !eff.autoActions) return false
@@ -1847,11 +1851,13 @@ async function onReadyToken($: EngineInterface, e: TurnCompleteInput): Promise<b
   if (paused(now)) return false
   // This turn's end, just recorded: any later turn means the session moved on.
   const tokenAt = activity().lastMainEndAt ?? now
-  // Read now: the turn's end also ends the ask.
   const asked = clearAsked()
   $.clock.after(0, () => void quietly(() => timed($, () => restartFlow($, tokenAt, asked))))
   return true
 }
+
+// The main turn ended on the ready token, whether or not ctx-guard acts on it.
+const tokenAnswer = (e: TurnCompleteInput): boolean => e.reason === 'answer' && mod.eff !== null && isReadyAnswer(e.answer, mod.eff.config.readyToken)
 
 // ---- compact ------------------------------------------------------------------
 
@@ -3122,13 +3128,11 @@ async function onClear($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await put($, 'marks', resetMarks(mod.role.role, mem.marks, roleTriggers()))
   await put($, 'lastClearAt', now)
-  // The context the ask was for is gone, whoever cleared it.
-  await put($, 'clearAsk', null)
   mod.gates = null
   // The context starts over and is unknown until the next response; the usage windows go on.
   const reading: MainReading = { tokens: null, at: now }
   mod.lastMain = reading
-  await patchActivity($, a => ({ ...a, mainTurnAt: null, lastMain: reading }))
+  await patchActivity($, a => ({ ...a, mainTurnAt: null, mainStartAt: null, lastMain: reading }))
   // The next request writes a new prefix, in a new transcript that may tell the TTL.
   mod.transcriptPath = null
   // A ping in flight was for the old prefix; a pending retry is for the old period.
@@ -3217,20 +3221,22 @@ async function onTurnStart($: EngineInterface, main: boolean): Promise<void> {
     mod.ownPrompt = false
     mod.wakeNext = false
   }
-  await patchActivity($, a => ({ ...a, mainTurnAt: now, ...(main ? { ownTurn: own, wokenTurn: woken } : {}) }))
+  await patchActivity($, a => ({ ...a, mainTurnAt: now, ...(main ? { mainStartAt: now, ownTurn: own, wokenTurn: woken } : {}) }))
 }
 
 // The end of the operator's turn starts a new idle period; ctx-guard's own
 // prompt turn is not the operator back, so idle and the period go on. A
 // woken turn's end is where idle counts from; every main turn's end is one
 // a lift's wake rule reads.
-async function onMainTurnEnd($: EngineInterface): Promise<void> {
+async function onMainTurnEnd($: EngineInterface, token: boolean): Promise<void> {
   const now = await $.clock.now()
-  const { ownTurn: own, wokenTurn: woken, mainTurnAt } = activity()
-  mod.askEnds = mem.clearAsk !== null && (mainTurnAt === null || mainTurnAt >= mem.clearAsk.at)
+  const { ownTurn: own, wokenTurn: woken, mainStartAt } = activity()
+  const closing = !own && !token && mainStartAt !== null
   await patchActivity($, a => ({
     ...a,
     mainTurnAt: null,
+    mainStartAt: null,
+    ...(closing ? { lastClosingStartAt: mainStartAt } : {}),
     ownTurn: false,
     wokenTurn: false,
     lastTurnEndAt: now,
@@ -3795,16 +3801,14 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (needsReady()) await quietly(() => ready($))
     if (e.agentId === undefined) {
-      await quietly(() => onMainTurnEnd($))
+      const token = tokenAnswer(e)
+      await quietly(() => onMainTurnEnd($, token))
       // Off the hook's path, as the transcript can be large; in the chain, so a /clear never lands mid-read.
       $.clock.after(0, () => void serial(() => timed($, () => detectTtl($))))
       let restarting = false
       await quietly(async () => {
-        restarting = await onReadyToken($, e)
+        restarting = await onReadyToken($, token)
       })
-      // The first main turn after /ctx-guard:clear ends its ask, once the token's restart has read it.
-      if (mod.askEnds) await quietly(() => put($, 'clearAsk', null))
-      mod.askEnds = false
       // A restart on the ready token goes first; a queued compact waits for the next turn end.
       if (!restarting) await quietly(() => compactAtTurnEnd($))
     } else {

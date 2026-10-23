@@ -624,6 +624,33 @@ test('/ctx-guard:clear holds for one turn: a turn that ends with no token ends i
   expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
 })
 
+test('/ctx-guard:clear typed during a turn: a subagent started after it leaves that turn the one before the ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await turn($, 'start')
+  await clock.advance(1000)
+  await typedClear($)
+  await clock.advance(1000)
+  await $.turn.start({ text: 'go', turnId: 'a1', agentId: 'a1' } as never)
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 'a1', agentId: 'a1', reason: 'answer' } as never)
+  await ready($, clock, 'Still on it.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear: a token refused for now keeps the ask, and the next token restarts', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await turn($, 'start')
+  await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+  expect(refusals(session).at(-1)).toContain('background tasks still running: the build')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
 for (const [what, input] of [
   ['a peer session\'s message', { text: 'from the reviewer', origin: { kind: 'peer' } }],
   ['the operator typing', { text: 'and commit first', origin: { kind: 'composer' } }],
@@ -648,6 +675,64 @@ test('/ctx-guard:clear: a role change ends the ask', async ($, on) => {
   await turn($, 'start')
   await ready($, clock)
   expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+})
+
+test('/ctx-guard:clear: a turn whose start ctx-guard never saw is not the one after the ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await typedClear($)
+  await ready($, clock, 'Still on it.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear: a turn on ctx-guard\'s own prompt that ends with no token keeps the ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const base = autoConfig({ minContext: '200k' })
+  const away = { id: 'away', when: { idle: '5m' }, do: ['prompt'], times: 1, message: 'Still there?' }
+  const config = { ...base, roles: { ...base.roles, lead: { ...base.roles.lead, triggers: [...base.roles.lead.triggers, away] } } }
+  const { clock } = await armed($, on, w, config)
+  await measure($, w, 100_000)
+  await turn($, 'start')
+  await clock.advance(1000)
+  await typedClear($)
+  await clock.advance(1000)
+  await ready($, clock, 'Still on it.')
+  await clock.advance(6 * MIN)
+  expect(w.prompts.filter(p => p.includes('Still there?')).length).toBe(1)
+  await turn($, 'start')
+  await ready($, clock, 'Nothing new.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear: the operator unsetting the role ends the ask; setting it back does not bring it back', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await ctxGuard($, 'role none')
+  await ctxGuard($, 'role lead')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+})
+
+test('/ctx-guard:clear: a reload that leaves the session with no role keeps the ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await typedClear($)
+  const config = autoConfig({ minContext: '200k' })
+  const { lead: _, ...others } = config.roles
+  writeConfig(w, { ...config, roles: others })
+  expect(await ctxGuard($, 'reload')).toContain('role none')
+  writeConfig(w, config)
+  await ctxGuard($, 'reload')
+  await ctxGuard($, 'trust')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
 })
 
 test('/ctx-guard:clear: the operator\'s own /clear ends the ask, and the flush after it does not bring it back', async ($, on) => {

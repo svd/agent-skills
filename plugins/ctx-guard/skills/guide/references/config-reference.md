@@ -498,10 +498,25 @@ figures read from the current context). The note travels as the command's text; 
 after the command follows it. In `auto` mode (trusted, `autoActions` on, not paused) the model
 writes the handoff and ends with the ready token; otherwise it tells the operator 'ready for
 /clear' (or '/compact'). The token then meets the verdict below like any other, `selfGap` included, except `restart.minContext`:
-the operator asked for the restart, so it is not judged. In `auto` mode the ask holds through the
-first main-loop turn after the command, whatever else arrives during it; it ends when that turn
-ends, token or not, on any `/clear` (ctx-guard's restart or the operator's), and when the session's
-role changes. In `manual` mode the note asks for no token, and no ask is kept.
+the operator asked for the restart, so it is not judged. In `auto` mode the command records an
+ask for the session's role. The ask holds, and a ready token skips `restart.minContext`, while all
+of these hold:
+
+1. The session's role is the ask's role. A spell with no role (a config error, the role gone
+   from the config) does not end the ask.
+2. No restart and no `/clear` (ctx-guard's or the operator's) came since the command.
+3. No role claim came since the command: `/ctx-guard role`, or a typed `/ctx-guard:resume` or
+   restart command that claims a role.
+4. No closing turn came since the command. A closing turn is a main-loop turn that started after
+   the command, was not on ctx-guard's own prompt, and ended with no ready token. A turn whose
+   start ctx-guard did not see is not one.
+
+A turn that ends on the token keeps the ask, so a token refused for now (agents or background
+tasks still running, `selfGap`, a failing ready check) can be sent again. So does a token that
+ctx-guard does not act on (a pause, `autoActions` off): the operator asked for that restart, so a
+token after the pause still skips `restart.minContext`. A peer session's message, a prompt typed
+meanwhile or a subagent's start leaves the ask. In `manual` mode the note asks for no token, and
+no ask is kept.
 
 For role `main` with `handoff.instructions` "Sections: Goal, State, Next action.", no
 `notes.suffix`, in `auto` mode, `/ctx-guard:clear Commit the test first.` reaches the model as the
@@ -535,7 +550,7 @@ With `via: compact` it ends "Nothing was compacted."
 |---|---|---|
 | `untrusted` | The repo's restart settings are not approved, or changed since. | The operator reads `/ctx-guard` and runs `/ctx-guard trust`. |
 | `already-busy` | A restart or compact is under way, a resume is pending (under 5 min old), or a turn started after the token. | Wait for it to finish. Do not repeat the token. |
-| `not-needed` | The context is known and below `restart.minContext` (a percent read against the window): a restart would free too little. Not judged when `restart.minContext` is off (the default), when the context is unknown, or when the operator asked for the restart with `/ctx-guard:clear` (through the first turn after it). | Go on working; a context note asks for the restart when it is due. Lower `restart.minContext`, or set it to `"off"`. |
+| `not-needed` | The context is known and below `restart.minContext` (a percent read against the window): a restart would free too little. Not judged when `restart.minContext` is off (the default), when the context is unknown, or while the operator's `/ctx-guard:clear` ask holds. | Go on working; a context note asks for the restart when it is due. Lower `restart.minContext`, or set it to `"off"`. |
 | `too-soon` | This session's own last restart on the ready token (a `/clear` or a `/compact`) was less than `restart.selfGap` ago. | Go on working; do not repeat the token. Set `selfGap: "0"` to turn the gap off. |
 | `no-restart-command` | `/<restart.command>` (`/compact` for `via: compact`) is not among the session's commands. | Fix `restart.command`, or install the plugin or project command it names. |
 | `agents-running` | A listed agent is pending, running or waiting, or an agent was seen stepping in the last 15 min with no end (this covers workflow agents). | Let the agents finish or stop them, then send the token again. |
