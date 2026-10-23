@@ -342,9 +342,12 @@ it waits. The first rule that stops it decides.
 1. **The brake touched the work.** During the hold a call to one of its tools was refused (by any
    trigger), or its note was read (a main-loop request went out after the note was appended); and
    a main-loop turn ended after that. Otherwise the prompt is dropped with no `notify`, and the
-   rest of the lift runs. A hold that starts while its brake has already fired (a reload gave the
-   trigger its `lift`) takes that earlier note as its own: it counts as read when a main-loop
-   step ended after it and no `/clear` came since. A `/clear` other than the operator's (ctx-guard's restart) starts a
+   rest of the lift runs. The first main-loop request sent after a trigger's note stamps its mark
+   with that request's time (the note's read time), kept in `$.state`. A hold that starts while its
+   brake has already fired (a reload gave the trigger its `lift`) takes that earlier note as its
+   own: read, and the hold touched, at the mark's read time; unread when the mark has none. A
+   `/clear` since the note leaves the note out, unless the operator spoke after its read time
+   (the hold is steered, as below). A `/clear` other than the operator's (ctx-guard's restart) starts a
    context the brake never touched: a hold's earlier touch no longer counts, and a wake prompt
    waiting to go is dropped.
 2. **No operator input since the last touch.** Operator input is a prompt or command with origin

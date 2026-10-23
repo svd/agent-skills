@@ -333,7 +333,8 @@ export function resetMarks(role: string | null, marks: Marks | null = null, trig
 function isMark(v: unknown): v is Mark {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
-  return typeof o.step === 'number' && Number.isInteger(o.step) && o.step >= 0 && typeof o.at === 'number' && Number.isFinite(o.at)
+  const readAt = o.readAt === undefined || (typeof o.readAt === 'number' && Number.isFinite(o.readAt))
+  return typeof o.step === 'number' && Number.isInteger(o.step) && o.step >= 0 && typeof o.at === 'number' && Number.isFinite(o.at) && readAt
 }
 
 function priorMarks(marks: unknown, role: string | null): Record<string, unknown> {
@@ -375,7 +376,7 @@ export function evaluate(
     }
     const step = stepOf(trigger, cs)
     if (old && old.step >= step) {
-      byId[trigger.id] = old.step === step ? old : { step, at: old.at }
+      byId[trigger.id] = old.step === step ? old : { ...old, step }
       continue
     }
     byId[trigger.id] = { step, at: metrics.now }

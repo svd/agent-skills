@@ -221,7 +221,8 @@ export type Band = {
 // The operator's /ctx-guard:clear: when it ran and the session's role then.
 export type ClearAsk = { at: number; role: string }
 
-export type Mark = { step: number; at: number }
+// `at`: the rising edge (and its note); `readAt`: the first main-loop request sent after it.
+export type Mark = { step: number; at: number; readAt?: number }
 
 export type Marks = { role: string | null; byId: { [triggerId: string]: Mark } }
 
