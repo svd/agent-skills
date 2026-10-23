@@ -2782,6 +2782,9 @@ async function endPending($: EngineInterface, m: Metrics | null, why: NotWoken |
   await runLifts($, [{ trigger: t, hold: hold, why, steer, wake: false }], metrics)
 }
 
+// The commands whose own command.run handlers run onOperator.
+const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guard:clear'])
+
 /**
  * Operator input (a prompt or command from an operator origin, not
  * /ctx-guard): wake attempts count from zero again, and a pending wake prompt
@@ -2789,9 +2792,6 @@ async function endPending($: EngineInterface, m: Metrics | null, why: NotWoken |
  * lift note. Their /clear would wipe that note: the prompt is dropped after
  * the clear, by their next input or the next idle tick (tryPending).
  */
-// The commands whose own command.run handlers run onOperator.
-const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guard:clear'])
-
 async function onOperator($: EngineInterface, command: string | null): Promise<void> {
   if (!active() || mod.role.role === null || !liftTriggers().length) return
   const now = await $.clock.now()
@@ -3530,7 +3530,7 @@ async function clearNote($: EngineInterface, origin: string): Promise<{ note: st
   const note = clearNoteText({ role, spec, readyToken: eff.config.readyToken, mode, vars })
   if (note === null) return declined(`restart.mode is off for role "${role}"`)
   // Only auto mode asks for the token; in manual mode the note asks the operator to clear.
-  return { note, ask: mode === 'auto' ? { at: await $.clock.now(), role } : null }
+  return { note, ask: mode === 'auto' ? { at: now, role } : null }
 }
 
 /**
