@@ -38,7 +38,9 @@ Never send the ready token otherwise: not before the handoff is written, not in 
 from a subagent, and not without a note asking for it. The token clears the session.
 
 `/ctx-guard:clear`, typed by the operator, brings such a note in the command's own text: it counts
-as a note asking for the token. Follow it as above.
+as a note asking for the token. Follow it as above. When the command's text carries no
+`[ctx-guard]` note, ctx-guard is not active in the session: tell the operator so, and write no
+handoff and no token.
 
 A note may end with a role rule (`notes.suffix`), such as "message the peer session before you
 stop". Do that before the last line.

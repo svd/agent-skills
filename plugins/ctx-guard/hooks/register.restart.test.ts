@@ -700,6 +700,15 @@ test('/ctx-guard:clear in a copy that does not own /ctx-guard passes through unt
   expect(w.ran).toEqual(['ctx-guard:clear from the other copy'])
 })
 
+test('/ctx-guard:clear in a copy loaded fresh, before its session start, starts it and sends the note', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS })
+  writeConfig(w, autoConfig())
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await clearRun($)
+  expect(w.ran.length).toBe(1)
+  expect(w.ran[0]).toStartWith('ctx-guard:clear [ctx-guard] The operator asked for a restart with /ctx-guard:clear.')
+})
+
 test('/ctx-guard:clear not typed by the person is refused and runs nothing', async ($, on) => {
   const w = restartWorld({ commands: CLEAR_COMMANDS })
   await armed($, on, w)

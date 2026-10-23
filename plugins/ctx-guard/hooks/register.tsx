@@ -3884,10 +3884,16 @@ export const register: Register = (on, options) => {
 
   // A clear typed by the person: the role's restart note goes to the model as the command's arguments.
   on('command.run', { command: 'ctx-guard:clear' }, async ($, e, next) => {
-    // A copy that does not own /ctx-guard leaves the command to the copy that does.
-    if (!mod.commandOwned) return next(e)
-    if (needsReady()) await quietly(() => ready($))
+    // Started first: a copy loaded fresh by a hot reload owns nothing until it starts.
+    await quietly(async () => {
+      if (needsReady()) await ready($)
+      await ensureStarted($)
+    })
+    // The operator's command in every active copy, whichever owns /ctx-guard.
     if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command))
+    // A copy that does not own /ctx-guard leaves the command to the copy that does; with no
+    // copy to add the note, the command's own text tells the model to stop.
+    if (!mod.commandOwned) return next(e)
     const r = await clearNote($, e.origin.kind)
     if ('refusal' in r) return { text: r.refusal }
     if (r.ask) await put($, 'clearAsk', r.ask)

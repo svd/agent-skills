@@ -515,6 +515,10 @@ Commit the test first.
 
 ctx-guard refuses the command, and nothing runs, when it was not typed in the prompt box, when
 ctx-guard is not active, when the session has no role, or when the role's `restart.mode` is `off`.
+A ctx-guard copy that does not own `/ctx-guard` passes the command on to the copy that does, and
+counts it as the operator's input for lifts. With no copy to add the note, the command's own text
+tells the model that ctx-guard is not active in the session: the model says so and stops, with no
+handoff and no ready token.
 
 ### The verdict
 

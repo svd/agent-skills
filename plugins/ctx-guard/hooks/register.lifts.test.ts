@@ -256,6 +256,18 @@ async function peekLifts($: Engine): Promise<PeekedLifts> {
   return JSON.parse(r.text ?? 'null')
 }
 
+test('a typed /ctx-guard:clear in a copy that could not register /ctx-guard is operator input', { plugins: [PEEK_LIFTS] }, async ($, on) => {
+  const w = brakeWorld({ failRegister: '"/ctx-guard" refused: it is taken' })
+  const { clock } = await braked($, on, w, { trust: false })
+  await touch($, clock)
+  const before = (await peekLifts($)).lifts as { operatorAt: number | null } | null
+  await clock.advance(MIN)
+  await $.command.run({ command: 'ctx-guard:clear', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  const after = (await peekLifts($)).lifts as { operatorAt: number | null } | null
+  expect(before?.operatorAt ?? null).toBeNull()
+  expect(after?.operatorAt).toBe(clock.now())
+})
+
 test('lift mid-turn with note and prompt: the note read by a later step → no prompt', async ($, on) => {
   const w = brakeWorld()
   usageBottom(on, [{ read: 100_000, write: 0 }])

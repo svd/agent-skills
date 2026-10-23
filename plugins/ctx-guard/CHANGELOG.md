@@ -19,7 +19,11 @@ All notable changes to the `ctx-guard` plugin are documented here.
 - `/ctx-guard:clear` is the operator's command only: its frontmatter sets
   `disable-model-invocation: true`, so the model cannot run it through the Skill tool.
 - A second ctx-guard copy that does not own `/ctx-guard` (a `--plugin-dir` copy beside the
-  installed one) passes `/ctx-guard:clear` on to the copy that does, instead of refusing it.
+  installed one) passes `/ctx-guard:clear` on to the copy that does, instead of refusing it, and
+  still counts it as the operator's input for lifts. When no copy adds the note, the command's
+  own text tells the model that ctx-guard is not active here: it says so and stops, with no
+  handoff and no ready token. A copy loaded fresh by a hot reload starts before it judges the
+  command.
 - `notes.suffix` in the `/ctx-guard:clear` note fills `{tokens}`, `{percent}` and `{window}` from
   the current context; they read `unknown` before.
 
