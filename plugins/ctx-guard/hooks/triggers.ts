@@ -60,8 +60,8 @@ export type Condition = {
 export type FireVars = {
   // The metric the text is about: `every`'s metric, else the first in METRIC_ORDER.
   metric: Metric
-  // That metric's threshold at the fired step.
-  threshold: Quantity
+  // That metric's threshold at the fired step; null with no trigger behind the text.
+  threshold: Quantity | null
   tokens: number | null
   percent: number | null
   window: number
@@ -288,7 +288,7 @@ function varsOf(trigger: Trigger, cs: readonly Condition[], step: number, m: Met
 export function readingVars(m: Metrics): FireVars {
   return {
     metric: 'context',
-    threshold: { kind: 'tokens', value: m.tokens ?? 0 },
+    threshold: null,
     tokens: m.tokens,
     percent: contextPercent(m),
     window: m.window,

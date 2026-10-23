@@ -103,7 +103,7 @@ export function templateVars(vars: FireVars, ctx: NoteContext, trigger: Trigger 
     role: ctx.role ?? 'none',
     tokens: vars.tokens === null ? UNKNOWN : humanTokens(vars.tokens),
     percent: vars.percent === null ? UNKNOWN : humanPercent(vars.percent),
-    threshold: humanQuantity(vars.threshold),
+    threshold: vars.threshold === null ? UNKNOWN : humanQuantity(vars.threshold),
     window: humanTokens(vars.window),
     limit: limitText(vars.limit),
     resetsIn: resetsText(vars.limit, vars.now),
@@ -264,7 +264,7 @@ export function collapseNotes(fires: readonly Fire[], opts: NoteOptions): string
   for (const f of builtIn) {
     const key = figureKey(f.vars)
     const had = byFigure.get(key)
-    if (!had || f.vars.threshold.value > had.vars.threshold.value) byFigure.set(key, f)
+    if (!had || (f.vars.threshold?.value ?? 0) > (had.vars.threshold?.value ?? 0)) byFigure.set(key, f)
   }
   const top = [...builtIn].sort((a, b) => rank(b) - rank(a))[0]
   const parts = [...byFigure.values()].map(f => head(f.vars))

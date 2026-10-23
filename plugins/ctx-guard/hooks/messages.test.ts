@@ -390,9 +390,9 @@ describe('clear note', () => {
   })
 
   test('the suffix closes the note: role, path and token filled, figures from the live reading', () => {
-    const s = base({ mode: 'auto' }, 'Tell main ({role}, {handoffPath}, {readyToken}) at {tokens}, {percent} of {window}. Keep {x}')
+    const s = base({ mode: 'auto' }, 'Tell main ({role}, {handoffPath}, {readyToken}) at {tokens}, {percent} of {window}, past {threshold}. Keep {x}')
     expect(clearNoteText({ role: 'lead', spec: s, readyToken: 'R', vars })).toEndWith(
-      'Then end your reply with a line holding only `R`. Tell main (lead, .ctx-guard/lead-handoff.md, R) at 120k, 60% of 200k. Keep {x}',
+      'Then end your reply with a line holding only `R`. Tell main (lead, .ctx-guard/lead-handoff.md, R) at 120k, 60% of 200k, past unknown. Keep {x}',
     )
   })
 
