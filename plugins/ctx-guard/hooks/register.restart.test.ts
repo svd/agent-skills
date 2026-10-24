@@ -35,8 +35,9 @@ import {
   compactArmed,
   mainTurnEnd,
   status,
+  HOUR,
 } from './register.fixtures'
-import type { World } from './register.fixtures'
+import type { Limit, World } from './register.fixtures'
 
 // ---- restart: ready token → clear + resume ----------------------------------
 
@@ -853,6 +854,27 @@ for (const [what, input] of [
     expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
   })
 }
+
+test('/ctx-guard:clear cut by the usage limit, then /ctx-guard wake 5h: the woken turn takes the ask up, and its token restarts', async ($, on) => {
+  const resetsAt = NOW + 10 * MIN
+  const five = (pct: number, at: number): Limit => ({ kind: 'five_hour', percentUsed: pct, resetsAt: new Date(at).toISOString() })
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000, limits: [five(100, resetsAt)] })
+  on('model.fork', async () => {
+    w.limits = [five(1, NOW + 6 * HOUR)]
+    return { value: { isAnswered: true, text: 'OK', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } } as never
+  })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await turn($, 'start')
+  await cut($, clock, 'error')
+  expect(await ctxGuard($, 'wake 5h')).toContain('wake set')
+  await clock.advance(resetsAt - clock.now() + 2 * MIN)
+  expect(w.prompts.filter(p => p.includes('/ctx-guard wake')).length).toBe(1)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).join('\n')).not.toContain(MIN_CONTEXT_REFUSAL)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
 
 test('/ctx-guard:clear interrupted, then "go on" typed: its token, refused for now, counts again on a task notification\'s turn', async ($, on) => {
   const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })

@@ -365,11 +365,13 @@ export type Activity = {
   // When the last closing main turn started: one on a prompt the person typed that ended on an
   // answer with no ready token. Written at its end; a turn whose start is unknown is none.
   lastClosingStartAt: number | null
-  // When the last cut main turn started (one that ended other than on an answer), and the last
-  // typed one (closing or not). A cut turn of a /ctx-guard:clear ask suspends it until a typed one
-  // starts after it. Written at their end; a turn whose start is unknown is neither.
+  // When the last cut main turn started (one that ended other than on an answer), the last typed
+  // one (closing or not) and the last woken one. A cut turn of a /ctx-guard:clear ask suspends it
+  // until a typed or woken one starts after it. Written at their end; a turn whose start is
+  // unknown is none of them.
   lastCutStartAt: number | null
   lastTypedStartAt: number | null
+  lastWokenStartAt: number | null
   // The last role resolved, and when it last became another (a spell with no role between is no change).
   lastRole: string | null
   roleChangedAt: number | null

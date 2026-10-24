@@ -449,6 +449,7 @@ function asActivity(v: unknown): Activity {
     lastClosingStartAt: num(o.lastClosingStartAt),
     lastCutStartAt: num(o.lastCutStartAt),
     lastTypedStartAt: num(o.lastTypedStartAt),
+    lastWokenStartAt: num(o.lastWokenStartAt),
     lastRole: typeof o.lastRole === 'string' ? o.lastRole : null,
     roleChangedAt: num(o.roleChangedAt),
     ownTurn: o.ownTurn === true,
@@ -1612,6 +1613,7 @@ function clearAsked(): boolean {
     closingStartAt: a.lastClosingStartAt,
     cutStartAt: a.lastCutStartAt,
     typedStartAt: a.lastTypedStartAt,
+    wokenStartAt: a.lastWokenStartAt,
   })
 }
 
@@ -3283,7 +3285,7 @@ async function onTurnStart($: EngineInterface, main: boolean): Promise<void> {
 // a lift's wake rule reads. A typed prompt's turn that ends on an answer with
 // no ready token closes: it ends a /ctx-guard:clear ask from before its start.
 // A turn that ends other than on an answer is cut: it suspends the ask until a
-// typed prompt's turn starts after it.
+// typed prompt's turn or a woken turn starts after it.
 async function onMainTurnEnd($: EngineInterface, token: boolean, answered: boolean): Promise<void> {
   const now = await $.clock.now()
   const { ownTurn: own, wokenTurn: woken, typedTurn: typed, mainStartAt } = activity()
@@ -3296,6 +3298,7 @@ async function onMainTurnEnd($: EngineInterface, token: boolean, answered: boole
     ...(closing ? { lastClosingStartAt: mainStartAt } : {}),
     ...(known && !answered ? { lastCutStartAt: mainStartAt } : {}),
     ...(known && typed ? { lastTypedStartAt: mainStartAt } : {}),
+    ...(known && woken ? { lastWokenStartAt: mainStartAt } : {}),
     ownTurn: false,
     wokenTurn: false,
     typedTurn: false,

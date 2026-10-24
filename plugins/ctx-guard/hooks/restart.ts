@@ -74,7 +74,8 @@ export function isTypedPrompt(e: { origin?: { kind: string }; command?: { name: 
  * What a /ctx-guard:clear ask is judged on, each a time or null for never:
  * the last restart, /clear, role claim and role change; and the starts of the
  * last closing main turn (typed, ended on an answer with no ready token), the
- * last cut one (ended other than on an answer) and the last typed one.
+ * last cut one (ended other than on an answer), the last typed one and the
+ * last woken one (a wake prompt's).
  */
 export type ClearAskMarks = {
   restartAt: number | null
@@ -84,14 +85,16 @@ export type ClearAskMarks = {
   closingStartAt: number | null
   cutStartAt: number | null
   typedStartAt: number | null
+  wokenStartAt: number | null
 }
 
 /**
  * The operator's /ctx-guard:clear holds: it was for the session's role, and
  * since it came no restart, no /clear, no role claim, no role change and no
  * closing main turn that started after it. A main turn of the ask that was cut
- * short (Esc, an error, a refusal) suspends it until a typed prompt's main turn
- * starts after that one: the operator takes the handoff up again.
+ * short (Esc, an error, a refusal, the usage limit) suspends it until a typed prompt's or a wake
+ * prompt's main turn starts after that one: the operator takes the handoff up
+ * again, or the wake they set does.
  */
 export function clearAskHolds(ask: ClearAsk | null, role: string | null, m: ClearAskMarks): boolean {
   if (ask === null || role === null || ask.role !== role) return false
@@ -99,7 +102,8 @@ export function clearAskHolds(ask: ClearAsk | null, role: string | null, m: Clea
   const after = (at: number | null): boolean => at !== null && at > ask.at
   if (since(m.restartAt) || since(m.clearAt) || since(m.claimAt) || since(m.roleChangedAt) || after(m.closingStartAt)) return false
   const cut = m.cutStartAt
-  return cut === null || !since(cut) || (m.typedStartAt !== null && m.typedStartAt > cut)
+  const takenUp = (at: number | null): boolean => cut !== null && at !== null && at > cut
+  return cut === null || !since(cut) || takenUp(m.typedStartAt) || takenUp(m.wokenStartAt)
 }
 
 // ---- stamps ------------------------------------------------------------------

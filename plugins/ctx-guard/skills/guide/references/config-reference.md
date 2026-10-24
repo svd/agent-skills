@@ -567,12 +567,14 @@ of these hold:
 
    A turn whose start ctx-guard did not see is not one.
 5. The ask is not suspended. A main-loop turn that started at or after the command and ended other
-   than on an answer (the operator pressed Esc, or an error or a refusal ended it) is cut: it
-   suspends the ask until a turn on a prompt the person typed (as in 4) starts after it. Such a
-   turn takes the ask up again: if it ends on the token, the token counts as asked; if it ends on
-   an answer with no token, it closes the ask. While the ask is suspended, a token from any other
-   turn (a peer session's message, a wake or scheduled prompt, a task notification) meets the
-   verdict as if no ask had been made.
+   than on an answer (the operator pressed Esc, or an error, a refusal or the usage limit ended it)
+   is cut: it suspends the ask until a turn on a prompt the person typed (as in 4), or a woken turn
+   (the wake prompt of a `/ctx-guard wake` or of a lift), starts after it. Such a turn takes the
+   ask up again: if it ends on the token, the token counts as asked. A typed one that ends on an
+   answer with no token closes the ask; a woken one that does keeps it. So when the usage limit
+   cuts the handoff turn and the operator sets `/ctx-guard wake 5h`, the woken turn's token counts
+   as asked. While the ask is suspended, a token from any other turn (a peer session's message, a
+   scheduled prompt, a task notification) meets the verdict as if no ask had been made.
 
 A turn that ends on the token keeps the ask, so a token refused for now (agents or background
 tasks still running, `selfGap`, a failing ready check) can be sent again, in any later turn: one
