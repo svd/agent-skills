@@ -54,6 +54,8 @@ export type Condition = {
   limit: LimitInfo | null
   // The value rests on a window read as rolled over (for limit.any, either window).
   estimated: boolean
+  // A /ctx-guard wake's window reports a later reset time than when the command ran: a new window, so it lets go.
+  reset?: true
 }
 
 // What a note, toast or deny reason needs about a fired trigger.
@@ -229,6 +231,19 @@ export const holdsBelow = (metric: Metric): boolean => AT_OR_BELOW.has(metric)
 // changes once made, so the memo never shows.
 const conditionMemo = new WeakMap<Metrics, WeakMap<Trigger, readonly Condition[]>>()
 
+// A /ctx-guard wake's brake (wakeTrigger): `resetSince` is the reset time its window read when
+// the command ran, in ms; absent when it read none. Outside `when`, so hold matching ignores it.
+type WakeBrake = Trigger & { readonly resetSince?: number }
+
+// A reset time read this much later is the same one, read off by clock skew or rounding.
+const RESET_SLACK_MS = 60 * 1000
+
+// Whether `limit` is a newer window than the one whose reset time was `since`.
+const resetAfter = (since: number | undefined, limit: LimitInfo | null): boolean => {
+  const at = limit?.resetsAt ? Date.parse(limit.resetsAt) : Number.NaN
+  return since !== undefined && Number.isFinite(at) && at > since + RESET_SLACK_MS
+}
+
 /** Each metric of the trigger's AND with its live value. */
 export function conditions(trigger: Trigger, m: Metrics): readonly Condition[] {
   let byTrigger = conditionMemo.get(m)
@@ -244,9 +259,10 @@ export function conditions(trigger: Trigger, m: Metrics): readonly Condition[] {
     if (!threshold) continue
     const limit = limitFor(metric, m)
     const value = valueOf(metric, threshold, m, limit)
-    const holds = value !== null && (holdsBelow(metric) ? value - EPS <= threshold.value : value + EPS >= threshold.value)
+    const reset = value !== null && resetAfter((trigger as WakeBrake).resetSince, limit)
+    const holds = !reset && value !== null && (holdsBelow(metric) ? value - EPS <= threshold.value : value + EPS >= threshold.value)
     const estimated = metric === 'limit.any' ? Boolean(m.limits.five_hour?.estimated || m.limits.seven_day?.estimated) : limit?.estimated === true
-    out.push({ metric, threshold, value, holds, limit, estimated })
+    out.push({ metric, threshold, value, holds, limit, estimated, ...(reset ? { reset: true as const } : {}) })
   }
   byTrigger.set(trigger, out)
   return out
@@ -619,12 +635,14 @@ export const WAKE_ID = '/ctx-guard wake'
 
 /**
  * The brake a /ctx-guard wake stands for: the window's usage at or above its
- * figure when the command ran, which only a reset brings below. It denies
- * nothing, and its lift is one wake prompt.
+ * figure when the command ran, until the window reports a later reset time
+ * than it did then (a new window, whatever its usage). When either side has
+ * no reset time, only usage below that figure lets go. It denies nothing, and its lift is one wake prompt.
  */
-export function wakeTrigger(w: ManualWake): Trigger {
+export function wakeTrigger(w: ManualWake): WakeBrake {
   const when = { ...emptyWhen(), [`limit.${w.window}`]: { kind: 'percent', value: w.pct } }
-  return { id: WAKE_ID, when, do: [], level: null, message: null, times: null, lift: { do: ['prompt'], times: 1, message: null } }
+  const since = w.resetsAt ? Date.parse(w.resetsAt) : Number.NaN
+  return { id: WAKE_ID, when, do: [], level: null, message: null, times: null, lift: { do: ['prompt'], times: 1, message: null }, ...(Number.isFinite(since) ? { resetSince: since } : {}) }
 }
 
 /** A /ctx-guard wake's new hold: holding, and touched by the operator who asked for it. */

@@ -239,8 +239,17 @@ test('/ctx-guard wake with blocking off still wakes', { options: { blocking: fal
   expect(wakes(w).length).toBe(1)
 })
 
-test('/ctx-guard wake: the check finds the window not reset yet, so the wake waits for the next reset', async ($, on) => {
-  const { w, clock, forks } = await lead($, on, 60, [fiveAt(70, NOW + 4 * HOUR)])
+test('/ctx-guard wake: a new window already at or over the usage it was set at is the reset, and the wake prompt goes', async ($, on) => {
+  const { w, clock, forks } = await lead($, on, 6, [fiveAt(8, NOW + 6 * HOUR)])
+  await ctxGuard($, 'wake 5h')
+  await clock.advance(PAST_RESET)
+  expect(forks.length).toBe(1)
+  expect(wakes(w)).toEqual([expect.stringContaining('/ctx-guard wake to start once the usage window reset, and the 5-hour usage window reset.')])
+  expect(await ctxGuard($, '')).not.toContain('wake:')
+})
+
+test('/ctx-guard wake: the check finds the window with no reset time still at its usage, so the wake waits for the next reset', async ($, on) => {
+  const { w, clock, forks } = await lead($, on, 60, [{ kind: 'five_hour', percentUsed: 70 }])
   await ctxGuard($, 'wake 5h')
   await clock.advance(PAST_RESET)
   expect([forks.length, wakes(w).length]).toEqual([1, 0])

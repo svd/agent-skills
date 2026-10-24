@@ -433,8 +433,11 @@ and no config. It runs at once, with no model turn, and sets a hold of its own o
 (`5h` the five-hour window, `7d` the weekly one) for the session's role. Its answer says when the
 window resets, when that is known, and names a gate that is closed now.
 
-The hold holds while the window's usage is at least what it was when the command ran, which only a
-reset brings below; it denies no tool. It is refused with no role, with no figures for the window
+The hold holds while the window's usage is at least what it was when the command ran, until the
+window reports a later reset time than it did then: that is a new window, whatever its usage, so
+other sessions that already spent it past that figure do not hold the wake for another window.
+With no reset time to compare (a report without one), only usage below that figure lets go. It
+denies no tool. It is refused with no role, with no figures for the window
 yet, with a window that already reads as reset, and below 5 % (a reset from there frees next to
 nothing, and a fresh window may read that much once the lift check's request lands). A second
 `/ctx-guard wake` replaces the first.
@@ -444,8 +447,9 @@ rules 1 and 2 of [Waking the session](#waking-the-session) do not apply to it. E
 does: the gates (trust, `autoActions`, no pause) turn the wake into a `notify` with its reason,
 it waits for an idle moment and for other lift work, the lift check reads fresh usage, a failed
 check stalls it with the failed-checks `notify`, and a refused prompt is tried three times. It
-makes one wake attempt. The lift check is what confirms the reset: on fresh figures still at or
-over the hold's usage, the hold goes back to holding and waits for the window's next reset.
+makes one wake attempt. The lift check is what confirms the reset: on fresh figures of the same
+window (no later reset time) still at or over the hold's usage, the hold goes back to holding and
+waits for the window's next reset.
 
 Once the reset is confirmed, the wake prompt goes as ctx-guard's own:
 

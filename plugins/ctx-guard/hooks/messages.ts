@@ -474,7 +474,7 @@ export function liftReason(trigger: Trigger, m: Metrics, window: string | null =
     kind = isKind(window) ? window : (rolled ?? kind)
   }
   const name = kind ? windowName(kind) : null
-  if (kind && m.limits[kind]?.estimated) return `the ${name} usage window reset`
+  if (kind && (m.limits[kind]?.estimated || c.reset)) return `the ${name} usage window reset`
   if (isResetsIn(c.metric)) return `the ${name ? `${name} ` : ''}reset is less than ${humanQuantity(c.threshold)} away`
   return `${name ? `${name} usage` : 'usage'} is below ${humanQuantity(c.threshold)}`
 }

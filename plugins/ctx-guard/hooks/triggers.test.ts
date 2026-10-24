@@ -26,10 +26,13 @@ import {
   toolLiftsIn,
   toolsFree,
   triggersFor,
+  WAKE_ID,
+  wakeHold,
+  wakeTrigger,
   whenState,
 } from './triggers'
 import type { Metrics } from './triggers'
-import type { Config, Hold, Marks, Trigger } from '../types'
+import type { Config, Hold, ManualWake, Marks, Trigger } from '../types'
 
 function configWith(triggers: unknown[]): Config {
   const r = validate({ version: 1, roles: { lead: { triggers } } })
@@ -934,6 +937,24 @@ describe('holds and lifts', () => {
     const both = week(75, 5 * D)
     expect(blockedBy('w60', ['Agent'], t, both)).toBe('w70')
     expect(toolsFree(t[0] as Trigger, t, week(50, 5 * D))).toBe(true)
+  })
+
+  test('a /ctx-guard wake lets go on a later reset time whatever the usage, else on usage below its figure', () => {
+    const five = (pct: number, resetsAt: number | null, now = T0 + 2 * H): Metrics => m({ now, limits: { five_hour: { pct, resetsAt: resetsAt === null ? null : iso(resetsAt) }, seven_day: null } })
+    const w: ManualWake = { window: 'five_hour', pct: 6, text: null, resetsAt: iso(T0 + H) }
+    const prev = { [WAKE_ID]: wakeHold(w, T0) }
+    // A new window already at 7 %: its later reset time is the reset.
+    const fresh = five(7, T0 + 6 * H)
+    expect(whenState(wakeTrigger(w), fresh)).toBe(false)
+    expect(stepHolds(prev, [], fresh, on).lifted).toEqual([WAKE_ID])
+    // The same window at 7 %, or a reset time read a few seconds off: still held.
+    expect(stepHolds(prev, [], five(7, T0 + H, T0 + H / 2), on).holds[WAKE_ID]?.phase).toBe('holding')
+    expect(stepHolds(prev, [], five(7, T0 + H + 30_000, T0 + H / 2), on).holds[WAKE_ID]?.phase).toBe('holding')
+    // A wake stored with no reset time (the older format) or a report with none: the usage decides.
+    const old = { [WAKE_ID]: wakeHold({ ...w, resetsAt: null }, T0) }
+    expect(stepHolds(old, [], fresh, on).holds[WAKE_ID]?.phase).toBe('holding')
+    expect(stepHolds(old, [], five(5, T0 + 6 * H), on).lifted).toEqual([WAKE_ID])
+    expect(stepHolds(prev, [], five(7, null), on).holds[WAKE_ID]?.phase).toBe('holding')
   })
 })
 
