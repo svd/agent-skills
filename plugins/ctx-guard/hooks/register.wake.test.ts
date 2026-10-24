@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine, MockClock, MockSession } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { NOW, HOUR, MIN, newWorld, world, writeConfig, start, ctxGuard, turn, mainTurnEnd } from './register.fixtures'
+import { NOW, HOUR, MIN, newWorld, world, writeConfig, start, ctxGuard, turn, mainTurnEnd, run, DENY_READS } from './register.fixtures'
 import type { Limit, World } from './register.fixtures'
 
 // ---- /ctx-guard wake: a wake the operator sets for a usage window's reset ----------
@@ -221,6 +221,36 @@ test('/ctx-guard wake survives a /clear and a reload', async ($, on) => {
   await ctxGuard($, 'reload')
   await clock.advance(PAST_RESET)
   expect(wakes(w).length).toBe(1)
+})
+
+test('/ctx-guard wake: a session start that cannot read $.state leaves the stored wake; a wake set before the next read is refused', { plugins: [DENY_READS] }, async ($, on) => {
+  const { w, clock } = await lead($, on)
+  await ctxGuard($, 'wake 5h')
+  // The session ends and a new one starts in this process: its memory is empty, and $.state cannot be read.
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  const refused = await ctxGuard($, 'wake 7d')
+  await run($, 'allow-reads')
+  expect(await ctxGuard($, '')).toContain('wake: after the 5-hour reset')
+  await clock.advance(PAST_RESET)
+  expect(wakes(w).length).toBe(1)
+  expect(refused).toBe('[ctx-guard] the stored state could not be read, so a wake set before is unknown; nothing changed. Try again.')
+})
+
+test('/ctx-guard wake: a prompt typed while $.state cannot be read cancels the stored wake once a hook reads it', { plugins: [DENY_READS] }, async ($, on) => {
+  const { w, clock, forks } = await lead($, on)
+  await ctxGuard($, 'wake 5h')
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  await $.prompt.submit({ text: 'never mind, I am here', origin: { kind: 'composer' } } as never)
+  expect(w.toasts.filter(t => t.includes('cancelled'))).toEqual([])
+  await run($, 'allow-reads')
+  await clock.advance(PAST_RESET)
+  expect(w.toasts).toContain('ctx-guard: the wake after the 5-hour reset is cancelled: you are back.')
+  expect([forks.length, wakes(w).length]).toEqual([0, 0])
+  expect(await ctxGuard($, '')).not.toContain('wake:')
 })
 
 test('/ctx-guard wake: a role change drops it, with a toast; the same role resolved again keeps it', async ($, on) => {

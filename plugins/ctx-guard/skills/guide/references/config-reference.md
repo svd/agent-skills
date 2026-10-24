@@ -440,7 +440,8 @@ With no reset time to compare (a report without one), only usage below that figu
 denies no tool. It is refused when ctx-guard is not active, with no role, with no figures for
 the window yet, with a window that already reads as reset, and below 5 % (a reset from there
 frees next to nothing, and a fresh window may read that much once the lift check's request
-lands). A second `/ctx-guard wake` replaces the first.
+lands). It and `/ctx-guard wake off` are also refused while ctx-guard cannot read its stored
+state, since a wake set before is unknown then. A second `/ctx-guard wake` replaces the first.
 
 The operator asked for the wake, so the hold counts as touched by them when the command ran, and
 rules 1 and 2 of [Waking the session](#waking-the-session) do not apply to it. Every other rule

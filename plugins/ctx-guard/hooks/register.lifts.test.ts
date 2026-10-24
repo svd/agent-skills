@@ -39,6 +39,7 @@ import {
   ownPrompts,
   compacts,
   WIPE,
+  DENY_READS,
 } from './register.fixtures'
 import type {
   Limit,
@@ -150,6 +151,22 @@ test('lift: a refusal another trigger made still touches the hold', async ($, on
   expect(await agentDenied($)).toContain('trigger "cap"')
   await mainTurnEnd($, clock)
   await clock.advance(PAST_RESET)
+  expect(wakePrompts(w).length).toBe(1)
+})
+
+test('lift: a session start that cannot read $.state leaves the stored hold; once read, the touched brake still wakes at the reset', { plugins: [DENY_READS] }, async ($, on) => {
+  const w = brakeWorld()
+  const { clock, forks } = await braked($, on, w)
+  await touch($, clock)
+  // The session ends and a new one starts in this process: its memory is empty, and $.state cannot be read.
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  await run($, 'allow-reads')
+  // A turn end after the touch: the lift counts the stored touch, not the brake's new note.
+  await mainTurnEnd($, clock)
+  await clock.advance(PAST_RESET)
+  expect(forks).toEqual(['Reply with OK.'])
   expect(wakePrompts(w).length).toBe(1)
 })
 

@@ -18,6 +18,7 @@ import {
   LEAD_SOFT,
   run,
   WIPE,
+  DENY_READS,
   wipeState,
   turn,
   MIN,
@@ -169,23 +170,6 @@ test('a session start fills memory from $.state; until then memory stands', { pl
   await start($)
   expect(await ctxGuard($, '')).toContain('ctx-guard: paused for 2h')
 })
-
-// Refuses every read of ctx-guard's $.state from /deny-reads to /allow-reads, as a failing host would.
-const DENY_READS: Plugin = {
-  name: 'deny-reads',
-  register: on => {
-    let deny = false
-    on('command.run', { command: 'deny-reads' }, () => {
-      deny = true
-      return { text: '' }
-    })
-    on('command.run', { command: 'allow-reads' }, () => {
-      deny = false
-      return { text: '' }
-    })
-    on('state.get', { plugin: 'ctx-guard' }, async ($, e, next) => (deny ? { deny: 'state unreadable' } : next(e)))
-  },
-}
 
 test('a session end other than /clear forgets the session: no role claim or pause reaches the next one', { plugins: [WIPE, DENY_READS] }, async ($, on) => {
   const w = newWorld()

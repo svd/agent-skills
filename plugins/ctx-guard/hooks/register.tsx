@@ -345,6 +345,8 @@ type Mod = {
   compactAfterLift: number | null
   // The last reading showed a usage window (a subscription); null before any reading.
   subscribed: boolean | null
+  // Operator input while the lifts were unread: applied to them once a hook reads them.
+  operatorOwed: OperatorInput | null
 }
 
 const fresh = (): Mod => ({
@@ -399,6 +401,7 @@ const fresh = (): Mod => ({
   deciding: false,
   compactAfterLift: null,
   subscribed: null,
+  operatorOwed: null,
 })
 
 let mod: Mod = fresh()
@@ -671,7 +674,7 @@ function flush($: EngineInterface): void {
   for (const key of Object.keys(mem) as Key[]) void persist($, key, mem[key])
 }
 
-const needsReady = (): boolean => !hydrated || flushOwed || recoverOwed
+const needsReady = (): boolean => !hydrated || flushOwed || recoverOwed || mod.operatorOwed !== null
 
 // First thing in every hook and timer: memory filled, and `$.state` rewritten if a /clear emptied it.
 async function ready($: EngineInterface): Promise<void> {
@@ -686,6 +689,11 @@ async function ready($: EngineInterface): Promise<void> {
     // The role now, for this hook; the rest off its path, since a hook may run inside the evaluation chain.
     await quietly(() => resolveNow($))
     $.clock.after(0, () => void quietly(() => timed($, () => fromMemory($))))
+  }
+  const owed = mod.operatorOwed
+  if (owed && !liftsUnread()) {
+    mod.operatorOwed = null
+    await quietly(() => operatorOnLifts($, owed))
   }
 }
 
@@ -2411,8 +2419,12 @@ type LiftCheck = 'fresh' | 'failed'
 
 const liftsNow = (): Lifts => liftsFor(mem.lifts, mod.role.role)
 
-// Read-modify-write on memory; nothing is written when nothing changed.
+// `$.state` could not be read and this copy holds no lifts of its own: the stored ones are unknown, so none are written over them.
+const liftsUnread = (): boolean => !hydrated && mem.lifts === null
+
+// Read-modify-write on memory; nothing is written when nothing changed, or while the lifts are unread.
 async function putLifts($: EngineInterface, fn: (l: Lifts) => Lifts): Promise<void> {
+  if (liftsUnread()) return
   const cur = liftsNow()
   const next = fn(cur)
   if (JSON.stringify(next) !== JSON.stringify(cur)) await put($, 'lifts', next)
@@ -2822,19 +2834,32 @@ const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guar
  * leaves the wake (keepsWake) leaves its waiting prompt too.
  */
 async function onOperator($: EngineInterface, command: string | null, origin: string | undefined): Promise<void> {
-  if (!active() || mod.role.role === null || !liftsOn()) return
+  if (!active() || mod.role.role === null) return
   const restart = command !== null && mod.eff !== null && roleForCommand(mod.eff.config, command) !== null
   const keeps = keepsWake(command, origin !== undefined && isTypedPrompt({ origin: { kind: origin } }), restart)
-  if (wakeSet() && !keeps) {
+  const input: OperatorInput = { at: await $.clock.now(), keeps, clear: command === 'clear' }
+  // The stored lifts are unknown: the input waits for a hook that reads them, and one that cancels the wake still does.
+  if (liftsUnread()) {
+    const prev = mod.operatorOwed
+    mod.operatorOwed = { ...input, keeps: keeps && (prev?.keeps ?? true) }
+    return
+  }
+  await operatorOnLifts($, input)
+}
+
+type OperatorInput = { at: number; keeps: boolean; clear: boolean }
+
+async function operatorOnLifts($: EngineInterface, input: OperatorInput): Promise<void> {
+  if (!active() || mod.role.role === null || !liftsOn()) return
+  if (wakeSet() && !input.keeps) {
     const w = liftsNow().holds[WAKE_ID]?.manual
     await dropWake($)
     if (w) $.ui.toast(wakeCancelledText(w.window, 'back'))
   }
   if (!liftsOn()) return
-  const now = await $.clock.now()
   const pending = liftsNow().pending
-  await putLifts($, l => ({ ...l, operatorAt: now, attempts: {} }))
-  if (pending && command !== 'clear' && !(keeps && pending.triggerId === WAKE_ID)) $.clock.after(0, () => void serial(() => timed($, () => endPending($, null, null, true))))
+  await putLifts($, l => ({ ...l, operatorAt: input.at, attempts: {} }))
+  if (pending && !input.clear && !(input.keeps && pending.triggerId === WAKE_ID)) $.clock.after(0, () => void serial(() => timed($, () => endPending($, null, null, true))))
 }
 
 // The /ctx-guard wake gone, with its waiting prompt.
@@ -3492,6 +3517,7 @@ async function pauseCommand($: EngineInterface, arg: string): Promise<string> {
 async function wakeCommand($: EngineInterface, window: LimitKind | null, text: string | null): Promise<string> {
   if (!active()) return `${PREFIX} ${NOT_ACTIVE}. Nothing changed.`
   if (mod.role.role === null) return `${PREFIX} this session has no role, so nothing can wake it; nothing changed.`
+  if (liftsUnread()) return `${PREFIX} the stored state could not be read, so a wake set before is unknown; nothing changed. Try again.`
   if (window === null) {
     if (!wakeSet()) return `${PREFIX} no wake is set.`
     await dropWake($)

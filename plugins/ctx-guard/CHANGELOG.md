@@ -11,9 +11,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
   by default; needs `/ctx-guard trust`.
 - `/ctx-guard wake <5h|7d> [text]`: the operator asks the session to start work once that usage
   window resets. It sets a hold of the session's role on the window's usage at the time, refused
-  below 5 %, and answers with the reset time. The hold lets go when the window reports a later
-  reset time than it did then (a new window, whatever its usage), or, with no reset time to
-  compare, when its usage falls below that figure. At the reset the lift check reads fresh usage
+  below 5 % and while ctx-guard cannot read its stored state, and answers with the reset time.
+  The hold lets go when the window reports a later reset time than it did then (a new window,
+  whatever its usage), or, with no reset time to compare, when its usage falls below that figure. At the reset the lift check reads fresh usage
   and the wake prompt goes, with the operator's text or one that asks the model to check where the
   work stands and carry on. The gates of a lift's `prompt` apply (trust, `autoActions`, no
   pause), with a `notify` when one is closed. Input the operator types first cancels it with a
@@ -60,6 +60,11 @@ All notable changes to the `ctx-guard` plugin are documented here.
   the current context, and `{limit}` and `{resetsIn}` from the fuller usage window, the one
   `limit.any` reads; they read `unknown` before. `{threshold}` reads `unknown` there: no
   trigger fired the note.
+- A session start that cannot read ctx-guard's stored state leaves the stored lifts as they are:
+  until a later hook reads them, no hold, lift attempt or wake prompt is written over them, so a
+  brake the model was told about still wakes the session once its window resets. Operator input
+  in that time is applied once they are read: it counts as input after the brake, and input the
+  person typed cancels a stored `/ctx-guard wake` with its toast.
 
 ## [0.5.0] - 2026-10-21
 

@@ -364,6 +364,23 @@ export function stepBottom(on: On, tokens: () => number, model: () => string = (
 // A test plugin's command, run as a plugin would: it is no operator input.
 export const run = ($: Engine, command: string) => $.command.run({ command, args: '', origin: { kind: 'plugin', name: 'test' } as never, presentation: { isFullscreen: false, columns: 120 } })
 
+// Refuses every read of ctx-guard's $.state from /deny-reads to /allow-reads, as a failing host would.
+export const DENY_READS: Plugin = {
+  name: 'deny-reads',
+  register: on => {
+    let deny = false
+    on('command.run', { command: 'deny-reads' }, () => {
+      deny = true
+      return { text: '' }
+    })
+    on('command.run', { command: 'allow-reads' }, () => {
+      deny = false
+      return { text: '' }
+    })
+    on('state.get', { plugin: 'ctx-guard' }, async ($, e, next) => (deny ? { deny: 'state unreadable' } : next(e)))
+  },
+}
+
 // A test plugin's register sees nothing of this file's scope: what it needs is written inside it.
 // The engine empties ctx-guard's $.state right after a /clear's session.end; the kit
 // does not, so this plugin plays the wipe: after /wipe every key reads as never
