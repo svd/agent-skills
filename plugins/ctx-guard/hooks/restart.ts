@@ -59,6 +59,17 @@ export function isReadyAnswer(answer: unknown, token: string): boolean {
   return new RegExp(`^[^\\p{L}\\p{N}]*${escapeRegExp(token)}[^\\p{L}\\p{N}]*$`, 'u').test(last.trim())
 }
 
+// Where a prompt the person typed comes from: the prompt box, or a remote client of this session.
+const TYPED_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge'])
+
+/**
+ * A prompt the person typed: from the prompt box or a remote client, shown as
+ * typed, and not /compact. A main turn it starts can end the /ctx-guard:clear ask.
+ */
+export function isTypedPrompt(e: { origin?: { kind: string }; command?: { name: string }; isMeta?: true }): boolean {
+  return e.origin !== undefined && TYPED_ORIGINS.has(e.origin.kind) && e.isMeta !== true && e.command?.name !== 'compact'
+}
+
 // ---- stamps ------------------------------------------------------------------
 
 // A role's last restart: when, and which lease id wrote it (the tie-break).

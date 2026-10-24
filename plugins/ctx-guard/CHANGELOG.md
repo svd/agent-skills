@@ -8,11 +8,12 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 - The `/ctx-guard:clear` ask holds for the session's role until a restart, a `/clear`, a role
   claim (`/ctx-guard role`, a typed resume or restart command) or a closing turn: a main-loop turn
-  that started after the command, not on ctx-guard's own prompt, and ended with no ready token. A
-  turn that ends on the token keeps it, so a token refused for now (agents still running,
-  `selfGap`, a failing ready check) can be sent again. A spell with no role, a peer session's
-  message, a prompt typed meanwhile or a subagent's start leaves it. In `manual` mode no ask is
-  kept.
+  on a prompt the person typed (origin `composer` or `bridge`, `/compact` aside) that started
+  after the command and ended on an answer with no ready token. A turn that ends on the token
+  keeps it, so a token refused for now (agents still running, `selfGap`, a failing ready check)
+  can be sent again. A spell with no role, a turn on a peer session's message or another prompt
+  not typed by the person, an interrupted turn, a prompt typed into a running turn or a
+  subagent's start leaves it. In `manual` mode no ask is kept.
 
 ### Fixed
 

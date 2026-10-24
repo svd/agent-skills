@@ -508,15 +508,22 @@ of these hold:
 2. No restart and no `/clear` (ctx-guard's or the operator's) came since the command.
 3. No role claim came since the command: `/ctx-guard role`, or a typed `/ctx-guard:resume` or
    restart command that claims a role.
-4. No closing turn came since the command. A closing turn is a main-loop turn that started after
-   the command, was not on ctx-guard's own prompt, and ended with no ready token. A turn whose
-   start ctx-guard did not see is not one.
+4. No closing turn came since the command. A closing turn is a main-loop turn that:
+   - started on a prompt the person typed: in the prompt box or from a remote client of the
+     session (origin `composer` or `bridge`), `/compact` aside;
+   - started after the command, not in the same millisecond;
+   - ended on an answer: a turn the operator interrupted, or one an error or a refusal ended, is
+     not one;
+   - and did not end on the ready token.
+
+   A turn whose start ctx-guard did not see is not one.
 
 A turn that ends on the token keeps the ask, so a token refused for now (agents or background
 tasks still running, `selfGap`, a failing ready check) can be sent again. So does a token that
 ctx-guard does not act on (a pause, `autoActions` off): the operator asked for that restart, so a
-token after the pause still skips `restart.minContext`. A peer session's message, a prompt typed
-meanwhile or a subagent's start leaves the ask. In `manual` mode the note asks for no token, and
+token after the pause still skips `restart.minContext`. A turn on a peer session's message, a
+coordinator's, a channel's, an SDK prompt or ctx-guard's own prompt leaves the ask, as do a prompt
+typed into a running turn and a subagent's start. In `manual` mode the note asks for no token, and
 no ask is kept.
 
 For role `main` with `handoff.instructions` "Sections: Goal, State, Next action.", no

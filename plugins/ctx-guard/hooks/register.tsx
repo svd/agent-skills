@@ -123,6 +123,7 @@ import {
   compactGate,
   compactRequest,
   isReadyAnswer,
+  isTypedPrompt,
   isUnder,
   nextLastCompact,
   parseStamp,
@@ -318,6 +319,8 @@ type Mod = {
   ownText: string | null
   // The next main turn answers ctx-guard's own prompt.
   ownPrompt: boolean
+  // The next main turn answers a prompt the person typed (isTypedPrompt).
+  typedPrompt: boolean
   // That prompt is a lift's wake prompt.
   wakeNext: boolean
   // The holds a lift check's fork covers while it is out; null with none.
@@ -377,6 +380,7 @@ const fresh = (): Mod => ({
   compactAfter: null,
   ownText: null,
   ownPrompt: false,
+  typedPrompt: false,
   wakeNext: false,
   checking: null,
   liftForking: null,
@@ -432,6 +436,7 @@ function asActivity(v: unknown): Activity {
     mainStartAt: num(o.mainStartAt),
     lastClosingStartAt: num(o.lastClosingStartAt),
     ownTurn: o.ownTurn === true,
+    typedTurn: o.typedTurn === true,
     wokenTurn: o.wokenTurn === true,
     lastWokenEndAt: num(o.lastWokenEndAt),
     lastTurnEndAt: num(o.lastTurnEndAt),
@@ -1571,15 +1576,16 @@ async function contextFact($: EngineInterface, role: string, spec: RoleSpec): Pr
 /**
  * The operator's /ctx-guard:clear holds: it was for the session's role, and
  * since it came no restart, no /clear, no role claim (/ctx-guard role, or a
- * typed resume or restart command) and no closing main turn (one that started
- * after it, not on ctx-guard's own prompt, and ended with no ready token).
+ * typed resume or restart command) and no closing main turn (one on a typed
+ * prompt that started after it and ended on an answer with no ready token).
  */
 function clearAsked(): boolean {
   const ask = mem.clearAsk
   const role = mod.role.role
   if (ask === null || role === null || ask.role !== role) return false
   const since = (at: number | null | undefined): boolean => typeof at === 'number' && at >= ask.at
-  return !since(mem.lastRestartAt) && !since(mem.lastClearAt) && !since(mem.roleClaim?.at) && !since(activity().lastClosingStartAt)
+  const after = (at: number | null): boolean => at !== null && at > ask.at
+  return !since(mem.lastRestartAt) && !since(mem.lastClearAt) && !since(mem.roleClaim?.at) && !after(activity().lastClosingStartAt)
 }
 
 /**
@@ -3109,11 +3115,12 @@ async function onClear($: EngineInterface): Promise<void> {
   // The context starts over and is unknown until the next response; the usage windows go on.
   const reading: MainReading = { tokens: null, at: now }
   mod.lastMain = reading
-  await patchActivity($, a => ({ ...a, mainTurnAt: null, mainStartAt: null, lastMain: reading }))
+  await patchActivity($, a => ({ ...a, mainTurnAt: null, mainStartAt: null, typedTurn: false, lastMain: reading }))
   // The next request writes a new prefix, in a new transcript that may tell the TTL.
   mod.transcriptPath = null
   // A ping in flight was for the old prefix; a pending retry is for the old period.
   mod.clears += 1
+  mod.typedPrompt = false
   mod.retry = null
   mod.compactAfter = null
   // A lift check out was for the old context: its answer is dropped, and the holds are judged again.
@@ -3171,6 +3178,7 @@ async function undoHeldStamp($: EngineInterface): Promise<void> {
 async function submitOwnPrompt($: EngineInterface, text: string): Promise<PromptSubmitResult> {
   mod.ownText = text
   mod.ownPrompt = true
+  mod.typedPrompt = false
   try {
     const r = await $.prompt.submit({ text })
     if (r.drop !== undefined) mod.ownPrompt = mod.wakeNext = false
@@ -3184,9 +3192,12 @@ async function submitOwnPrompt($: EngineInterface, text: string): Promise<Prompt
 }
 
 // A prompt the hook sees keeps the flag only when it is the one ctx-guard is
-// submitting; its resume command and every other prompt clear it.
+// submitting; its resume command and every other prompt clear it. The last
+// prompt seen also says whether the next main turn answers a typed one; one
+// delivered into a running turn is that turn's, not the next one's.
 function noteOwnPrompt(e: PromptSubmitInput): void {
   mod.ownPrompt = isOwnPrompt(e, mod.ownText)
+  mod.typedPrompt = e.turnId === undefined && isTypedPrompt(e)
 }
 
 // Every turn start, a subagent's too, marks a turn running; a main one also takes the own-prompt flag.
@@ -3194,21 +3205,24 @@ async function onTurnStart($: EngineInterface, main: boolean): Promise<void> {
   const now = await $.clock.now()
   const own = main && mod.ownPrompt
   const woken = own && mod.wakeNext
+  const typed = main && mod.typedPrompt
   if (main) {
     mod.ownPrompt = false
     mod.wakeNext = false
+    mod.typedPrompt = false
   }
-  await patchActivity($, a => ({ ...a, mainTurnAt: now, ...(main ? { mainStartAt: now, ownTurn: own, wokenTurn: woken } : {}) }))
+  await patchActivity($, a => ({ ...a, mainTurnAt: now, ...(main ? { mainStartAt: now, ownTurn: own, wokenTurn: woken, typedTurn: typed } : {}) }))
 }
 
 // The end of the operator's turn starts a new idle period; ctx-guard's own
 // prompt turn is not the operator back, so idle and the period go on. A
 // woken turn's end is where idle counts from; every main turn's end is one
-// a lift's wake rule reads.
-async function onMainTurnEnd($: EngineInterface, token: boolean): Promise<void> {
+// a lift's wake rule reads. A typed prompt's turn that ends on an answer with
+// no ready token closes: it ends a /ctx-guard:clear ask from before its start.
+async function onMainTurnEnd($: EngineInterface, token: boolean, answered: boolean): Promise<void> {
   const now = await $.clock.now()
-  const { ownTurn: own, wokenTurn: woken, mainStartAt } = activity()
-  const closing = !own && !token && mainStartAt !== null
+  const { ownTurn: own, wokenTurn: woken, typedTurn: typed, mainStartAt } = activity()
+  const closing = typed && answered && !token && mainStartAt !== null
   await patchActivity($, a => ({
     ...a,
     mainTurnAt: null,
@@ -3216,6 +3230,7 @@ async function onMainTurnEnd($: EngineInterface, token: boolean): Promise<void> 
     ...(closing ? { lastClosingStartAt: mainStartAt } : {}),
     ownTurn: false,
     wokenTurn: false,
+    typedTurn: false,
     lastTurnEndAt: now,
     ...(own ? {} : { lastMainEndAt: now }),
     ...(woken ? { lastWokenEndAt: now } : {}),
@@ -3718,7 +3733,7 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Who sent the prompt the next main turn answers: ctx-guard itself, or anyone else.
+  // Who sent the prompt the next main turn answers: ctx-guard itself, the person typing, or anyone else.
   on('prompt.submit', async ($, e, next) => {
     await quietly(async () => noteOwnPrompt(e))
     // The operator's own input: it resets the wake count and steers past a pending wake.
@@ -3727,7 +3742,15 @@ export const register: Register = (on, options) => {
       if (needsReady()) await quietly(() => ready($))
       await quietly(() => onOperator($, e.command?.name ?? null))
     }
-    return next(e)
+    // A prompt dropped below, or one whose submission threw, starts no turn: the flag goes with it.
+    try {
+      const r = await next(e)
+      if (r.drop !== undefined) mod.typedPrompt = false
+      return r
+    } catch (err) {
+      mod.typedPrompt = false
+      throw err
+    }
   })
 
   // Mid-turn checks for the main loop, from each request's own usage. The
@@ -3779,7 +3802,7 @@ export const register: Register = (on, options) => {
     if (needsReady()) await quietly(() => ready($))
     if (e.agentId === undefined) {
       const token = tokenAnswer(e)
-      await quietly(() => onMainTurnEnd($, token))
+      await quietly(() => onMainTurnEnd($, token, e.reason === 'answer'))
       // Off the hook's path, as the transcript can be large; in the chain, so a /clear never lands mid-read.
       $.clock.after(0, () => void serial(() => timed($, () => detectTtl($))))
       let restarting = false

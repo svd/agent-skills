@@ -16,6 +16,7 @@ import {
   compactGate,
   compactRequest,
   isReadyAnswer,
+  isTypedPrompt,
   isUnder,
   nextLastCompact,
   parseStamp,
@@ -359,6 +360,23 @@ describe('verdict order and the check list', () => {
     const lines = checkLines(facts())
     expect(lines.map(l => l.code)).toEqual(REFUSAL_CODES.filter(c => c !== 'error'))
     expect(lines.at(-1)).toEqual({ code: 'race-lost', status: 'skip', text: 'judged after the stamp is written' })
+  })
+})
+
+describe('a typed prompt', () => {
+  test('from the prompt box or a remote client, a typed command too', () => {
+    expect(isTypedPrompt({ origin: { kind: 'composer' } })).toBe(true)
+    expect(isTypedPrompt({ origin: { kind: 'bridge' } })).toBe(true)
+    expect(isTypedPrompt({ origin: { kind: 'composer' }, command: { name: 'review' } })).toBe(true)
+  })
+
+  test('another origin, none, a meta prompt or /compact is not one', () => {
+    for (const kind of ['peer', 'coordinator', 'channel', 'slack-ping', 'sdk', 'ctx-guard', 'task-notification']) {
+      expect(isTypedPrompt({ origin: { kind } })).toBe(false)
+    }
+    expect(isTypedPrompt({})).toBe(false)
+    expect(isTypedPrompt({ origin: { kind: 'composer' }, isMeta: true })).toBe(false)
+    expect(isTypedPrompt({ origin: { kind: 'composer' }, command: { name: 'compact' } })).toBe(false)
   })
 })
 

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import type { Engine, MockClock, MockSession } from 'claude-code/testing'
+import type { Engine, MockClock, MockSession, Plugin } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import {
   NOW,
@@ -616,6 +616,7 @@ test('/ctx-guard:clear holds for one turn: a turn that ends with no token ends i
   const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
   const { clock, session } = await underMinimum($, on, w)
   await typedClear($)
+  await clock.advance(1000)
   await turn($, 'start')
   await ready($, clock, 'Still on it.')
   await turn($, 'start')
@@ -623,6 +624,138 @@ test('/ctx-guard:clear holds for one turn: a turn that ends with no token ends i
   expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
   expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
 })
+
+test('/ctx-guard:clear: a typed prompt\'s turn after the command that ends with no token ends the ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await clock.advance(1000)
+  await turn($, 'start')
+  await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+  await $.prompt.submit({ text: 'what now?', origin: { kind: 'bridge' } } as never)
+  await turn($, 'start')
+  await ready($, clock, 'Waiting on the build.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+})
+
+test('/ctx-guard:clear: a turn that starts in the command\'s millisecond does not end the ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await typedClear($)
+  await turn($, 'start')
+  await ready($, clock, 'Still on it.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+for (const [what, input] of [
+  ['a peer session\'s message', { text: 'from the reviewer', origin: { kind: 'peer' } }],
+  ['an SDK prompt', { text: 'next item', origin: { kind: 'sdk' } }],
+  ['a typed /compact', { text: '/compact', origin: { kind: 'composer' }, command: { name: 'compact', args: '' } }],
+  ['a prompt with no origin', { text: 'go on' }],
+] as const) {
+  test(`/ctx-guard:clear: a turn on ${what} that ends with no token keeps the ask`, async ($, on) => {
+    const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+    const { clock } = await underMinimum($, on, w)
+    await typedClear($)
+    await clock.advance(1000)
+    await turn($, 'start')
+    await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+    await $.prompt.submit({ ...input, turnId: 't1' } as never)
+    await turn($, 'start')
+    await ready($, clock, 'Waiting on the build.')
+    await turn($, 'start')
+    await ready($, clock)
+    expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+  })
+}
+
+test('/ctx-guard:clear: a typed prompt delivered into a running turn does not make the next turn typed', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await typedClear($)
+  await clock.advance(1000)
+  await turn($, 'start')
+  await $.prompt.submit({ text: 'and the docs', origin: { kind: 'composer' }, turnId: 't1' } as never)
+  await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+  await turn($, 'start')
+  await ready($, clock, 'Waiting on the build.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+// Drops every prompt below ctx-guard's hook.
+const DROP: Plugin = {
+  name: 'drop',
+  register: on => {
+    on('prompt.submit', async () => ({ drop: 'not now' }))
+  },
+}
+
+test('/ctx-guard:clear: a typed prompt another hook drops does not make the next turn typed', { plugins: [DROP] }, async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await clearRun($)
+  await clock.advance(1000)
+  await $.prompt.submit({ text: 'what now?', origin: { kind: 'composer' } } as never).catch(() => null)
+  await turn($, 'start')
+  await ready($, clock, 'Waiting on the build.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear: a typed prompt from before a /clear does not make a turn after it typed', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await $.prompt.submit({ text: 'one more thing', origin: { kind: 'composer' } } as never)
+  await $.command.run({ command: 'clear', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await clock.settle()
+  await measure($, w, 100_000)
+  await writeHandoff(w, clock)
+  await clearRun($)
+  await clock.advance(1000)
+  await turn($, 'start')
+  await ready($, clock, 'Waiting on the build.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(-2)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear: a turn whose prompt ctx-guard did not see, after a token refused for now, keeps the ask', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await typedClear($)
+  await clock.advance(1000)
+  await turn($, 'start')
+  await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+  await turn($, 'start')
+  await ready($, clock, 'Waiting on the build.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+for (const reason of ['aborted', 'error', 'refusal'] as const) {
+  test(`/ctx-guard:clear: a typed turn that ends ${reason === 'aborted' ? 'interrupted' : `on ${reason === 'error' ? 'an error' : 'a refusal'}`} keeps the ask`, async ($, on) => {
+    const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+    const { clock } = await underMinimum($, on, w)
+    await typedClear($)
+    await clock.advance(1000)
+    await turn($, 'start')
+    const extra = reason === 'refusal' ? { refusal: { category: 'cyber' } } : {}
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: reason === 'aborted', turnId: 't1', reason, ...extra } as never)
+    await clock.settle()
+    await turn($, 'start')
+    await ready($, clock)
+    expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+  })
+}
 
 test('/ctx-guard:clear typed during a turn: a subagent started after it leaves that turn the one before the ask', async ($, on) => {
   const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
