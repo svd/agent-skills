@@ -300,7 +300,10 @@ function varsOf(trigger: Trigger, cs: readonly Condition[], step: number, m: Met
   }
 }
 
-/** The figures of `m` as a context note's variables, with no trigger behind them (/ctx-guard:clear). */
+/**
+ * The figures of `m` as a context note's variables, with no trigger behind them
+ * (/ctx-guard:clear). The usage window is the one `limit.any` reads: the fuller one.
+ */
 export function readingVars(m: Metrics): FireVars {
   return {
     metric: 'context',
@@ -308,7 +311,7 @@ export function readingVars(m: Metrics): FireVars {
     tokens: m.tokens,
     percent: contextPercent(m),
     window: m.window,
-    limit: null,
+    limit: limitFor('limit.any', m),
     cost: m.cost,
     idleMs: m.idleMs,
     expiresIn: m.cache.expiresIn,

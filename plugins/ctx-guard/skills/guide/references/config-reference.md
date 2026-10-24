@@ -513,7 +513,7 @@ never file contents. A missing value reads `unknown`; an unknown `{name}` stays 
 | `{percent}` | `31%` | Fill as a percent of the window. |
 | `{threshold}` | `75%` | The threshold (or `every` step) that fired; `unknown` in the `/ctx-guard:clear` note, which no trigger fired. |
 | `{window}` | `1M` | The effective context window. |
-| `{limit}` | `5-hour 82%` | The usage window behind a limit metric. |
+| `{limit}` | `5-hour 82%` | The usage window behind a limit metric; in the `/ctx-guard:clear` note, the fuller window, as for `limit.any`. |
 | `{resetsIn}` | `2h10m` | Time until that window resets. |
 | `{handoffPath}` | `.ctx-guard/lead-handoff.md` | The role's handoff file. |
 | `{readyToken}` | `CTX-READY` | The ready token. |

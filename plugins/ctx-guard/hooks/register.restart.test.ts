@@ -999,11 +999,15 @@ test('/ctx-guard:clear in manual mode records no ask', async ($, on) => {
 test('/ctx-guard:clear fills notes.suffix from the live reading', async ($, on) => {
   const w = restartWorld({ commands: CLEAR_COMMANDS })
   const base = autoConfig()
-  const { clock } = await armed($, on, w, { ...base, roles: { ...base.roles, lead: { ...base.roles.lead, notes: { suffix: 'Context {tokens}, {percent} of {window}.' } } } })
+  const { clock } = await armed($, on, w, { ...base, roles: { ...base.roles, lead: { ...base.roles.lead, notes: { suffix: 'Context {tokens}, {percent} of {window}; usage {limit}, resets in {resetsIn}.' } } } })
+  w.limits = [
+    { kind: 'five_hour', percentUsed: 40, resetsAt: new Date(clock.now() + 60 * MIN).toISOString() },
+    { kind: 'seven_day', percentUsed: 70, resetsAt: new Date(clock.now() + 3 * 60 * MIN).toISOString() },
+  ]
   await measure($, w, 250_000)
   await clock.settle()
   await clearRun($)
-  expect(w.ran[0]).toEndWith('Context 250k, 25% of 1M.')
+  expect(w.ran[0]).toEndWith('Context 250k, 25% of 1M; usage weekly 70%, resets in 3h.')
 })
 
 test('/ctx-guard:clear in a copy that does not own /ctx-guard passes through untouched', async ($, on) => {

@@ -397,6 +397,16 @@ describe('clear note', () => {
     )
   })
 
+  test('the suffix reads {limit} and {resetsIn} from the live usage: the fuller window', () => {
+    const s = base({ mode: 'auto' }, 'At {limit}, resets in {resetsIn}.')
+    const text = (m: Metrics) => clearNoteText({ role: 'lead', spec: s, readyToken: 'R', vars: readingVars(m) })
+    expect(text(metrics())).toEndWith('At 5-hour 82%, resets in 2h10m.')
+    const weekly = { five_hour: { pct: 30, resetsAt: RESET }, seven_day: { pct: 70, resetsAt: new Date(NOW + 2 * 86_400_000).toISOString() } }
+    expect(text(metrics({ limits: weekly }))).toEndWith('At weekly 70%, resets in 2d.')
+    expect(text(metrics({ limits: { ...weekly, seven_day: { pct: 70, resetsAt: null } } }))).toEndWith('At weekly 70%, resets in unknown.')
+    expect(text(metrics({ limits: { five_hour: null, seven_day: null } }))).toEndWith('At unknown, resets in unknown.')
+  })
+
   test('the close is the stop-level context note\'s: the same tail and suffix', () => {
     const s = base({ mode: 'auto' }, 'Ping the peer ({role}).')
     const close = `${restartTail(s, 'lead', 'CTX-READY')} Ping the peer (lead).`

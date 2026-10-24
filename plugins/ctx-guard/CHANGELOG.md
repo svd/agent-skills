@@ -56,7 +56,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
   handoff and no ready token. A copy loaded fresh by a hot reload starts before it judges the
   command.
 - `notes.suffix` in the `/ctx-guard:clear` note fills `{tokens}`, `{percent}` and `{window}` from
-  the current context; they read `unknown` before. `{threshold}` reads `unknown` there: no
+  the current context, and `{limit}` and `{resetsIn}` from the fuller usage window, the one
+  `limit.any` reads; they read `unknown` before. `{threshold}` reads `unknown` there: no
   trigger fired the note.
 
 ## [0.5.0] - 2026-10-21
