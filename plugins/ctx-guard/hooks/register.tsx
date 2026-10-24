@@ -3988,6 +3988,17 @@ export const register: Register = (on, options) => {
     return r
   })
 
+  // Outermost of the command.run handlers, so it sees every answer, the refusals too. A
+  // command that answers with its own text starts no model turn: it clears only a typed
+  // mark raised while it ran, and a prompt typed before it keeps its own turn's mark.
+  // The matcher takes every command.
+  on('command.run', { command: /^/ }, async ($, e, next) => {
+    const marked = mod.typedPrompt
+    const r = await next(e)
+    if (r.text !== undefined && !marked) mod.typedPrompt = false
+    return r
+  })
+
   // A resume typed by the person claims its role= for a session with none.
   on('command.run', { command: 'ctx-guard:resume' }, async ($, e, next) => {
     if (needsReady()) await quietly(() => ready($))

@@ -234,7 +234,8 @@ export function world(on: On, w: World, env: Record<string, string> = {}): { clo
     const hold = w.hang[e.command] ?? 0
     if (hold > 0) await clock.sleep(hold)
     if (w.failCommand === e.command) throw new Error(`${e.command} refused`)
-    return { text: '' }
+    // The built-in local commands answer with text; a prompt command shows none.
+    return e.command === 'clear' || e.command === 'compact' ? { text: '' } : {}
   })
   on('process.run', async ($, e) => {
     w.processes.push([...e.argv])

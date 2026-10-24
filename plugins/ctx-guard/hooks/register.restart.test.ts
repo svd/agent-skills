@@ -759,6 +759,56 @@ test('/ctx-guard:clear: a turn whose prompt ctx-guard did not see, after a token
   expect(w.ran.slice(1)).toEqual(['clear', RESUME])
 })
 
+// A command that answers with its own text a minute on; a typed prompt is raised while it waits.
+// The engine answers such a command before it raises prompt.submit, so this guards the order only.
+const LOCAL: Plugin = {
+  name: 'local',
+  register: on => {
+    on('command.run', { command: 'local' }, async $ => {
+      await $.clock.sleep(60_000)
+      return { text: 'done here' }
+    })
+  },
+}
+
+test('/ctx-guard:clear: a typed prompt raised while a command answers with its own text does not make the next turn typed', { plugins: [LOCAL] }, async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await typedClear($)
+  await clock.advance(1000)
+  await turn($, 'start')
+  await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+  const local = $.command.run({ command: 'local', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  await clock.settle()
+  await $.prompt.submit({ text: 'what now?', origin: { kind: 'composer' } } as never)
+  await clock.advance(60_000)
+  expect((await local).text).toBe('done here')
+  await turn($, 'start')
+  await ready($, clock, 'Waiting on the build.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear: a typed prompt\'s turn that ends with no token ends the ask, though an immediate command answered before it started', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await clock.advance(1000)
+  await turn($, 'start')
+  await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+  await $.prompt.submit({ text: 'what now?', origin: { kind: 'composer' } } as never)
+  const status = await $.command.run({ command: 'ctx-guard', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  expect(typeof status.text).toBe('string')
+  await turn($, 'start')
+  await ready($, clock, 'Waiting on the build.')
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(w.ran.slice(1)).not.toContain('clear')
+  expect(w.ran.slice(1)).not.toContain(RESUME)
+})
+
 // A main turn that ends other than on an answer.
 async function cut($: Engine, clock: MockClock, reason: 'aborted' | 'error' | 'refusal' = 'aborted'): Promise<void> {
   const extra = reason === 'refusal' ? { refusal: { category: 'cyber' } } : {}
@@ -1015,7 +1065,7 @@ test('/ctx-guard:clear in a copy that does not own /ctx-guard passes through unt
   writeConfig(w, autoConfig())
   world(on, w, { CTX_GUARD_ROLE: 'lead' })
   await start($)
-  expect((await clearRun($, 'from the other copy')).text).toBe('')
+  expect((await clearRun($, 'from the other copy')).text).toBeUndefined()
   expect(w.ran).toEqual(['ctx-guard:clear from the other copy'])
 })
 
