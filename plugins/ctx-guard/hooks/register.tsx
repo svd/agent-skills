@@ -1661,7 +1661,7 @@ async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: st
     facts.commands = (await $.command.list()).map(c => c.name)
     facts.agents = await $.agent.list()
     facts.steps = await recentSteps($, now)
-    facts.background = blockingTasks(work().background, spec.restart.ignoreBackground ?? [])
+    facts.background = busyTasks(spec)
     facts.startedAt = (await $.session.usage()).startedAt
     facts.lastClearAt = mem.lastClearAt
     if (via === 'clear') {
@@ -1757,11 +1757,15 @@ async function quiet($: EngineInterface, tokenAt: number): Promise<Verdict> {
   })
 }
 
-// The last Stop's tasks that hold a restart or compact back, for the session's role (blockingTasks).
-function busyTasks(): BackgroundTask[] | null {
-  const role = mod.role.role
-  const spec = mod.eff && role !== null ? roleSpec(mod.eff.config, role) : null
+// The last Stop's tasks that hold a restart or compact back (blockingTasks), for `spec`: by default the session's role now.
+function busyTasks(spec: RoleSpec | null = sessionSpec()): BackgroundTask[] | null {
   return blockingTasks(work().background, spec?.restart.ignoreBackground ?? [])
+}
+
+// The session's role's spec now; null with no role or no config.
+function sessionSpec(): RoleSpec | null {
+  const role = mod.role.role
+  return mod.eff && role !== null ? roleSpec(mod.eff.config, role) : null
 }
 
 const settle = ($: EngineInterface, ms: number): Promise<void> =>
