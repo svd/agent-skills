@@ -1754,7 +1754,8 @@ async function judge($: EngineInterface, g: Gathered, spec: RoleSpec): Promise<V
 }
 
 // The ready checks can take minutes: just before the stamp and again before /clear, nothing new may have started.
-async function quiet($: EngineInterface, tokenAt: number): Promise<Verdict> {
+// Background tasks are judged by `spec`, the restart's own: a role or config change meanwhile does not move them.
+async function quiet($: EngineInterface, tokenAt: number, spec: RoleSpec): Promise<Verdict> {
   const now = await $.clock.now()
   const a = activity()
   return quietVerdict({
@@ -1763,19 +1764,14 @@ async function quiet($: EngineInterface, tokenAt: number): Promise<Verdict> {
     lastMainEndAt: a.lastMainEndAt,
     agents: await $.agent.list(),
     steps: await recentSteps($, now),
-    background: busyTasks(),
+    background: busyTasks(spec),
   })
 }
 
-// The last Stop's tasks that hold a restart or compact back (blockingTasks), for `spec`: by default the session's role now.
-function busyTasks(spec: RoleSpec | null = sessionSpec()): BackgroundTask[] | null {
-  return blockingTasks(work().background, spec?.restart.ignoreBackground ?? [])
-}
-
-// The session's role's spec now; null with no role or no config.
-function sessionSpec(): RoleSpec | null {
-  const role = mod.role.role
-  return mod.eff && role !== null ? roleSpec(mod.eff.config, role) : null
+// The last Stop's tasks that hold a restart or compact back (blockingTasks), for the spec the caller resolved.
+function busyTasks(spec: RoleSpec): BackgroundTask[] | null {
+  // A config another version stored may lack it.
+  return blockingTasks(work().background, spec.restart.ignoreBackground ?? [])
 }
 
 const settle = ($: EngineInterface, ms: number): Promise<void> =>
@@ -1835,7 +1831,7 @@ async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean):
     }
     const stamps = g.stamps
     if (!stamps || g.facts.handoff.kind !== 'present') return await refuse($, 'error', 'the restart stamps could not be placed')
-    const before = await quiet($, tokenAt)
+    const before = await quiet($, tokenAt, spec)
     if (!before.ok) return await refuse($, before.code, before.text)
     const lease = await leaseOf($)
     const restore = async (): Promise<void> => {
@@ -1855,7 +1851,7 @@ async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean):
       return await refuse($, 'error', errorText(e))
     }
     const race = raceVerdict({ at, owner: lease.id }, again, spec.restart.peerGap, await $.clock.now())
-    const last = race.ok ? await quiet($, tokenAt) : race
+    const last = race.ok ? await quiet($, tokenAt, spec) : race
     if (!last.ok) {
       await quietly(restore)
       return await refuse($, last.code, last.text)
@@ -2088,7 +2084,7 @@ async function tryCompact($: EngineInterface): Promise<void> {
       restart: await restartBusy($, now),
       agents: await $.agent.list(),
       steps: await recentSteps($, now),
-      background: busyTasks(),
+      background: busyTasks(spec),
     })
     if (busy) {
       // One toast per wait: the first busy try, or the first after a hold ended.
@@ -2162,7 +2158,7 @@ async function compactAtStart($: EngineInterface): Promise<void> {
  */
 // Answers 'failed' when /compact itself did not run, so the queued compact is not retried at once.
 async function compactRestart($: EngineInterface, role: string, spec: RoleSpec, tokenAt: number, gen: Mod): Promise<'failed' | 'done'> {
-  const before = await quiet($, tokenAt)
+  const before = await quiet($, tokenAt, spec)
   if (!before.ok) {
     await refuse($, before.code, before.text)
     return 'done'

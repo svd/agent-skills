@@ -37,7 +37,7 @@ import {
   status,
   HOUR,
 } from './register.fixtures'
-import type { Limit, World } from './register.fixtures'
+import type { Limit, Task, World } from './register.fixtures'
 
 // ---- restart: ready token → clear + resume ----------------------------------
 
@@ -267,6 +267,46 @@ test('background-tasks from the last Stop', async ($, on) => {
   expect(refusals(session)[1]).toContain('(background-tasks): background tasks unknown')
   await ready($, clock)
   expect(w.ran).toEqual(['clear', RESUME])
+})
+
+const MONITOR: Task = { id: 'm1', type: 'monitor', status: 'running', description: 'watch the artifact' }
+const MONITOR_BUSY = '(background-tasks): background tasks still running: monitor m1 (watch the artifact)'
+
+// The main turn ends on the ready token with nothing in flight; the restart then runs its ready check.
+async function tokenIntoCheck($: Engine, clock: MockClock): Promise<void> {
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] })
+  await $.turn.complete({ answer: 'Handoff written.\n\nCTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+}
+
+test('background-tasks: a role change during the ready checks leaves the restart its own role\'s restart.ignoreBackground', async ($, on) => {
+  const w = restartWorld({ processHang: MIN })
+  const config = autoConfig({ readyChecks: [{ run: ['./ready.sh'] }] })
+  config.roles.reviewer = { restart: { ignoreBackground: ['monitor'] } }
+  const { clock, session } = await armed($, on, w, config)
+  await tokenIntoCheck($, clock)
+  expect(w.processes).toEqual([['./ready.sh']])
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [MONITOR] })
+  expect(await ctxGuard($, 'role reviewer')).toContain('role is now reviewer')
+  await clock.advance(MIN + RACE_SETTLE_MS)
+  expect(refusals(session)[0]).toContain(MONITOR_BUSY)
+  expect(w.ran).toEqual([])
+})
+
+test('background-tasks: a config reload during the ready checks leaves restart via compact the restart.ignoreBackground it resolved', async ($, on) => {
+  const w = restartWorld({ processHang: MIN })
+  const config = viaCompact()
+  Object.assign(config.roles.lead.restart, { readyChecks: [{ run: ['./ready.sh'] }] })
+  const { clock, session } = await compactArmed($, on, w, config)
+  await tokenIntoCheck($, clock)
+  expect(w.processes).toEqual([['./ready.sh']])
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [MONITOR] })
+  Object.assign(config.roles.lead.restart, { ignoreBackground: ['monitor'] })
+  writeConfig(w, config)
+  await ctxGuard($, 'reload')
+  await clock.advance(MIN + RACE_SETTLE_MS)
+  expect(refusals(session)[0]).toContain(MONITOR_BUSY)
+  expect(w.ran).toEqual([])
 })
 
 test('role-shared: another live session holds the lease; one warning toast', async ($, on) => {
@@ -1449,6 +1489,24 @@ test('compact action: busy work keeps it queued with one toast; the next quiet t
   expect(w.ran).toEqual([])
   await mainTurnEnd($, clock)
   expect(w.ran).toEqual([COMPACTED])
+})
+
+test('compact action: a config reload while it is tried leaves it the restart.ignoreBackground it resolved', async ($, on) => {
+  const w = restartWorld()
+  const config = compactConfig()
+  const { clock } = await compactArmed($, on, w, config)
+  // The busy check's agent list hangs, and the config changes meanwhile.
+  w.listHang = MIN
+  await measure($, w, 860_000)
+  await clock.settle()
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [MONITOR] })
+  Object.assign(config.roles.lead.restart, { ignoreBackground: ['monitor'] })
+  writeConfig(w, config)
+  await ctxGuard($, 'reload')
+  w.listHang = 0
+  await clock.advance(MIN)
+  expect(w.ran).toEqual([])
+  expect(w.toasts.some(t => t.includes('waits (background tasks still running: monitor m1 (watch the artifact))'))).toBe(true)
 })
 
 test('compact action: a queued compact whose figures fall back is dropped with a toast', async ($, on) => {

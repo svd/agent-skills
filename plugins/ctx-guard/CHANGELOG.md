@@ -8,7 +8,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 - `restart.ignoreBackground`: a list of background task type labels (the `type` a Stop reports)
   that do not refuse the ready token as `background-tasks` or hold a queued compact back. Empty
-  by default; needs `/ctx-guard trust`.
+  by default; needs `/ctx-guard trust`. A restart and a compact read it from the role and config
+  they resolved when they began, through their last check, so a role change or config reload
+  meanwhile leaves their list as it was.
 - `/ctx-guard wake <5h|7d> [text]`: the operator asks the session to start work once that usage
   window resets. It sets a hold of the session's role on the window's usage at the time, refused
   below 5 % and while ctx-guard cannot read its stored state, and answers with the reset time.
