@@ -435,6 +435,8 @@ function asActivity(v: unknown): Activity {
     mainTurnAt: num(o.mainTurnAt),
     mainStartAt: num(o.mainStartAt),
     lastClosingStartAt: num(o.lastClosingStartAt),
+    lastRole: typeof o.lastRole === 'string' ? o.lastRole : null,
+    roleChangedAt: num(o.roleChangedAt),
     ownTurn: o.ownTurn === true,
     typedTurn: o.typedTurn === true,
     wokenTurn: o.wokenTurn === true,
@@ -798,8 +800,15 @@ async function resolveNow($: EngineInterface): Promise<RoleResolution> {
   // Stored lifts of another role are dropped as soon as this role is resolved, so a role switched back to starts with none.
   if (mem.lifts && mem.lifts.role !== r.role) await put($, 'lifts', emptyLifts(r.role))
   mod.role = r
+  if (r.role !== null && r.role !== activity().lastRole) await quietly(() => noteRole($, r.role as string))
   if (r.problem && active()) await noticeOnce($, `role:${r.problem}`, `ctx-guard: ${r.problem}`)
   return r
+}
+
+// A resolved role other than the last one resolved is a role change; a spell with no role between is none.
+async function noteRole($: EngineInterface, role: string): Promise<void> {
+  const now = await $.clock.now()
+  await patchActivity($, a => ({ ...a, lastRole: role, ...(a.lastRole !== null && a.lastRole !== role ? { roleChangedAt: now } : {}) }))
 }
 
 // ---- metrics and evaluation -------------------------------------------------
@@ -1576,7 +1585,7 @@ async function contextFact($: EngineInterface, role: string, spec: RoleSpec): Pr
 /**
  * The operator's /ctx-guard:clear holds: it was for the session's role, and
  * since it came no restart, no /clear, no role claim (/ctx-guard role, or a
- * typed resume or restart command) and no closing main turn (one on a typed
+ * typed resume or restart command), no role change and no closing main turn (one on a typed
  * prompt that started after it and ended on an answer with no ready token).
  */
 function clearAsked(): boolean {
@@ -1585,7 +1594,7 @@ function clearAsked(): boolean {
   if (ask === null || role === null || ask.role !== role) return false
   const since = (at: number | null | undefined): boolean => typeof at === 'number' && at >= ask.at
   const after = (at: number | null): boolean => at !== null && at > ask.at
-  return !since(mem.lastRestartAt) && !since(mem.lastClearAt) && !since(mem.roleClaim?.at) && !after(activity().lastClosingStartAt)
+  return !since(mem.lastRestartAt) && !since(mem.lastClearAt) && !since(mem.roleClaim?.at) && !since(activity().roleChangedAt) && !after(activity().lastClosingStartAt)
 }
 
 /**

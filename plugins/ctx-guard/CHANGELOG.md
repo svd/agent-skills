@@ -7,7 +7,8 @@ All notable changes to the `ctx-guard` plugin are documented here.
 ### Changed
 
 - The `/ctx-guard:clear` ask holds for the session's role until a restart, a `/clear`, a role
-  claim (`/ctx-guard role`, a typed resume or restart command) or a closing turn: a main-loop turn
+  claim (`/ctx-guard role`, a typed resume or restart command), a role change (a role resolved
+  other than the last one, a spell with no role between aside) or a closing turn: a main-loop turn
   on a prompt the person typed (origin `composer` or `bridge`, `/compact` aside) that started
   after the command and ended on an answer with no ready token. A turn that ends on the token
   keeps it, so a token refused for now (agents still running, `selfGap`, a failing ready check)

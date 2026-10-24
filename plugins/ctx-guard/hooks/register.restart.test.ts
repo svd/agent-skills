@@ -810,6 +810,27 @@ test('/ctx-guard:clear: a role change ends the ask', async ($, on) => {
   expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
+test('/ctx-guard:clear: a role change with no claim ends the ask, though the role comes back', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const config = { ...autoConfig({ minContext: '200k' }), defaultRole: 'lead' }
+  writeConfig(w, config)
+  const { clock, session } = world(on, w, {})
+  await start($)
+  await ctxGuard($, 'trust')
+  await writeHandoff(w, clock)
+  await measure($, w, 100_000)
+  await typedClear($)
+  writeConfig(w, { ...config, defaultRole: 'reviewer' })
+  expect(await ctxGuard($, 'reload')).toContain('role reviewer')
+  writeConfig(w, config)
+  await ctxGuard($, 'reload')
+  await ctxGuard($, 'trust')
+  await clock.advance(1000)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+})
+
 test('/ctx-guard:clear: a turn whose start ctx-guard never saw is not the one after the ask', async ($, on) => {
   const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
   const { clock } = await underMinimum($, on, w)

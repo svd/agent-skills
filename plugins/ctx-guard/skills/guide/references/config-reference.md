@@ -506,8 +506,11 @@ of these hold:
 1. The session's role is the ask's role. A spell with no role (a config error, the role gone
    from the config) does not end the ask.
 2. No restart and no `/clear` (ctx-guard's or the operator's) came since the command.
-3. No role claim came since the command: `/ctx-guard role`, or a typed `/ctx-guard:resume` or
-   restart command that claims a role.
+3. No role claim and no role change came since the command. A claim is `/ctx-guard role`, or a
+   typed `/ctx-guard:resume` or restart command that claims a role. A change is a role resolved
+   other than the last role resolved, by any source (a reload that moves `defaultRole`, say); a
+   spell with no role between is none, so `lead`, then no role, then `lead` again keeps the ask,
+   and `lead`, then `reviewer`, then `lead` ends it.
 4. No closing turn came since the command. A closing turn is a main-loop turn that:
    - started on a prompt the person typed: in the prompt box or from a remote client of the
      session (origin `composer` or `bridge`), `/compact` aside;
