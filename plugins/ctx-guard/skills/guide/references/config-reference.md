@@ -464,9 +464,11 @@ cancels it, with a toast: the operator is back. `/ctx-guard` itself, `/clear`, `
 operator may clear or compact the context before stepping away. Input from other origins (a peer
 session, an SDK host, a channel) leaves it. Input that leaves the wake leaves its wake prompt too,
 when the prompt waits for an idle moment. `/ctx-guard wake off` cancels it. The wake is kept in
-`$.state`: it outlives `/clear` and a hot reload, and a role change drops it, as it drops the
-role's other holds. `blocking` off leaves it. The `/ctx-guard` report shows it on a
-`wake:` line, with its window, the reset time and where it stands.
+`$.state`: it outlives `/clear` and a hot reload. A role change (by `/ctx-guard role`, or by a
+config reload, to another role or to none) drops it, as it drops the role's other holds, with a
+toast naming the new role; the same role resolved again keeps it. `blocking` off leaves it. The
+`/ctx-guard` report shows it on a `wake:` line, with its window, the reset time and where it
+stands.
 
 ## Notes and template variables
 

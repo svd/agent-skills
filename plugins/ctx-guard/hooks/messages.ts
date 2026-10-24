@@ -520,6 +520,15 @@ export function manualWakeText(text: string | null, reason: string): string {
   return `${PREFIX} The operator asked with /ctx-guard wake to start once the usage window reset, and ${reason}. ${text ?? DEFAULT_MANUAL_WAKE}`
 }
 
+/**
+ * The toast when something other than /ctx-guard wake off cancels a wake:
+ * input the operator typed (`back`), or a change to `role` (null: none).
+ */
+export function wakeCancelledText(window: string, cause: 'back' | { role: string | null }): string {
+  const why = cause === 'back' ? 'you are back' : `the role is now ${cause.role ?? 'none'}`
+  return `ctx-guard: the wake after the ${windowName(window)} reset is cancelled: ${why}.`
+}
+
 /** The toast (and `notify`) for lifts: one line naming each. Null for none. */
 export function liftToastText(lifts: readonly LiftInput[]): string | null {
   return lifts.length ? `ctx-guard: ${lifts.map(liftedText).join(' ')}` : null

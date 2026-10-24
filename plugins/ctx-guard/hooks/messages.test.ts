@@ -34,6 +34,7 @@ import {
   subagentWarnText,
   templateVars,
   toastText,
+  wakeCancelledText,
   wakePromptText,
 } from './messages'
 import { NO_CACHE, evaluate, readingVars } from './triggers'
@@ -490,6 +491,12 @@ describe('lift texts', () => {
     expect(liftCheckFailedText(['week-60-early'])).toBe(
       'ctx-guard: "week-60-early" may have lifted, but fresh usage could not be read (the window may still be full). Not woken; ctx-guard tries again when usage is next reported or the window resets.',
     )
+  })
+
+  test('the toast of a cancelled /ctx-guard wake names its window and why', () => {
+    expect(wakeCancelledText('five_hour', 'back')).toBe('ctx-guard: the wake after the 5-hour reset is cancelled: you are back.')
+    expect(wakeCancelledText('seven_day', { role: 'reviewer' })).toBe('ctx-guard: the wake after the weekly reset is cancelled: the role is now reviewer.')
+    expect(wakeCancelledText('five_hour', { role: null })).toBe('ctx-guard: the wake after the 5-hour reset is cancelled: the role is now none.')
   })
 
   test('several lifts make one note and one notify naming them', () => {

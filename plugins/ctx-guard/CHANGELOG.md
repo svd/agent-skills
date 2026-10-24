@@ -19,8 +19,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
   pause), with a `notify` when one is closed. Input the operator types first cancels it with a
   toast, as does `/ctx-guard wake off`. Their `/clear`, `/compact`, `/ctx-guard:clear` and a
   role's restart command leave it and a wake prompt waiting to go, as does input the person did
-  not type (a peer session, an SDK host, a channel). It outlives `/clear` and a reload, a role
-  change drops it, and the `/ctx-guard` report shows it.
+  not type (a peer session, an SDK host, a channel). It outlives `/clear` and a reload; a role
+  change (to another role or to none) drops it with a toast naming the new role, and the
+  `/ctx-guard` report shows it.
 
 ### Changed
 

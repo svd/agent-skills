@@ -168,7 +168,7 @@ refuses them unless typed in the prompt box (`wake`: or from a remote client of 
 | `/ctx-guard trust off` | Withdraw that approval. |
 | `/ctx-guard reload` | Re-read the config files. |
 | `/ctx-guard pause [30m\|off]` | Lift blocks and automatic actions for a while; notes go on. |
-| `/ctx-guard wake <5h\|7d> [text]` | Wake this session once that usage window resets; `wake off` cancels it, as does anything the operator types but `/clear`, `/compact`, `/ctx-guard:clear` and a role's restart command. |
+| `/ctx-guard wake <5h\|7d> [text]` | Wake this session once that usage window resets; `wake off` cancels it, as do a change of role and anything the operator types but `/clear`, `/compact`, `/ctx-guard:clear` and a role's restart command. |
 | `/ctx-guard init [solo\|peers]` | Copy a preset to the config path if no file is there. |
 | `/ctx-guard:clear [note]` | Ask this session for its handoff and the ready token now. |
 

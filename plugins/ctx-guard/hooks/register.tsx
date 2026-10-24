@@ -110,9 +110,9 @@ import {
   subagentStopText,
   subagentWarnText,
   toastText,
+  wakeCancelledText,
   wakePromptText,
   manualWakeText,
-  windowName,
 } from './messages'
 import type { LiftInput, NoteContext, NotWoken } from './messages'
 import {
@@ -808,7 +808,12 @@ async function resolveNow($: EngineInterface): Promise<RoleResolution> {
     rejudgeAll()
   }
   // Stored lifts of another role are dropped as soon as this role is resolved, so a role switched back to starts with none.
-  if (mem.lifts && mem.lifts.role !== r.role) await put($, 'lifts', emptyLifts(r.role))
+  // A /ctx-guard wake goes with them, and the operator who set it is told.
+  if (mem.lifts && mem.lifts.role !== r.role) {
+    const w = mem.lifts.holds[WAKE_ID]?.manual
+    await put($, 'lifts', emptyLifts(r.role))
+    if (w && mod.interactive) $.ui.toast(wakeCancelledText(w.window, { role: r.role }))
+  }
   mod.role = r
   if (r.role !== null && r.role !== activity().lastRole) await quietly(() => noteRole($, r.role as string))
   if (r.problem && active()) await noticeOnce($, `role:${r.problem}`, `ctx-guard: ${r.problem}`)
@@ -2814,7 +2819,7 @@ async function onOperator($: EngineInterface, command: string | null, origin: st
   if (wakeSet() && !keeps) {
     const w = liftsNow().holds[WAKE_ID]?.manual
     await dropWake($)
-    if (w) $.ui.toast(`ctx-guard: the wake after the ${windowName(w.window)} reset is cancelled: you are back.`)
+    if (w) $.ui.toast(wakeCancelledText(w.window, 'back'))
   }
   if (!liftsOn()) return
   const now = await $.clock.now()

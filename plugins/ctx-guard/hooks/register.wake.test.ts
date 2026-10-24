@@ -223,13 +223,40 @@ test('/ctx-guard wake survives a /clear and a reload', async ($, on) => {
   expect(wakes(w).length).toBe(1)
 })
 
-test('/ctx-guard wake: a role change drops it', async ($, on) => {
+test('/ctx-guard wake: a role change drops it, with a toast; the same role resolved again keeps it', async ($, on) => {
   const { w, clock } = await lead($, on)
   await ctxGuard($, 'wake 5h')
-  await ctxGuard($, 'role reviewer')
   await ctxGuard($, 'role lead')
+  await ctxGuard($, 'reload')
+  expect(w.toasts.filter(t => t.includes('wake'))).toEqual([])
+  await ctxGuard($, 'role reviewer')
+  expect(w.toasts).toContain('ctx-guard: the wake after the 5-hour reset is cancelled: the role is now reviewer.')
+  await ctxGuard($, 'role lead')
+  expect(w.toasts.filter(t => t.includes('wake')).length).toBe(1)
   await clock.advance(PAST_RESET)
   expect(wakes(w)).toEqual([])
+})
+
+test('/ctx-guard wake: a defaultRole changed on a reload drops it, with a toast', async ($, on) => {
+  const w = newWorld({ limits: [fiveAt(60, RESETS_AT), weekAt(40, NOW + 3 * DAY)] })
+  writeConfig(w, { ...CONFIG, defaultRole: 'lead' })
+  const { clock } = world(on, w, {})
+  await start($)
+  await ctxGuard($, 'trust')
+  await ctxGuard($, 'wake 5h')
+  writeConfig(w, { ...CONFIG, defaultRole: 'reviewer' })
+  await ctxGuard($, 'reload')
+  expect(w.toasts.filter(t => t.includes('wake'))).toEqual(['ctx-guard: the wake after the 5-hour reset is cancelled: the role is now reviewer.'])
+  await clock.advance(PAST_RESET)
+  expect(wakes(w)).toEqual([])
+})
+
+test('/ctx-guard wake: a switch to no role drops it, with a toast', async ($, on) => {
+  const { w } = await lead($, on)
+  await ctxGuard($, 'wake 5h')
+  await ctxGuard($, 'role none')
+  expect(w.toasts).toContain('ctx-guard: the wake after the 5-hour reset is cancelled: the role is now none.')
+  expect(await ctxGuard($, '')).not.toContain('wake:')
 })
 
 test('/ctx-guard wake with blocking off still wakes', { options: { blocking: false } }, async ($, on) => {
