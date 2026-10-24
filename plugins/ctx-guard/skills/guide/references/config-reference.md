@@ -566,9 +566,17 @@ of these hold:
    - and did not end on the ready token.
 
    A turn whose start ctx-guard did not see is not one.
+5. The ask is not suspended. A main-loop turn that started at or after the command and ended other
+   than on an answer (the operator pressed Esc, or an error or a refusal ended it) is cut: it
+   suspends the ask until a turn on a prompt the person typed (as in 4) starts after it. Such a
+   turn takes the ask up again: if it ends on the token, the token counts as asked; if it ends on
+   an answer with no token, it closes the ask. While the ask is suspended, a token from any other
+   turn (a peer session's message, a wake or scheduled prompt, a task notification) meets the
+   verdict as if no ask had been made.
 
 A turn that ends on the token keeps the ask, so a token refused for now (agents or background
-tasks still running, `selfGap`, a failing ready check) can be sent again. So does a token that
+tasks still running, `selfGap`, a failing ready check) can be sent again, in any later turn: one
+started by a task notification when the agents finish counts too. So does a token that
 ctx-guard does not act on (a pause, `autoActions` off): the operator asked for that restart, so a
 token after the pause still skips `restart.minContext`. A turn on a peer session's message, a
 coordinator's, a channel's, an SDK prompt or ctx-guard's own prompt leaves the ask, as do a prompt

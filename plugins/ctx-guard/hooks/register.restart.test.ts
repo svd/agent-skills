@@ -759,21 +759,79 @@ test('/ctx-guard:clear: a turn whose prompt ctx-guard did not see, after a token
   expect(w.ran.slice(1)).toEqual(['clear', RESUME])
 })
 
+// A main turn that ends other than on an answer.
+async function cut($: Engine, clock: MockClock, reason: 'aborted' | 'error' | 'refusal' = 'aborted'): Promise<void> {
+  const extra = reason === 'refusal' ? { refusal: { category: 'cyber' } } : {}
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: reason === 'aborted', turnId: 't1', reason, ...extra } as never)
+  await clock.settle()
+}
+
 for (const reason of ['aborted', 'error', 'refusal'] as const) {
-  test(`/ctx-guard:clear: a typed turn that ends ${reason === 'aborted' ? 'interrupted' : `on ${reason === 'error' ? 'an error' : 'a refusal'}`} keeps the ask`, async ($, on) => {
+  test(`/ctx-guard:clear: a typed turn that ends ${reason === 'aborted' ? 'interrupted' : `on ${reason === 'error' ? 'an error' : 'a refusal'}`} suspends the ask; a typed turn takes it up again`, async ($, on) => {
     const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
-    const { clock } = await underMinimum($, on, w)
+    const { clock, session } = await underMinimum($, on, w)
     await typedClear($)
     await clock.advance(1000)
     await turn($, 'start')
-    const extra = reason === 'refusal' ? { refusal: { category: 'cyber' } } : {}
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: reason === 'aborted', turnId: 't1', reason, ...extra } as never)
-    await clock.settle()
+    await cut($, clock, reason)
+    await turn($, 'start')
+    await ready($, clock)
+    expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+    await $.prompt.submit({ text: 'go on', origin: { kind: 'composer' } } as never)
     await turn($, 'start')
     await ready($, clock)
     expect(w.ran.slice(1)).toEqual(['clear', RESUME])
   })
 }
+
+for (const [what, input] of [
+  ['a peer session\'s message', { text: 'from the reviewer', origin: { kind: 'peer' } }],
+  ['a scheduled prompt', { text: 'nightly check', origin: { kind: 'scheduled-trigger' } }],
+  ['a task notification', { text: 'b1 done', origin: { kind: 'task-notification' } }],
+] as const) {
+  test(`/ctx-guard:clear interrupted in its own turn: a turn on ${what} that ends on the token does not restart under restart.minContext`, async ($, on) => {
+    const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+    const { clock, session } = await underMinimum($, on, w)
+    await typedClear($)
+    await turn($, 'start')
+    await cut($, clock)
+    await clock.advance(1000)
+    await $.prompt.submit(input as never)
+    await turn($, 'start')
+    await ready($, clock)
+    expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+    expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
+  })
+}
+
+test('/ctx-guard:clear interrupted, then "go on" typed: its token, refused for now, counts again on a task notification\'s turn', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await turn($, 'start')
+  await cut($, clock)
+  await clock.advance(1000)
+  await $.prompt.submit({ text: 'go on', origin: { kind: 'composer' } } as never)
+  await turn($, 'start')
+  await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+  expect(refusals(session).at(-1)).toContain('background tasks still running: local_bash b1 (the build)')
+  await $.prompt.submit({ text: 'b1 done', origin: { kind: 'task-notification' } } as never)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear: a token refused for now counts again on a task notification\'s turn', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock } = await underMinimum($, on, w)
+  await typedClear($)
+  await turn($, 'start')
+  await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
+  await $.prompt.submit({ text: 'b1 done', origin: { kind: 'task-notification' } } as never)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
 
 test('/ctx-guard:clear typed during a turn: a subagent started after it leaves that turn the one before the ask', async ($, on) => {
   const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })

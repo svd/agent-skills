@@ -10,6 +10,7 @@ import {
   asPendingCompact,
   asPendingResume,
   checkDetail,
+  clearAskHolds,
   checkLines,
   compactArgs,
   blockingTasks,
@@ -34,7 +35,7 @@ import {
   verdict,
   outputTail,
 } from './restart'
-import type { Facts } from './restart'
+import type { ClearAskMarks, Facts } from './restart'
 import type { LastCompact, PendingCompact, PendingResume } from '../types'
 
 const NOW = Date.parse('2026-10-13T12:00:00Z')
@@ -378,6 +379,34 @@ describe('a typed prompt', () => {
     expect(isTypedPrompt({})).toBe(false)
     expect(isTypedPrompt({ origin: { kind: 'composer' }, isMeta: true })).toBe(false)
     expect(isTypedPrompt({ origin: { kind: 'composer' }, command: { name: 'compact' } })).toBe(false)
+  })
+})
+
+describe('the /ctx-guard:clear ask', () => {
+  const ASK = { at: 1000, role: 'lead' }
+  const NONE: ClearAskMarks = { restartAt: null, clearAt: null, claimAt: null, roleChangedAt: null, closingStartAt: null, cutStartAt: null, typedStartAt: null }
+
+  test('holds for its role until a restart, a /clear, a claim, a role change or a closing turn', () => {
+    expect(clearAskHolds(ASK, 'lead', NONE)).toBe(true)
+    expect(clearAskHolds(null, 'lead', NONE)).toBe(false)
+    expect(clearAskHolds(ASK, null, NONE)).toBe(false)
+    expect(clearAskHolds(ASK, 'reviewer', NONE)).toBe(false)
+    for (const key of ['restartAt', 'clearAt', 'claimAt', 'roleChangedAt'] as const) {
+      expect(clearAskHolds(ASK, 'lead', { ...NONE, [key]: 1000 })).toBe(false)
+      expect(clearAskHolds(ASK, 'lead', { ...NONE, [key]: 999 })).toBe(true)
+    }
+    // A closing turn that started in the command's millisecond is the one it was typed over.
+    expect(clearAskHolds(ASK, 'lead', { ...NONE, closingStartAt: 1001 })).toBe(false)
+    expect(clearAskHolds(ASK, 'lead', { ...NONE, closingStartAt: 1000 })).toBe(true)
+  })
+
+  test('a turn of the ask cut short suspends it until a typed turn starts after that one', () => {
+    expect(clearAskHolds(ASK, 'lead', { ...NONE, cutStartAt: 1000 })).toBe(false)
+    expect(clearAskHolds(ASK, 'lead', { ...NONE, cutStartAt: 1000, typedStartAt: 1000 })).toBe(false)
+    expect(clearAskHolds(ASK, 'lead', { ...NONE, cutStartAt: 1000, typedStartAt: 2000 })).toBe(true)
+    expect(clearAskHolds(ASK, 'lead', { ...NONE, cutStartAt: 3000, typedStartAt: 2000 })).toBe(false)
+    // A cut from before the command is not the ask's.
+    expect(clearAskHolds(ASK, 'lead', { ...NONE, cutStartAt: 999 })).toBe(true)
   })
 })
 

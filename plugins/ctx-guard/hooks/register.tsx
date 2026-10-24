@@ -130,6 +130,7 @@ import {
   compactRequest,
   blockingTasks,
   isReadyAnswer,
+  clearAskHolds,
   isTypedPrompt,
   isUnder,
   nextLastCompact,
@@ -445,6 +446,8 @@ function asActivity(v: unknown): Activity {
     mainTurnAt: num(o.mainTurnAt),
     mainStartAt: num(o.mainStartAt),
     lastClosingStartAt: num(o.lastClosingStartAt),
+    lastCutStartAt: num(o.lastCutStartAt),
+    lastTypedStartAt: num(o.lastTypedStartAt),
     lastRole: typeof o.lastRole === 'string' ? o.lastRole : null,
     roleChangedAt: num(o.roleChangedAt),
     ownTurn: o.ownTurn === true,
@@ -1597,19 +1600,18 @@ async function contextFact($: EngineInterface, role: string, spec: RoleSpec): Pr
   }
 }
 
-/**
- * The operator's /ctx-guard:clear holds: it was for the session's role, and
- * since it came no restart, no /clear, no role claim (/ctx-guard role, or a
- * typed resume or restart command), no role change and no closing main turn (one on a typed
- * prompt that started after it and ended on an answer with no ready token).
- */
+// The operator's /ctx-guard:clear holds now (clearAskHolds).
 function clearAsked(): boolean {
-  const ask = mem.clearAsk
-  const role = mod.role.role
-  if (ask === null || role === null || ask.role !== role) return false
-  const since = (at: number | null | undefined): boolean => typeof at === 'number' && at >= ask.at
-  const after = (at: number | null): boolean => at !== null && at > ask.at
-  return !since(mem.lastRestartAt) && !since(mem.lastClearAt) && !since(mem.roleClaim?.at) && !since(activity().roleChangedAt) && !after(activity().lastClosingStartAt)
+  const a = activity()
+  return clearAskHolds(mem.clearAsk, mod.role.role, {
+    restartAt: mem.lastRestartAt,
+    clearAt: mem.lastClearAt,
+    claimAt: mem.roleClaim?.at ?? null,
+    roleChangedAt: a.roleChangedAt,
+    closingStartAt: a.lastClosingStartAt,
+    cutStartAt: a.lastCutStartAt,
+    typedStartAt: a.lastTypedStartAt,
+  })
 }
 
 /**
@@ -3275,15 +3277,20 @@ async function onTurnStart($: EngineInterface, main: boolean): Promise<void> {
 // woken turn's end is where idle counts from; every main turn's end is one
 // a lift's wake rule reads. A typed prompt's turn that ends on an answer with
 // no ready token closes: it ends a /ctx-guard:clear ask from before its start.
+// A turn that ends other than on an answer is cut: it suspends the ask until a
+// typed prompt's turn starts after it.
 async function onMainTurnEnd($: EngineInterface, token: boolean, answered: boolean): Promise<void> {
   const now = await $.clock.now()
   const { ownTurn: own, wokenTurn: woken, typedTurn: typed, mainStartAt } = activity()
   const closing = typed && answered && !token && mainStartAt !== null
+  const known = mainStartAt !== null
   await patchActivity($, a => ({
     ...a,
     mainTurnAt: null,
     mainStartAt: null,
     ...(closing ? { lastClosingStartAt: mainStartAt } : {}),
+    ...(known && !answered ? { lastCutStartAt: mainStartAt } : {}),
+    ...(known && typed ? { lastTypedStartAt: mainStartAt } : {}),
     ownTurn: false,
     wokenTurn: false,
     typedTurn: false,

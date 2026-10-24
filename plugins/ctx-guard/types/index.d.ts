@@ -365,6 +365,11 @@ export type Activity = {
   // When the last closing main turn started: one on a prompt the person typed that ended on an
   // answer with no ready token. Written at its end; a turn whose start is unknown is none.
   lastClosingStartAt: number | null
+  // When the last cut main turn started (one that ended other than on an answer), and the last
+  // typed one (closing or not). A cut turn of a /ctx-guard:clear ask suspends it until a typed one
+  // starts after it. Written at their end; a turn whose start is unknown is neither.
+  lastCutStartAt: number | null
+  lastTypedStartAt: number | null
   // The last role resolved, and when it last became another (a spell with no role between is no change).
   lastRole: string | null
   roleChangedAt: number | null
@@ -429,7 +434,7 @@ declare module 'claude-code' {
       // When this session's last restart on the ready token went through: none follows within selfGap.
       lastRestartAt: number | null
       // The operator's last /ctx-guard:clear in auto mode, and the role it was for. It holds until a
-      // restart, a /clear, a role claim or change, or a closing main turn (clearAsked).
+      // restart, a /clear, a role claim or change, or a closing main turn; a cut turn suspends it (clearAskHolds).
       clearAsk: ClearAsk | null
       lastVerdict: LastVerdict | null
       lease: LeaseState | null

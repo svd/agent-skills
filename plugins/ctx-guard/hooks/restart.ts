@@ -2,7 +2,7 @@
 // restart is judged on and the fail-closed verdict over them, the peer race,
 // and what to do with a pending resume found after a reload. Pure: no `$`,
 // never throws.
-import type { BackgroundTask, LastCompact, PendingCompact, PendingResume, Quantity, RestartVia } from '../types'
+import type { BackgroundTask, ClearAsk, LastCompact, PendingCompact, PendingResume, Quantity, RestartVia } from '../types'
 import type { Lease } from './roles'
 import { humanDuration, humanQuantity, humanTokens } from './messages'
 
@@ -68,6 +68,38 @@ const TYPED_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge'])
  */
 export function isTypedPrompt(e: { origin?: { kind: string }; command?: { name: string }; isMeta?: true }): boolean {
   return e.origin !== undefined && TYPED_ORIGINS.has(e.origin.kind) && e.isMeta !== true && e.command?.name !== 'compact'
+}
+
+/**
+ * What a /ctx-guard:clear ask is judged on, each a time or null for never:
+ * the last restart, /clear, role claim and role change; and the starts of the
+ * last closing main turn (typed, ended on an answer with no ready token), the
+ * last cut one (ended other than on an answer) and the last typed one.
+ */
+export type ClearAskMarks = {
+  restartAt: number | null
+  clearAt: number | null
+  claimAt: number | null
+  roleChangedAt: number | null
+  closingStartAt: number | null
+  cutStartAt: number | null
+  typedStartAt: number | null
+}
+
+/**
+ * The operator's /ctx-guard:clear holds: it was for the session's role, and
+ * since it came no restart, no /clear, no role claim, no role change and no
+ * closing main turn that started after it. A main turn of the ask that was cut
+ * short (Esc, an error, a refusal) suspends it until a typed prompt's main turn
+ * starts after that one: the operator takes the handoff up again.
+ */
+export function clearAskHolds(ask: ClearAsk | null, role: string | null, m: ClearAskMarks): boolean {
+  if (ask === null || role === null || ask.role !== role) return false
+  const since = (at: number | null): boolean => at !== null && at >= ask.at
+  const after = (at: number | null): boolean => at !== null && at > ask.at
+  if (since(m.restartAt) || since(m.clearAt) || since(m.claimAt) || since(m.roleChangedAt) || after(m.closingStartAt)) return false
+  const cut = m.cutStartAt
+  return cut === null || !since(cut) || (m.typedStartAt !== null && m.typedStartAt > cut)
 }
 
 // ---- stamps ------------------------------------------------------------------

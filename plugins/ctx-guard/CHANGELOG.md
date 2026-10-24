@@ -37,9 +37,13 @@ All notable changes to the `ctx-guard` plugin are documented here.
   on a prompt the person typed (origin `composer` or `bridge`, `/compact` aside) that started
   after the command and ended on an answer with no ready token. A turn that ends on the token
   keeps it, so a token refused for now (agents still running, `selfGap`, a failing ready check)
-  can be sent again. A spell with no role, a turn on a peer session's message or another prompt
-  not typed by the person, an interrupted turn, a prompt typed into a running turn or a
-  subagent's start leaves it. In `manual` mode no ask is kept.
+  can be sent again, in any later turn. A main-loop turn that started after the command and ended
+  other than on an answer (Esc, an error, a refusal) suspends the ask: until a typed prompt's turn
+  starts after it, a token from another turn (a peer session's message, a wake or scheduled
+  prompt, a task notification) counts as not asked. That typed turn takes the ask up again: its
+  token counts as asked, and its answer with no token closes the ask. A spell with no role, a turn
+  on a peer session's message or another prompt not typed by the person, a prompt typed into a
+  running turn or a subagent's start leaves it. In `manual` mode no ask is kept.
 
 ### Fixed
 
