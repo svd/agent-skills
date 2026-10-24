@@ -378,6 +378,8 @@ export function noteToastText(fires: readonly Fire[], opts: NoteOptions): string
 
 // ---- denies, refusals, subagents ---------------------------------------------
 
+// Why a command that needs ctx-guard running (/ctx-guard:clear, /ctx-guard wake) is refused.
+export const NOT_ACTIVE = 'ctx-guard is not active in this session; /ctx-guard says why'
 
 function metricName(c: Condition): string {
   if (isResetsIn(c.metric)) return `time to the ${c.limit ? windowName(c.limit.kind) : 'usage'} reset`

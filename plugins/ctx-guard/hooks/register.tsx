@@ -88,6 +88,7 @@ import {
 } from './config'
 import type { Effective, EngineWindow, FileLayer, ScriptHashes, TrustRecord, TrustState, WindowInfo } from './config'
 import {
+  NOT_ACTIVE,
   NOT_WOKEN,
   PREFIX,
   clearNoteText,
@@ -3482,7 +3483,8 @@ async function pauseCommand($: EngineInterface, arg: string): Promise<string> {
  * set); `window` null cancels it.
  */
 async function wakeCommand($: EngineInterface, window: LimitKind | null, text: string | null): Promise<string> {
-  if (!active() || mod.role.role === null) return `${PREFIX} this session has no role, so nothing can wake it; nothing changed.`
+  if (!active()) return `${PREFIX} ${NOT_ACTIVE}. Nothing changed.`
+  if (mod.role.role === null) return `${PREFIX} this session has no role, so nothing can wake it; nothing changed.`
   if (window === null) {
     if (!wakeSet()) return `${PREFIX} no wake is set.`
     await dropWake($)
@@ -3592,7 +3594,7 @@ async function clearNote($: EngineInterface, origin: string): Promise<{ note: st
   const declined = (why: string) => ({ refusal: `${PREFIX} /ctx-guard:clear refused: ${why}. Nothing ran.` })
   if (origin !== 'composer') return declined('only the operator can run it, typed in the prompt box')
   const eff = mod.eff
-  if (!active() || !eff) return declined('ctx-guard is not active in this session; /ctx-guard says why')
+  if (!active() || !eff) return declined(NOT_ACTIVE)
   const role = mod.role.role
   if (role === null) return declined('this session has no role; set one with /ctx-guard role <name>')
   const spec = roleSpec(eff.config, role)

@@ -295,3 +295,14 @@ test('/ctx-guard wake is refused with no figures, below 5 %, a bad window, no ro
   await ctxGuard($, 'role none')
   expect(await ctxGuard($, 'wake 5h')).toBe('[ctx-guard] this session has no role, so nothing can wake it; nothing changed.')
 })
+
+test('/ctx-guard wake with a role while ctx-guard is not active says ctx-guard is not active', async ($, on) => {
+  const w = newWorld({ limits: [fiveAt(60, RESETS_AT)] })
+  writeConfig(w, { ...CONFIG, enabled: false })
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  expect(await ctxGuard($, 'wake 5h')).toBe('[ctx-guard] ctx-guard is not active in this session; /ctx-guard says why. Nothing changed.')
+  const report = await ctxGuard($, '')
+  expect(report).toContain('role: lead (from CTX_GUARD_ROLE)')
+  expect(report).not.toContain('wake:')
+})
