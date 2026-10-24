@@ -15,6 +15,7 @@ import {
   reportText,
   triggerLine,
   versionBelow,
+  wakePlan,
   wantsTrust,
 } from './commands'
 import type { CacheReport, ReportInput, RestartReport } from './commands'
@@ -35,6 +36,24 @@ describe('parseCommand', () => {
     expect(parseCommand('pause')).toEqual({ kind: 'pause', arg: '' })
     expect(parseCommand('init')).toEqual({ kind: 'init', preset: 'solo' })
     expect(parseCommand('init peers')).toEqual({ kind: 'init', preset: 'peers' })
+  })
+
+  test('wake: a window and text, or off', () => {
+    expect(parseCommand('wake 5h')).toEqual({ kind: 'wake', window: 'five_hour', text: null })
+    expect(parseCommand('wake 7D  run the suite ')).toEqual({ kind: 'wake', window: 'seven_day', text: 'run the suite' })
+    expect(parseCommand('wake off')).toEqual({ kind: 'wake', window: null, text: null })
+    expect(parseCommand('wake off now')).toEqual({ kind: 'usage', error: 'wake off takes no text' })
+    expect(parseCommand('wake')).toEqual({ kind: 'usage', error: 'wake takes 5h, 7d or off' })
+    expect(parseCommand('wake 1d')).toEqual({ kind: 'usage', error: 'wake takes 5h, 7d or off, not "1d"' })
+  })
+
+  test('wakePlan: the window\'s usage now, refused with none, a reset window or under 5 %', () => {
+    const m = (rateLimits: unknown) => metricsOf({ rateLimits } as never, 1_000_000, null, Date.parse('2026-10-13T12:00:00Z'))
+    const five = [{ kind: 'five_hour', percentUsed: 60, resetsAt: '2026-10-13T14:00:00Z' }]
+    expect(wakePlan('five_hour', 'go', m(five))).toEqual({ ok: true, wake: { window: 'five_hour', pct: 60, text: 'go', resetsAt: '2026-10-13T14:00:00Z' } })
+    expect(wakePlan('seven_day', null, m(five))).toEqual({ ok: false, error: 'no weekly usage figures yet; try again after the next reply' })
+    expect(wakePlan('five_hour', null, m([{ kind: 'five_hour', percentUsed: 4, resetsAt: '2026-10-13T14:00:00Z' }])).ok).toBe(false)
+    expect(wakePlan('five_hour', null, m([{ kind: 'five_hour', percentUsed: 60, resetsAt: '2026-10-13T11:00:00Z' }]))).toEqual({ ok: false, error: 'the 5-hour usage window has already reset' })
   })
 
   test('anything else is usage with the reason', () => {

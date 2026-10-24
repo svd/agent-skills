@@ -55,6 +55,9 @@ import {
   presetProblem,
   wantsTrust,
   versionBelow,
+  wakeLine,
+  wakePlan,
+  wakeSetText,
 } from './commands'
 import type { CacheReport, Preset, RestartReport, SubagentReport } from './commands'
 import {
@@ -107,6 +110,8 @@ import {
   subagentWarnText,
   toastText,
   wakePromptText,
+  manualWakeText,
+  windowName,
 } from './messages'
 import type { LiftInput, NoteContext, NotWoken } from './messages'
 import {
@@ -167,8 +172,11 @@ import {
   triggerHolds,
   triggersFor,
   whenState,
+  WAKE_ID,
+  wakeHold,
+  withWake,
 } from './triggers'
-import type { ActionPlan, CacheMetrics, Fire, Metrics, TokenGates } from './triggers'
+import type { ActionPlan, CacheMetrics, Fire, LimitKind, Metrics, TokenGates } from './triggers'
 import {
   PRUNE_AFTER_MS,
   asMarks,
@@ -1329,10 +1337,10 @@ async function readTrust($: EngineInterface, root: string): Promise<TrustState |
 const trusted = (): boolean => mod.trust?.trusted === true
 
 // The band's trust segment: only a repo with something trust gates (an automatic restart, a compact, ping or prompt trigger, a probe) shows one.
-// True when an approval would turn something on: an automatic restart, a compact, ping or prompt trigger, a probe.
+// True when an approval would turn something on: an automatic restart, a compact, ping or prompt trigger, a probe, a /ctx-guard wake.
 function trustWanted(): boolean {
   const eff = mod.eff
-  return eff !== null && (wantsTrust(eff.config) || configuredProbes().length > 0)
+  return eff !== null && (wantsTrust(eff.config) || configuredProbes().length > 0 || wakeSet())
 }
 
 function bandUntrusted(): string | null {
@@ -2405,6 +2413,12 @@ function without(holds: Readonly<Record<string, Hold>>, ids: readonly string[]):
 
 const liftTriggers = (): Trigger[] => roleTriggers().filter(t => t.lift !== null && t.lift !== undefined)
 
+// A /ctx-guard wake is set for the role.
+const wakeSet = (): boolean => Object.hasOwn(liftsNow().holds, WAKE_ID)
+
+// Lifts are in play: a trigger with `lift`, or a /ctx-guard wake.
+const liftsOn = (): boolean => liftTriggers().length > 0 || wakeSet()
+
 // Lift work: a lift check in flight or being decided, or a wake prompt waiting to go. It does not overlap ctx-guard's other automatic actions.
 const liftWork = (): boolean => mod.checking !== null || mod.deciding || liftsNow().pending !== null
 
@@ -2451,8 +2465,8 @@ function noteContext(): NoteContext | null {
 async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Metrics): Promise<Set<string>> {
   const l = liftsNow()
   if (!triggers.some(t => t.lift) && !Object.keys(l.holds).length && !l.estimatedLift.length) return new Set()
-  const byId = new Map(triggers.map(t => [t.id, t]))
   const step = stepHolds(l.holds, triggers, m, { blocking: mod.eff?.blocking === true, reports: l.reports, frozen: mod.checking ?? undefined })
+  const byId = new Map(withWake(triggers, step.holds).map(t => [t.id, t]))
   const reported = (id: string): Trigger | null => {
     const t = byId.get(id)
     return t && !onEstimate(t, m) && whenState(t, m) !== null ? t : null
@@ -2533,8 +2547,8 @@ async function runLifts($: EngineInterface, items: readonly LiftItem[], m: Metri
 async function judgeLifts($: EngineInterface, m: Metrics, isPaused: boolean, check: LiftCheck | null): Promise<void> {
   if (check === null && mod.checking !== null) return
   if (!noteContext()) return
-  const triggers = roleTriggers()
   const l = liftsNow()
+  const triggers = withWake(roleTriggers(), l.holds)
   // A waiting prompt goes with its hold's lift, and with a reload that took `prompt` out of that lift.
   const p = l.pending
   const stale = p !== null && (l.holds[p.triggerId]?.phase !== 'lifting' || !triggers.some(t => t.id === p.triggerId && liftHas(t, 'prompt')))
@@ -2674,7 +2688,9 @@ async function afterCheck($: EngineInterface, items: readonly LiftItem[], m: Met
   await putLifts($, l => ({ ...l, holds: stamp(l.holds, answered, hold => ({ ...hold, tries: 0 })) }))
   if (!chosen) return await runLifts($, free, m)
   const id = chosen.trigger.id
-  const pending: LiftPending = { triggerId: id, text: wakePromptText(liftInput(chosen, m), ctx), tries: 0, at: chosen.hold.liftedAt ?? m.now }
+  const manual = chosen.hold.manual
+  const text = manual ? manualWakeText(manual.text, chosen.hold.reason ?? liftReason(chosen.trigger, m)) : wakePromptText(liftInput(chosen, m), ctx)
+  const pending: LiftPending = { triggerId: id, text, tries: 0, at: chosen.hold.liftedAt ?? m.now }
   await putLifts($, l => ({ ...l, pending }))
   await runLifts($, free, m, id, new Set([id]))
   if (!running && !liftHeldBack()) await sendPending($)
@@ -2707,7 +2723,7 @@ async function tryPending($: EngineInterface, item: LiftItem, m: Metrics, isPaus
   }
   // The operator spoke since the touch: their input may be in ahead of the drop it scheduled.
   const operatorAt = liftsNow().operatorAt
-  if (operatorAt !== null && item.hold.touchedAt !== null && operatorAt > item.hold.touchedAt) return await endPending($, m, null, true)
+  if (!item.hold.manual && operatorAt !== null && item.hold.touchedAt !== null && operatorAt > item.hold.touchedAt) return await endPending($, m, null, true)
   const why = gateWhy(wakeGateNow(isPaused))
   if (why) return await endPending($, m, why, false)
   if (liftHeldBack()) return
@@ -2763,12 +2779,15 @@ async function endPending($: EngineInterface, m: Metrics | null, why: NotWoken |
   const p = l.pending
   if (!p) return
   await putLifts($, x => ({ ...x, pending: null }))
-  const t = liftTriggers().find(x => x.id === p.triggerId)
+  const t = withWake(liftTriggers(), l.holds).find(x => x.id === p.triggerId)
   const hold = Object.hasOwn(l.holds, p.triggerId) ? l.holds[p.triggerId] : undefined
   if (!t || !hold) return
   const metrics = m ?? (await metricsFor($, await currentReading($), await $.clock.now()))
   await runLifts($, [{ trigger: t, hold: hold, why, steer, wake: false }], metrics)
 }
+
+// The operator's commands that leave a /ctx-guard wake set.
+const KEEP_WAKE: ReadonlySet<string> = new Set(['clear', 'compact'])
 
 // The commands whose own command.run handlers run onOperator.
 const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guard:clear'])
@@ -2778,14 +2797,27 @@ const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guar
  * /ctx-guard): wake attempts count from zero again, and a pending wake prompt
  * is dropped; the operator is steering, so they get a toast and the model the
  * lift note. Their /clear would wipe that note: the prompt is dropped after
- * the clear, by their next input or the next idle tick (tryPending).
+ * the clear, by their next input or the next idle tick (tryPending). Input
+ * the person typed cancels a /ctx-guard wake: they are back. Their /clear and
+ * /compact do not: a context action before stepping away.
  */
-async function onOperator($: EngineInterface, command: string | null): Promise<void> {
-  if (!active() || mod.role.role === null || !liftTriggers().length) return
+async function onOperator($: EngineInterface, command: string | null, origin: string | undefined): Promise<void> {
+  if (!active() || mod.role.role === null || !liftsOn()) return
+  if (wakeSet() && !KEEP_WAKE.has(command ?? '') && origin !== undefined && isTypedPrompt({ origin: { kind: origin } })) {
+    const w = liftsNow().holds[WAKE_ID]?.manual
+    await dropWake($)
+    if (w) $.ui.toast(`ctx-guard: the wake after the ${windowName(w.window)} reset is cancelled: you are back.`)
+  }
+  if (!liftsOn()) return
   const now = await $.clock.now()
   const pending = liftsNow().pending
   await putLifts($, l => ({ ...l, operatorAt: now, attempts: {} }))
   if (pending && command !== 'clear') $.clock.after(0, () => void serial(() => timed($, () => endPending($, null, null, true))))
+}
+
+// The /ctx-guard wake gone, with its waiting prompt.
+async function dropWake($: EngineInterface): Promise<void> {
+  await putLifts($, l => ({ ...l, holds: without(l.holds, [WAKE_ID]), pending: l.pending?.triggerId === WAKE_ID ? null : l.pending }))
 }
 
 /**
@@ -2793,11 +2825,13 @@ async function onOperator($: EngineInterface, command: string | null): Promise<v
  * and note stamps, and a pending wake prompt is dropped (rule 1 fails, and the
  * lift note goes into the new context). An operator's /clear is input after
  * the touch (rule 2): the holds it steers keep their stamps, and their prompt
- * is dropped after the clear with a toast and the lift note.
+ * is dropped after the clear with a toast and the lift note. A /ctx-guard wake
+ * is the operator's own: it keeps its stamps and its prompt.
  */
 async function liftsOnClear($: EngineInterface): Promise<void> {
   await putLifts($, l => {
     const unseen = Object.entries(l.holds)
+      .filter(([, hold]) => !hold.manual)
       .filter(([, hold]) => l.operatorAt === null || hold.touchedAt === null || l.operatorAt <= hold.touchedAt)
       .map(([id]) => id)
     const pending = l.pending && unseen.includes(l.pending.triggerId) ? null : l.pending
@@ -3311,6 +3345,7 @@ async function report($: EngineInterface): Promise<string> {
     pause,
     role: mod.role,
     claimAt: mem.roleClaim?.at ?? null,
+    wake: wakeReport(now),
     configState: mem.config,
     config,
     switches: { blocking: eff?.blocking ?? true, autoActions: eff?.autoActions ?? false, noteToasts: eff?.noteToasts ?? true, display: eff?.display ?? 'band' },
@@ -3419,6 +3454,45 @@ async function pauseCommand($: EngineInterface, arg: string): Promise<string> {
   return pause
     ? `${PREFIX} paused for ${humanDuration(p.ms ?? 0)}: tool blocks and automatic actions are off; notes go on. /ctx-guard pause off lifts it.`
     : `${PREFIX} pause lifted.`
+}
+
+/**
+ * `/ctx-guard wake <5h|7d> [text]`: a hold on that window's usage, touched by
+ * the operator now, whose lift is one wake prompt (it replaces a wake already
+ * set); `window` null cancels it.
+ */
+async function wakeCommand($: EngineInterface, window: LimitKind | null, text: string | null): Promise<string> {
+  if (!active() || mod.role.role === null) return `${PREFIX} this session has no role, so nothing can wake it; nothing changed.`
+  if (window === null) {
+    if (!wakeSet()) return `${PREFIX} no wake is set.`
+    await dropWake($)
+    return `${PREFIX} wake cancelled.`
+  }
+  const now = await $.clock.now()
+  const plan = wakePlan(window, text, await metricsFor($, await currentReading($), now))
+  if (!plan.ok) return `${PREFIX} ${plan.error}; nothing changed.`
+  const hold = wakeHold(plan.wake, now)
+  await putLifts($, l => {
+    const { [WAKE_ID]: _, ...attempts } = l.attempts
+    return { ...l, holds: { ...l.holds, [WAKE_ID]: hold }, attempts, pending: l.pending?.triggerId === WAKE_ID ? null : l.pending }
+  })
+  return wakeSetText(plan.wake, now, gateWhy(wakeGateNow(paused(now))))
+}
+
+// The report's line for a set /ctx-guard wake: its window, reset and phase.
+function wakeReport(now: number): string | null {
+  const l = liftsNow()
+  const hold = Object.hasOwn(l.holds, WAKE_ID) ? l.holds[WAKE_ID] : undefined
+  if (!hold?.manual) return null
+  const phase =
+    l.pending?.triggerId === WAKE_ID
+      ? 'the window reset; the wake prompt waits for an idle moment'
+      : hold.phase === 'lifting'
+        ? 'the window may have reset; reading fresh usage'
+        : hold.phase === 'stalled'
+          ? 'fresh usage could not be read; tried again on the next usage report or reset'
+          : 'waiting for the reset'
+  return wakeLine(hold.manual, phase, now)
 }
 
 async function initCommand($: EngineInterface, preset: Preset): Promise<string> {
@@ -3663,6 +3737,10 @@ async function runCommand($: EngineInterface, e: CommandRunInput): Promise<Comma
       return { text: await trustOffCommand($) }
     case 'pause':
       return { text: await pauseCommand($, sub.arg) }
+    case 'wake':
+      // The person's, typed in the prompt box or from a remote client.
+      if (!isTypedPrompt({ origin: e.origin })) return { text: `${PREFIX} only the operator can run /ctx-guard wake; ask the operator to type it. Nothing changed.` }
+      return { text: await wakeCommand($, sub.window, sub.text) }
     case 'init':
       return { text: await initCommand($, sub.preset) }
     case 'usage':
@@ -3749,7 +3827,7 @@ export const register: Register = (on, options) => {
     // A command's submission is its command.run's, which counted it already.
     if (e.command === undefined && operatorInput(e.origin?.kind, null)) {
       if (needsReady()) await quietly(() => ready($))
-      await quietly(() => onOperator($, e.command?.name ?? null))
+      await quietly(() => onOperator($, e.command?.name ?? null, e.origin?.kind))
     }
     // A prompt dropped below, or one whose submission threw, starts no turn: the flag goes with it.
     try {
@@ -3887,7 +3965,7 @@ export const register: Register = (on, options) => {
   // A resume typed by the person claims its role= for a session with none.
   on('command.run', { command: 'ctx-guard:resume' }, async ($, e, next) => {
     if (needsReady()) await quietly(() => ready($))
-    if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command))
+    if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command, e.origin.kind))
     if (!mod.commandOwned || !active() || e.origin.kind !== 'composer') return next(e)
     const refusal = await resumeClaim($, e.args)
     if (refusal !== null) return { text: refusal }
@@ -3906,7 +3984,7 @@ export const register: Register = (on, options) => {
       await ensureStarted($)
     })
     // The operator's command in every active copy, whichever owns /ctx-guard.
-    if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command))
+    if (operatorInput(e.origin.kind, e.command)) await quietly(() => onOperator($, e.command, e.origin.kind))
     // A copy that does not own /ctx-guard leaves the command to the copy that does; with no
     // copy to add the note, the command's own text tells the model to stop.
     if (!mod.commandOwned) return next(e)
@@ -3923,9 +4001,9 @@ export const register: Register = (on, options) => {
   on('command.run', async ($, e, next) => {
     // The operator's command (their /clear too): it resets the wake count and steers past a pending wake.
     // /ctx-guard:resume and /ctx-guard:clear count it in their own handlers.
-    if (!OWN_COMMANDS.has(e.command) && operatorInput(e.origin.kind, e.command) && mod.eff && liftTriggers().length) {
+    if (!OWN_COMMANDS.has(e.command) && operatorInput(e.origin.kind, e.command) && mod.eff && liftsOn()) {
       if (needsReady()) await quietly(() => ready($))
-      await quietly(() => onOperator($, e.command))
+      await quietly(() => onOperator($, e.command, e.origin.kind))
     }
     // Judged from memory first, so any other command runs with no work done for it.
     const eff = mod.eff

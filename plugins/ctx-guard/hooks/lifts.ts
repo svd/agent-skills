@@ -1,6 +1,6 @@
 // ctx-guard lifts: the stored shape of holds and wake attempts, and the rules
 // that decide whether a lift may wake the session. Pure: no `$`, never throws.
-import type { Hold, HoldPhase, LiftPending, Lifts, Trigger } from '../types'
+import type { Hold, HoldPhase, LiftPending, Lifts, ManualWake, Trigger } from '../types'
 import { isObj, liftHas, num } from './config'
 import { NOT_WOKEN } from './messages'
 import type { NotWoken } from './messages'
@@ -25,6 +25,7 @@ function asHold(v: unknown): Hold | null {
   if (startedAt === null || typeof o.phase !== 'string' || !(PHASES as string[]).includes(o.phase)) return null
   const st = isObj(o.stall) ? o.stall : null
   const reports = num(st?.reports)
+  const manual = asManual(o.manual)
   return {
     tools: [...(o.tools as string[])],
     when: o.when,
@@ -39,7 +40,15 @@ function asHold(v: unknown): Hold | null {
     ran: o.ran === true,
     liftNotedAt: num(o.liftNotedAt),
     stall: st && reports !== null ? { reports, until: num(st.until) } : null,
+    ...(manual ? { manual } : {}),
   }
+}
+
+function asManual(v: unknown): ManualWake | null {
+  const o = isObj(v) ? v : null
+  const pct = num(o?.pct)
+  if (!o || (o.window !== 'five_hour' && o.window !== 'seven_day') || pct === null) return null
+  return { window: o.window, pct, text: typeof o.text === 'string' ? o.text : null, resetsAt: typeof o.resetsAt === 'string' ? o.resetsAt : null }
 }
 
 function asPending(v: unknown): LiftPending | null {
@@ -118,11 +127,15 @@ export type WakeVerdict = { kind: 'untouched' } | { kind: 'steering' } | { kind:
  * refused call or its note read) and a main turn ended after that; no operator
  * input since the last touch; the gates are open; `lift.times` is not spent.
  * A hold whose attempt is already charged (`tries` above 0) skips the count.
+ * The /ctx-guard wake's hold skips rules 1 and 2: the operator asked for the
+ * wake, and their typed input cancels it outright.
  */
 export function wakeVerdict(h: Hold, f: WakeFacts): WakeVerdict {
-  const touched = h.touchedAt !== null && f.lastTurnEndAt !== null && f.lastTurnEndAt >= h.touchedAt
-  if (!touched) return { kind: 'untouched' }
-  if (f.operatorAt !== null && f.operatorAt > (h.touchedAt as number)) return { kind: 'steering' }
+  if (!h.manual) {
+    const touched = h.touchedAt !== null && f.lastTurnEndAt !== null && f.lastTurnEndAt >= h.touchedAt
+    if (!touched) return { kind: 'untouched' }
+    if (f.operatorAt !== null && f.operatorAt > (h.touchedAt as number)) return { kind: 'steering' }
+  }
   const why = gateWhy(f.gate)
   if (why) return { kind: 'not-woken', why }
   if (h.tries === 0 && f.attempts >= f.times) return { kind: 'not-woken', why: NOT_WOKEN.spent }

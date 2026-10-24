@@ -8,8 +8,9 @@ import type { Hold } from '../types'
 describe('stored lifts', () => {
   const hold = { tools: ['Agent'], when: '{}', startedAt: 1, touchedAt: 2, notedAt: null, phase: 'stalled', tries: 3, window: 'five_hour', liftedAt: 4, reason: 'r', ran: true, liftNotedAt: 5, stall: { reports: 2, until: 9 } }
 
-  test('reads back what was written', () => {
-    const v = { role: 'lead', holds: { b: hold }, estimatedLift: ['b'], forkAt: 7, attempts: { b: 1 }, pending: { triggerId: 'b', text: 'go', tries: 1, at: 3 }, operatorAt: 6, reports: 4 }
+  test('reads back what was written, a /ctx-guard wake\'s hold too', () => {
+    const wake = { ...hold, tools: [], manual: { window: 'seven_day', pct: 80, text: 'go', resetsAt: '2026-10-14T00:00:00.000Z' } }
+    const v = { role: 'lead', holds: { b: hold, '/ctx-guard wake': wake }, estimatedLift: ['b'], forkAt: 7, attempts: { b: 1 }, pending: { triggerId: 'b', text: 'go', tries: 1, at: 3 }, operatorAt: 6, reports: 4 }
     expect(asLifts(JSON.parse(JSON.stringify(v)))).toEqual(v)
   })
 
@@ -33,6 +34,13 @@ describe('waking', () => {
   const hold = (over: Partial<Hold> = {}): Hold => ({ tools: ['Agent'], when: '{}', startedAt: 0, touchedAt: 10, notedAt: null, phase: 'lifting', tries: 0, window: null, liftedAt: 30, reason: null, ran: false, liftNotedAt: null, stall: null, ...over })
   const open: WakeGate = { trusted: true, autoActions: true, paused: false }
   const facts = (over: Partial<WakeFacts> = {}): WakeFacts => ({ lastTurnEndAt: 20, operatorAt: null, gate: open, attempts: 0, times: 2, ...over })
+
+  test('a /ctx-guard wake skips rules 1 and 2, and keeps the gates and times', () => {
+    const manual = { window: 'five_hour' as const, pct: 60, text: null, resetsAt: null }
+    expect(wakeVerdict(hold({ manual, touchedAt: 10 }), facts({ lastTurnEndAt: null, operatorAt: 50 }))).toEqual({ kind: 'wake' })
+    expect(wakeVerdict(hold({ manual }), facts({ gate: { ...open, paused: true } }))).toEqual({ kind: 'not-woken', why: NOT_WOKEN.paused })
+    expect(wakeVerdict(hold({ manual }), facts({ attempts: 1, times: 1 }))).toEqual({ kind: 'not-woken', why: NOT_WOKEN.spent })
+  })
 
   test('rule 1: not touched, or no main turn ended after the touch', () => {
     expect(wakeVerdict(hold({ touchedAt: null }), facts())).toEqual({ kind: 'untouched' })

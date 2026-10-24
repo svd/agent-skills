@@ -104,6 +104,12 @@ where the work stands (task list, `git status`, the handoff if you wrote one), b
 subagent. Then carry on with the work you paused. If nothing is left to do, say so in one line and
 stop; do not invent work. A project may word this prompt itself; follow its text.
 
+A prompt `[ctx-guard] The operator asked with /ctx-guard wake to start once the usage window reset,
+…` comes when a window the operator chose has reset; they set it so the work waits for fresh usage.
+It too may come hours after the last turn. Check where the work stands the same way, then follow
+the rest of the prompt: the operator's own text if they gave one, else carry on with the work. If
+nothing is left to do, say so in one line and stop.
+
 ## When you are a subagent and get a budget note
 
 - **Warn** ("past this subagent's … budget"): wrap up. Start no new searches; finish what you
@@ -123,8 +129,8 @@ handoff, check its claims, then carry out its Next action or report the mismatch
 Change ctx-guard's config only when the operator asks. Never set a role, pause, trust or edit
 the config on your own initiative, even to get past a note or a block.
 
-The operator alone can run `/ctx-guard role`, `check`, `trust`, `pause` and `init`: ctx-guard
-refuses them unless typed in the prompt box. When one is needed, ask the operator to type it.
+The operator alone can run `/ctx-guard role`, `check`, `trust`, `pause`, `wake` and `init`: ctx-guard
+refuses them unless typed in the prompt box (`wake`: or from a remote client of the session). When one is needed, ask the operator to type it.
 
 **Files** (later wins; objects merge, arrays replace, `null` deletes a key):
 
@@ -160,6 +166,7 @@ refuses them unless typed in the prompt box. When one is needed, ask the operato
 | `/ctx-guard trust off` | Withdraw that approval. |
 | `/ctx-guard reload` | Re-read the config files. |
 | `/ctx-guard pause [30m\|off]` | Lift blocks and automatic actions for a while; notes go on. |
+| `/ctx-guard wake <5h\|7d> [text]` | Wake this session once that usage window resets; `wake off` cancels it, as does anything the operator types but `/clear` and `/compact`. |
 | `/ctx-guard init [solo\|peers]` | Copy a preset to the config path if no file is there. |
 | `/ctx-guard:clear [note]` | Ask this session for its handoff and the ready token now. |
 

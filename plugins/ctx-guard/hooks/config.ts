@@ -384,7 +384,7 @@ const METRIC_KINDS: Record<MetricKey, { allowed: readonly QuantityKind[]; bare?:
   'cache.pings': { allowed: ['count'], bare: 'count' },
 }
 
-function emptyWhen(): TriggerWhen {
+export function emptyWhen(): TriggerWhen {
   return {
     context: null,
     'limit.five_hour': null,

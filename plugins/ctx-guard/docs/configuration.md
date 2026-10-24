@@ -286,6 +286,7 @@ time (a lease in `.ctx-guard/<role>.owner`); a second one gets a warning and can
 | `/ctx-guard trust off` | you | Withdraw that approval. |
 | `/ctx-guard reload` | anyone | Re-read the config files now. |
 | `/ctx-guard pause [30m\|off]` | you | Lift blocks and automatic actions for a while (default 30 min); notes go on. |
+| `/ctx-guard wake <5h\|7d> [text]` | you | Wake the session once that usage window resets, with your text or a prompt to carry on; anything you type first but `/clear` and `/compact` cancels it. `wake off` cancels it too. |
 | `/ctx-guard init [solo\|peers]` | you | Write a starter config if there is none, plus `.gitignore` lines. |
 | `/ctx-guard:resume [role=<r>] [handoff=<path>] [prompt]` | ctx-guard or you | Resume from a handoff after `/clear`. What you leave out comes from the config: the session's role, its handoff path and restart prompt. |
 | `/ctx-guard:clear [note]` | you | Ask the session for its handoff and the ready token now, as a `stop`-level context note would; your note follows it. Refused with no role or with restart off. |

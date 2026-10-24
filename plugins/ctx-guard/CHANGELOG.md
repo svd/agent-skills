@@ -4,6 +4,17 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `/ctx-guard wake <5h|7d> [text]`: the operator asks the session to start work once that usage
+  window resets. It sets a hold of the session's role on the window's usage at the time, refused
+  below 5 %, and answers with the reset time. At the reset the lift check reads fresh usage and
+  the wake prompt goes, with the operator's text or one that asks the model to check where the
+  work stands and carry on. The gates of a lift's `prompt` apply (trust, `autoActions`, no
+  pause), with a `notify` when one is closed; input the operator types first cancels it with a
+  toast, as does `/ctx-guard wake off`, while their `/clear` and `/compact` leave it. It outlives `/clear` and a reload, a role change drops it,
+  and the `/ctx-guard` report shows it.
+
 ### Changed
 
 - The `/ctx-guard:clear` ask holds for the session's role until a restart, a `/clear`, a role

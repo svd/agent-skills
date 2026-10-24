@@ -254,7 +254,13 @@ export type Hold = {
   liftNotedAt: number | null
   // Stalled: the usage report count it stalled on, and the earliest reset it waits for.
   stall: { reports: number; until: number | null } | null
+  // The operator's /ctx-guard wake: this hold is its own brake (no trigger behind it).
+  manual?: ManualWake
 }
+
+// `/ctx-guard wake <5h|7d> [text]`: the window waited for, its usage when the command ran (the
+// hold holds while usage is at least that), and the operator's text for the wake prompt.
+export type ManualWake = { window: 'five_hour' | 'seven_day'; pct: number; text: string | null; resetsAt: string | null }
 
 // The wake prompt the lift check let through, waiting for an idle tick or a
 // retry: its trigger, its text, the submit tries so far and when it lifted.

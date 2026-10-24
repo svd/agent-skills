@@ -1,13 +1,13 @@
 // ctx-guard's `/ctx-guard` command and start-up checks: argument parsing, the
 // pause, `init` presets and .gitignore lines, the report text, the engine
 // version gate and the command-collision check. Pure: no `$`, never throws.
-import type { Action, Budget, Config, ConfigState, Display, LastVerdict, Marks, Pause, RestartMode, Trigger, TtlSource } from '../types'
+import type { Action, Budget, Config, ConfigState, Display, LastVerdict, ManualWake, Marks, Pause, RestartMode, Trigger, TtlSource } from '../types'
 import { liftHas, parseQuantity, roleSpec, validate } from './config'
-import { humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
+import { PREFIX, humanDuration, humanPercent, humanQuantity, humanTokens, humanUsd, resetsInMs, windowName } from './messages'
 import { listedRoles } from './roles'
 import type { RoleResolution } from './roles'
 import { METRIC_ORDER, contextPercent, holdsBelow } from './triggers'
-import type { DenyEntry, Metrics } from './triggers'
+import type { DenyEntry, LimitKind, Metrics } from './triggers'
 import type { CheckLine } from './restart'
 import { shortId } from './subagents'
 
@@ -16,7 +16,7 @@ export const COMMAND = 'ctx-guard'
 export const MIN_VERSION = '2.1.293'
 export const DEFAULT_PAUSE_MS = 30 * 60 * 1000
 
-export const ARGUMENT_HINT = '[role <name|none> | check | trust [off] | reload | pause [30m|off] | init [solo|peers]]'
+export const ARGUMENT_HINT = '[role <name|none> | check | trust [off] | reload | pause [30m|off] | wake <5h|7d|off> [text] | init [solo|peers]]'
 
 export const USAGE = [
   'Usage:',
@@ -27,6 +27,8 @@ export const USAGE = [
   '  /ctx-guard trust off         withdraw that approval (typed by you only)',
   '  /ctx-guard reload            re-read the config files',
   '  /ctx-guard pause [30m|off]   lift tool blocks and automatic actions for a while; notes go on',
+  '  /ctx-guard wake <5h|7d> [text]  wake this session when that usage window resets (typed by you only)',
+  '  /ctx-guard wake off          cancel that wake',
   '  /ctx-guard init [solo|peers] write a starter config if there is none, and .gitignore lines',
 ].join('\n')
 
@@ -43,6 +45,7 @@ export type Subcommand =
   | { kind: 'trust' }
   | { kind: 'trust-off' }
   | { kind: 'pause'; arg: string }
+  | { kind: 'wake'; window: LimitKind | null; text: string | null }
   | { kind: 'init'; preset: Preset }
   | { kind: 'usage'; error: string | null }
 
@@ -64,6 +67,8 @@ export function parseCommand(args: string): Subcommand {
     }
     case 'pause':
       return { kind: 'pause', arg }
+    case 'wake':
+      return parseWake(arg)
     case 'init': {
       const preset = (arg || 'solo').toLowerCase()
       return (PRESETS as readonly string[]).includes(preset)
@@ -73,6 +78,58 @@ export function parseCommand(args: string): Subcommand {
     default:
       return { kind: 'usage', error: `unknown subcommand "${head}"` }
   }
+}
+
+const WAKE_WINDOWS: Readonly<Record<string, LimitKind>> = { '5h': 'five_hour', '7d': 'seven_day' }
+
+// `wake <5h|7d> [text]`, or `wake off` (window null).
+function parseWake(arg: string): Subcommand {
+  const [head = '', ...rest] = arg.split(/\s+/)
+  const text = rest.join(' ').trim()
+  const key = head.toLowerCase()
+  if (key === 'off') return text ? { kind: 'usage', error: 'wake off takes no text' } : { kind: 'wake', window: null, text: null }
+  const window = Object.hasOwn(WAKE_WINDOWS, key) ? WAKE_WINDOWS[key] : undefined
+  if (!window) return { kind: 'usage', error: head ? `wake takes 5h, 7d or off, not "${head}"` : 'wake takes 5h, 7d or off' }
+  return { kind: 'wake', window, text: text || null }
+}
+
+// The least usage /ctx-guard wake waits on: a reset from below it frees next to
+// nothing, and a fresh window may read that much once the lift check's request lands.
+export const WAKE_MIN_PCT = 5
+
+export type WakePlan = { ok: true; wake: ManualWake } | { ok: false; error: string }
+
+/** The wake on `window` from the figures at hand: refused with none, a window already reset, or one under WAKE_MIN_PCT. */
+export function wakePlan(window: LimitKind, text: string | null, m: Metrics): WakePlan {
+  const r = m.limits[window]
+  const name = windowName(window)
+  if (!r) return { ok: false, error: `no ${name} usage figures yet; try again after the next reply` }
+  if (r.estimated) return { ok: false, error: `the ${name} usage window has already reset` }
+  if (r.pct < WAKE_MIN_PCT) return { ok: false, error: `the ${name} usage window is at ${humanPercent(r.pct)}; under ${WAKE_MIN_PCT}% its reset frees next to nothing` }
+  return { ok: true, wake: { window, pct: r.pct, text, resetsAt: r.resetsAt } }
+}
+
+// ` in 2h 10m (2026-10-24 14:00 UTC)`, or nothing with no known reset.
+function resetWhen(resetsAt: string | null, now: number): string {
+  const left = resetsInMs(resetsAt, now)
+  if (left === null || resetsAt === null) return ''
+  return ` in ${humanDuration(left)} (${new Date(Date.parse(resetsAt)).toISOString().slice(0, 16).replace('T', ' ')} UTC)`
+}
+
+/** The answer to `/ctx-guard wake <5h|7d>`: what is set, what cancels it, and a gate closed now. */
+export function wakeSetText(w: ManualWake, now: number, closed: string | null): string {
+  const name = windowName(w.window)
+  const prompt = w.text === null ? 'a prompt to check where the work stands and carry on' : 'your text'
+  const gate = closed ? ` Note: ${closed} now, so the wake would only notify you.` : ''
+  return (
+    `${PREFIX} wake set: when the ${name} usage window resets${resetWhen(w.resetsAt, now)}, ctx-guard reads fresh usage and wakes this session with ${prompt}. ` +
+    `Anything you type first cancels it, as does /ctx-guard wake off.${gate}`
+  )
+}
+
+/** The report's line for a pending wake. */
+export function wakeLine(w: ManualWake, phase: string, now: number): string {
+  return `wake: after the ${windowName(w.window)} reset${resetWhen(w.resetsAt, now)}; ${phase}${w.text === null ? '' : `; text: ${w.text}`}`
 }
 
 // ms null lifts the pause.
@@ -229,6 +286,8 @@ export type ReportInput = {
   role: RoleResolution
   // When the session's role claim was made (/ctx-guard role or /ctx-guard:resume); null without one.
   claimAt?: number | null
+  // The pending /ctx-guard wake's line (wakeLine); null or absent with none.
+  wake?: string | null
   configState: ConfigState | null
   config: Config
   switches: { blocking: boolean; autoActions: boolean; noteToasts: boolean; display: Display }
@@ -419,6 +478,7 @@ export function reportText(r: ReportInput): string {
   const marks = Object.entries(r.marks?.byId ?? {})
   lines.push(`marks: ${marks.length ? marks.map(([id, mk]) => `${id}${mk.step ? `@${mk.step}` : ''} (${ago(r.now - mk.at)})`).join(', ') : 'none'}`)
   lines.push(`blocks: ${r.denies.length ? r.denies.map(d => `${d.tool} (${d.triggerId})`).join(', ') : 'none'}`)
+  if (r.wake) lines.push(r.wake)
   if (r.probes) {
     if (!r.probes.length) lines.push('band probes: none')
     for (const p of r.probes) lines.push(`probe ${p.id}: ${p.state}`)

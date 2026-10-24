@@ -424,6 +424,43 @@ hours of waiting the cache has expired, so it writes the whole context once), an
 then runs a turn, which reads that cache warm. When a brake holds on fresh figures, the check is
 the whole cost and no turn runs.
 
+### `/ctx-guard wake`
+
+`/ctx-guard wake <5h|7d> [text]`, typed by the operator (in the prompt box or from a remote client
+of the session), asks the session to start work once that usage window resets, with no trigger
+and no config. It runs at once, with no model turn, and sets a hold of its own on the window
+(`5h` the five-hour window, `7d` the weekly one) for the session's role. Its answer says when the
+window resets, when that is known, and names a gate that is closed now.
+
+The hold holds while the window's usage is at least what it was when the command ran, which only a
+reset brings below; it denies no tool. It is refused with no role, with no figures for the window
+yet, with a window that already reads as reset, and below 5 % (a reset from there frees next to
+nothing, and a fresh window may read that much once the lift check's request lands). A second
+`/ctx-guard wake` replaces the first.
+
+The operator asked for the wake, so the hold counts as touched by them when the command ran, and
+rules 1 and 2 of [Waking the session](#waking-the-session) do not apply to it. Every other rule
+does: the gates (trust, `autoActions`, no pause) turn the wake into a `notify` with its reason,
+it waits for an idle moment and for other lift work, the lift check reads fresh usage, a failed
+check stalls it with the failed-checks `notify`, and a refused prompt is tried three times. It
+makes one wake attempt. The lift check is what confirms the reset: on fresh figures still at or
+over the hold's usage, the hold goes back to holding and waits for the window's next reset.
+
+Once the reset is confirmed, the wake prompt goes as ctx-guard's own:
+
+```text
+[ctx-guard] The operator asked with /ctx-guard wake to start once the usage window reset, and the 5-hour usage window reset. First check where the work stands (task list, git status, the handoff if you wrote one), before you start any subagent. Then carry on with the work. If nothing is left to do, say so in one line and stop.
+```
+
+With `[text]`, the operator's text replaces the part after the first sentence. Input the operator
+types before the wake goes (a prompt or a command, in the prompt box or from a remote client)
+cancels it, with a toast: the operator is back. `/ctx-guard` itself, `/clear` and `/compact` leave
+it: the operator may clear or compact the context before stepping away. Input from other
+origins (a peer session, an SDK host, a channel) leaves it. `/ctx-guard wake off` cancels it. The
+wake is kept in `$.state`: it outlives `/clear` and a hot reload, and a role change drops it, as it
+drops the role's other holds. `blocking` off leaves it. The `/ctx-guard` report shows it on a
+`wake:` line, with its window, the reset time and where it stands.
+
 ## Notes and template variables
 
 A note starts with `[ctx-guard]`, then holds:
@@ -1080,6 +1117,8 @@ The cache countdown follows the context figure ([Prompt cache](#prompt-cache)). 
 | `trust off` | operator | Withdraws that approval. |
 | `reload` | anyone | Re-reads the config files. |
 | `pause [30m\|off]` | operator | Lifts denies and automatic actions for a while (default 30 min); notes go on. `off` ends the pause. |
+| `wake <5h\|7d> [text]` | operator, or a remote client of the session | Wakes the session once that usage window resets ([`/ctx-guard wake`](#ctx-guard-wake)). |
+| `wake off` | operator, or a remote client of the session | Cancels that wake. |
 | `init [solo\|peers]` | operator | Copies the preset `assets/presets/<name>.json` to `configPath` if no file is there (never overwrites), and adds the local file and `stateDir` to `.gitignore`. Default `solo`. When the preset restarts or compacts on its own, the reply says to review it and run `/ctx-guard trust`. |
 
 "Operator" means typed in the prompt box. ctx-guard refuses these subcommands from the model or

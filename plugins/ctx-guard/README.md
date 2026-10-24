@@ -109,7 +109,8 @@ role restarted recently or wins a simultaneous restart; or any of your own ready
 
 Type `/ctx-guard` any time for a report: role, config and its errors, live figures, fired
 triggers, active blocks and trust. Type `/ctx-guard:clear` to have the session write its handoff
-and restart now, before any note asks for it. Full walk-through: [Getting started](docs/getting-started.md).
+and restart now, before any note asks for it. Type `/ctx-guard wake 5h` (or `7d`) to have the
+session start work once that usage window resets. Full walk-through: [Getting started](docs/getting-started.md).
 
 ## Safety by design
 
@@ -118,8 +119,8 @@ and restart now, before any note asks for it. Full walk-through: [Getting starte
   `prompt` actions, a lift's `prompt`, ready checks and band probes need `/ctx-guard trust` per
   repo. Trust covers the exact settings and the scripts' contents; any change withdraws it until you
   approve again.
-- **The model cannot talk its way out.** `role`, `check`, `trust`, `pause` and `init` work only
-  when you type them; ctx-guard refuses them from the model or another plugin.
+- **The model cannot talk its way out.** `role`, `check`, `trust`, `pause`, `wake` and `init` work
+  only when you type them; ctx-guard refuses them from the model or another plugin.
 - **Blocks fail open and lift themselves.** An unknown metric or a failed check denies nothing,
   and a deny lifts once its condition stops holding (a window resets, the reset gets close).
 - **ctx-guard never writes your handoff.** The model writes it with the whole conversation in
@@ -172,8 +173,9 @@ it can start are model requests that Claude Code sends like any other: a keep-wa
   - `/compact`, with the instructions from your config, when a trigger with the `compact` action
     fires or a role that restarts by compact sends the ready token. It waits for the turn to end.
 
-  It also adds the `/ctx-guard` command; its `role`, `check`, `trust`, `pause` and `init` work
-  only when you type them.
+  It also adds the `/ctx-guard` command; its `role`, `check`, `trust`, `pause`, `wake` and `init`
+  work only when you type them. `/ctx-guard wake` sends the same tool-less request, then the wake
+  turn, once the usage window you name resets.
 - **Runs programs.** Only the commands you write in your project config: each ready check in a
   role's `restart.readyChecks` and each probe in `band.probes`, given as an argument list in its
   `run` field (`["sh", ".claude/ctx-guard/clean-worktree.sh"]`) and started as written, with no

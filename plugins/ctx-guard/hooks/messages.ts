@@ -505,8 +505,19 @@ export function wakePromptText(l: LiftInput, ctx: NoteContext): string {
 }
 
 // `"limit-stop" lifted (the 5-hour usage window reset); Agent, Workflow allowed again.`
+// A brake that denies nothing (/ctx-guard wake's) names no tools.
 function liftedText(l: LiftInput): string {
-  return `"${l.trigger.id}" lifted (${reasonOf(l)}); ${denyTools(l.trigger).join(', ')} allowed again.`
+  const tools = denyTools(l.trigger)
+  return `"${l.trigger.id}" lifted (${reasonOf(l)})${tools.length ? `; ${tools.join(', ')} allowed again` : ''}.`
+}
+
+export const DEFAULT_MANUAL_WAKE =
+  'First check where the work stands (task list, git status, the handoff if you wrote one), before you start any subagent. ' +
+  'Then carry on with the work. If nothing is left to do, say so in one line and stop.'
+
+/** The wake prompt of /ctx-guard wake: what woke the session, then the operator's text or the default. */
+export function manualWakeText(text: string | null, reason: string): string {
+  return `${PREFIX} The operator asked with /ctx-guard wake to start once the usage window reset, and ${reason}. ${text ?? DEFAULT_MANUAL_WAKE}`
 }
 
 /** The toast (and `notify`) for lifts: one line naming each. Null for none. */

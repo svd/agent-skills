@@ -1,8 +1,8 @@
 // ctx-guard triggers: metric readings, rising-edge evaluation with JSON marks,
 // the level-triggered live deny set, and the holds and lifts of brakes.
 // Pure: no `$`, never throws.
-import type { Config, EdgeAction, Hold, Mark, Marks, Metric, Quantity, Trigger } from '../types'
-import { canonicalJson, roleSpec, zeroConfigTriggers } from './config'
+import type { Config, EdgeAction, Hold, ManualWake, Mark, Marks, Metric, Quantity, Trigger } from '../types'
+import { canonicalJson, emptyWhen, roleSpec, zeroConfigTriggers } from './config'
 
 export type LimitKind = 'five_hour' | 'seven_day'
 // `estimated`: the window's reset time passed with no response since, so it reads as rolled
@@ -614,6 +614,30 @@ export function toolsFree(trigger: Trigger, triggers: readonly Trigger[], m: Met
   return whenState(trigger, m) === false && blockedBy(trigger.id, denyTools(trigger), triggers, m) === null
 }
 
+// The hold of /ctx-guard wake: no config trigger id has a space or a slash.
+export const WAKE_ID = '/ctx-guard wake'
+
+/**
+ * The brake a /ctx-guard wake stands for: the window's usage at or above its
+ * figure when the command ran, which only a reset brings below. It denies
+ * nothing, and its lift is one wake prompt.
+ */
+export function wakeTrigger(w: ManualWake): Trigger {
+  const when = { ...emptyWhen(), [`limit.${w.window}`]: { kind: 'percent', value: w.pct } }
+  return { id: WAKE_ID, when, do: [], level: null, message: null, times: null, lift: { do: ['prompt'], times: 1, message: null } }
+}
+
+/** A /ctx-guard wake's new hold: holding, and touched by the operator who asked for it. */
+export function wakeHold(w: ManualWake, now: number): Hold {
+  return { ...newHold(wakeTrigger(w), now, w.window), touchedAt: now, manual: w }
+}
+
+/** `triggers` with the brake of the /ctx-guard wake that `holds` keep, if any. */
+export function withWake(triggers: readonly Trigger[], holds: Readonly<Record<string, Hold>>): Trigger[] {
+  const w = Object.hasOwn(holds, WAKE_ID) ? holds[WAKE_ID]?.manual : undefined
+  return w ? [...triggers, wakeTrigger(w)] : [...triggers]
+}
+
 const sameTools = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i])
 
 function newHold(trigger: Trigger, now: number, window: string | null): Hold {
@@ -645,49 +669,56 @@ export type HoldOptions = {
  * reset. A frozen hold is left as it is. A hold whose trigger or lift a
  * reload removed, or whose `when` or deny tools it changed, is dropped, as is
  * every hold with `blocking` off: none of that is a lift. A reload that edits
- * the lift keeps the hold.
+ * the lift keeps the hold. The /ctx-guard wake's hold steps the same way on
+ * its own brake (wakeTrigger), whatever the config and `blocking` say.
  */
 export function stepHolds(prev: Readonly<Record<string, Hold>>, triggers: readonly Trigger[], m: Metrics, opts: HoldOptions): { holds: Record<string, Hold>; lifted: string[] } {
   const holds: Record<string, Hold> = {}
   const lifted: string[] = []
-  if (!opts.blocking) return { holds, lifted }
-  for (const t of triggers) {
-    if (!t.lift) continue
-    const tools = denyTools(t)
-    if (!tools.length) continue
-    const raw = Object.hasOwn(prev, t.id) ? prev[t.id] : undefined
-    const old = raw && sameTools(raw.tools, tools) && raw.when === canonicalJson(t.when) ? raw : undefined
+  const stepOne = (t: Trigger, old: Hold | undefined): void => {
     if (old && opts.frozen?.has(t.id)) {
       holds[t.id] = old
-      continue
+      return
     }
     const state = whenState(t, m)
     if (state === true) {
       const window = t.when['limit.any'] ? (limitFor('limit.any', m)?.kind ?? null) : null
       holds[t.id] = old ? { ...old, phase: 'holding', tries: 0, window: window ?? old.window, liftedAt: null, reason: null, ran: false, liftNotedAt: null, stall: null } : newHold(t, m.now, window)
-      continue
+      return
     }
-    if (!old) continue
+    if (!old) return
     // Another brake denies a tool again before the lift ran its course: it waits for that brake, stamps kept.
     if (old.phase === 'lifting' && blockedBy(t.id, old.tools, triggers, m) !== null) {
       holds[t.id] = { ...old, phase: 'waiting', tries: 0 }
-      continue
+      return
     }
     if (state === null || old.phase === 'lifting') {
       holds[t.id] = old
-      continue
+      return
     }
     if (old.phase === 'stalled') {
       const stall = old.stall
       const free = !stall || opts.reports > stall.reports || (stall.until !== null && m.now >= stall.until)
       if (!free) {
         holds[t.id] = old
-        continue
+        return
       }
     }
     const next = letGo(old, t, triggers, m)
     holds[t.id] = next
     if (next.phase === 'lifting') lifted.push(t.id)
   }
+  // The /ctx-guard wake's hold is its own brake: kept with `blocking` off too, and stepped after the triggers.
+  const wake = Object.hasOwn(prev, WAKE_ID) ? prev[WAKE_ID] : undefined
+  if (opts.blocking) {
+    for (const t of triggers) {
+      if (!t.lift) continue
+      const tools = denyTools(t)
+      if (!tools.length) continue
+      const raw = Object.hasOwn(prev, t.id) ? prev[t.id] : undefined
+      stepOne(t, raw && sameTools(raw.tools, tools) && raw.when === canonicalJson(t.when) ? raw : undefined)
+    }
+  }
+  if (wake?.manual) stepOne(wakeTrigger(wake.manual), wake)
   return { holds, lifted }
 }
