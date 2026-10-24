@@ -3810,7 +3810,10 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (needsReady()) await quietly(() => ready($))
     if (e.agentId === undefined) {
-      const token = tokenAnswer(e)
+      let token = false
+      await quietly(async () => {
+        token = tokenAnswer(e)
+      })
       await quietly(() => onMainTurnEnd($, token, e.reason === 'answer'))
       // Off the hook's path, as the transcript can be large; in the chain, so a /clear never lands mid-read.
       $.clock.after(0, () => void serial(() => timed($, () => detectTtl($))))
