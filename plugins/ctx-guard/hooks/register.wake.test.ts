@@ -12,9 +12,9 @@ const fiveAt = (pct: number, resetsAt: number): Limit => ({ kind: 'five_hour', p
 
 const weekAt = (pct: number, resetsAt: number): Limit => ({ kind: 'seven_day', percentUsed: pct, resetsAt: iso(resetsAt) })
 
-// The five-hour window resets at 2h; it reads as rolled over a minute later.
-const RESETS_AT = NOW + 2 * HOUR
-const PAST_RESET = 2 * HOUR + 2 * MIN
+// The five-hour window resets at 1h; it reads as rolled over a minute later.
+const RESETS_AT = NOW + HOUR
+const PAST_RESET = HOUR + 2 * MIN
 
 const DAY = 24 * HOUR
 
@@ -42,25 +42,25 @@ async function lead($: Engine, on: On, pct = 60, after: Limit[] = [fiveAt(3, NOW
 test('/ctx-guard wake 5h: set with the reset time; at the reset one lift check, then the default wake prompt', async ($, on) => {
   const { w, clock, forks } = await lead($, on)
   expect(await ctxGuard($, 'wake 5h')).toBe(
-    '[ctx-guard] wake set: when the 5-hour usage window resets in 2h (2026-10-13 14:00 UTC), ctx-guard reads fresh usage and wakes this session with ' +
+    '[ctx-guard] wake set: when the 5-hour usage window resets in 1h (2026-10-13 13:00 UTC), ctx-guard reads fresh usage and wakes this session with ' +
       'a prompt to check where the work stands and carry on. Anything you type first cancels it, as does /ctx-guard wake off.',
   )
-  await clock.advance(HOUR)
+  await clock.advance(30 * MIN)
   expect(wakes(w)).toEqual([])
-  await clock.advance(PAST_RESET - HOUR)
+  await clock.advance(PAST_RESET - 30 * MIN)
   expect(forks.length).toBe(1)
   expect(wakes(w)).toEqual([
     '[ctx-guard] The operator asked with /ctx-guard wake to start once the usage window reset, and the 5-hour usage window reset. ' +
       'First check where the work stands (task list, git status, the handoff if you wrote one), before you start any subagent. ' +
       'Then carry on with the work. If nothing is left to do, say so in one line and stop.',
   ])
-  await clock.advance(HOUR)
+  await clock.advance(10 * MIN)
   expect([forks.length, wakes(w).length]).toEqual([1, 1])
   expect(await ctxGuard($, '')).not.toContain('wake:')
 })
 
 test('/ctx-guard wake 7d with text: the wake prompt carries the text', async ($, on) => {
-  const w = newWorld({ limits: [fiveAt(10, RESETS_AT), weekAt(90, NOW + 3 * HOUR)] })
+  const w = newWorld({ limits: [fiveAt(10, NOW + 3 * HOUR), weekAt(90, NOW + HOUR)] })
   writeConfig(w, CONFIG)
   const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
   on('model.fork', async () => {
@@ -69,8 +69,8 @@ test('/ctx-guard wake 7d with text: the wake prompt carries the text', async ($,
   })
   await start($)
   await ctxGuard($, 'trust')
-  expect(await ctxGuard($, 'wake 7d Run the nightly suite.')).toContain('weekly usage window resets in 3h')
-  await clock.advance(3 * HOUR + 2 * MIN)
+  expect(await ctxGuard($, 'wake 7d Run the nightly suite.')).toContain('weekly usage window resets in 1h')
+  await clock.advance(PAST_RESET)
   expect(wakes(w)).toEqual(['[ctx-guard] The operator asked with /ctx-guard wake to start once the usage window reset, and the weekly usage window reset. Run the nightly suite.'])
 })
 
@@ -89,7 +89,7 @@ test('/ctx-guard wake: a command the operator types first cancels it; /ctx-guard
   const { w, clock } = await lead($, on)
   await ctxGuard($, 'wake 5h')
   await ctxGuard($, '')
-  expect(await ctxGuard($, '')).toContain('wake: after the 5-hour reset in 2h (2026-10-13 14:00 UTC); waiting for the reset')
+  expect(await ctxGuard($, '')).toContain('wake: after the 5-hour reset in 1h (2026-10-13 13:00 UTC); waiting for the reset')
   await $.command.run({ command: 'review', args: '', origin: { kind: 'bridge' } as never, presentation: { isFullscreen: false, columns: 120 } })
   await clock.advance(PAST_RESET)
   expect(wakes(w)).toEqual([])
@@ -134,7 +134,7 @@ test('/ctx-guard wake off cancels it', async ($, on) => {
 test('/ctx-guard wake: paused at the reset, a notify and no prompt', async ($, on) => {
   const { w, clock, forks } = await lead($, on)
   await ctxGuard($, 'wake 5h')
-  await clock.advance(2 * HOUR - 10 * MIN)
+  await clock.advance(HOUR - 10 * MIN)
   await ctxGuard($, 'pause 1h')
   await clock.advance(15 * MIN)
   expect([forks.length, wakes(w).length]).toEqual([0, 0])
