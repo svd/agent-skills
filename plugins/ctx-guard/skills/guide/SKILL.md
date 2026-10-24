@@ -72,7 +72,9 @@ the cause only if it is yours to fix, then send the token once more. Never loop 
 | Code | What you do |
 |---|---|
 | `no-handoff`, `handoff-stale` | Rewrite the handoff now, then send the token again. |
-| `agents-running`, `background-tasks` | Wait for them to finish (or collect their results), then send the token again. |
+| `agents-running` | Wait for the agents to finish (or collect their results), then send the token again. |
+| `background-tasks`, a task that ends on its own (a shell, a subagent, a workflow, a remote agent) | Wait for it to finish, then send the token again. |
+| `background-tasks`, a task that never ends (a watch, a monitor) | Stop it by the id the reason names (`shell b1 (npm run watch)`: id `b1`) with the task-stop tool (`TaskStop`), then send the token again. If it cannot be stopped, tell the operator the code and reason, then say 'ready for /clear' (or '/compact'). |
 | `ready-check-failed` | The reason ends with the output of a project script. Fix what it names (for example, commit the work, or wait for a step to finish) if that belongs to the task; else tell the operator. Never edit or bypass the script. |
 | `peer-restarting`, `race-lost` | A peer is restarting. Keep the handoff current and send the token again after the gap the reason names. |
 | `already-busy` | A restart is already under way. Do nothing. |

@@ -118,6 +118,7 @@ The same keys go in `defaults` and in each entry of `roles`.
 | `restart.peerGap` | duration | `"10m"` | Minimum gap between a peer's restart and this role's. |
 | `restart.selfGap` | duration, or `"0"` for none | `"1m"` | Minimum gap between this session's own restarts on the ready token (`too-soon`). |
 | `restart.minContext` | tokens or percent, or `"off"` | `"off"` | Context fill below which the ready token is refused (`not-needed`). Set on its own, never read from the triggers. |
+| `restart.ignoreBackground` | list of task type labels | `[]` | Background task types that do not refuse the ready token or hold a queued compact back (`background-tasks`): the `type` a Stop reports for the task, as the refusal names it (`shell`, `subagent`, `monitor`, `workflow`, …). For a task that runs on through a restart, so the restart loses nothing it does. Needs `/ctx-guard trust`. |
 | `restart.readyChecks` | list of [ready checks](#ready-checks) | `[]` | Commands that must pass before a restart. |
 | `compact.instructions` | text | none | Passed to `/compact`. |
 
@@ -602,7 +603,7 @@ With `via: compact` it ends "Nothing was compacted."
 | `too-soon` | This session's own last restart on the ready token (a `/clear` or a `/compact`) was less than `restart.selfGap` ago. | Go on working; do not repeat the token. Set `selfGap: "0"` to turn the gap off. |
 | `no-restart-command` | `/<restart.command>` (`/compact` for `via: compact`) is not among the session's commands. | Fix `restart.command`, or install the plugin or project command it names. |
 | `agents-running` | A listed agent is pending, running or waiting, or an agent was seen stepping in the last 15 min with no end (this covers workflow agents). | Let the agents finish or stop them, then send the token again. |
-| `background-tasks` | The last Stop reported background tasks, or no Stop has reported yet. | Finish or stop the background shells, then send the token again. |
+| `background-tasks` | The last Stop reported a background task in flight, or no Stop has reported yet. A task whose status is `completed`, `failed` or `killed`, or whose type `restart.ignoreBackground` lists, does not count. The reason names each task by its type, its id and its description (`shell b1 (npm run watch)`). | Wait for a task that ends on its own; stop one that never ends (a watch, a monitor) by its id, then send the token again. Or list its type in `restart.ignoreBackground`. |
 | `role-shared` | Another live session holds this role's lease. | End the other session, or give one of them another role. |
 | `no-handoff` | The handoff file is missing, empty or not a file. | Write the handoff, then send the token again. |
 | `handoff-stale` | The handoff was not written after the session start or the last `/clear`. | Rewrite it in this session, then send the token again. |

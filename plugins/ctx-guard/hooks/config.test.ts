@@ -388,6 +388,9 @@ describe('validation', () => {
     expect(errorsOf(r({ via: 'reboot' }))[0]).toContain('restart.via: expected one of clear, compact')
     expect(errorsOf(r({ peers: ['Master'] }))[0]).toContain('restart.peers[0]: "Master" must match')
     expect(errorsOf(r({ peerGap: 10 }))[0]).toContain('restart.peerGap: expected a duration')
+    expect(ok(r({ ignoreBackground: ['monitor', ' remote_agent '] })).roles.lead?.restart.ignoreBackground).toEqual(['monitor', 'remote_agent'])
+    expect(errorsOf(r({ ignoreBackground: 'monitor' }))[0]).toContain('restart.ignoreBackground: expected a list of task type labels')
+    expect(errorsOf(r({ ignoreBackground: [''] }))[0]).toContain('restart.ignoreBackground[0]: "" is not a task type label')
     expect(ok(r({ selfGap: '2m' })).roles.lead?.restart.selfGap).toBe(120_000)
     expect(ok(r({ selfGap: '0' })).roles.lead?.restart.selfGap).toBe(0)
     expect(ok(r({ selfGap: 0 })).roles.lead?.restart.selfGap).toBe(0)
@@ -565,6 +568,7 @@ describe('defaults inheritance', () => {
       selfGap: 60_000,
       minContext: null,
       readyChecks: [],
+      ignoreBackground: [],
     })
   })
 

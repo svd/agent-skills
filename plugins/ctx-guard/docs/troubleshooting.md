@@ -74,7 +74,7 @@ the ones below need you.
 | `untrusted` | Restart settings not approved, or changed since. The band shows `untrusted`. | Read `/ctx-guard`, then `/ctx-guard trust`. |
 | `no-handoff`, `handoff-stale` | The handoff is missing, empty, or older than the session start or last `/clear`. | The model rewrites it and sends the token again. |
 | `agents-running` | A subagent or workflow agent is still running (or was seen in the last 15 min with no end). | Let it finish or stop it. |
-| `background-tasks` | Background shells are running, or no turn end has reported yet. | Stop them; finish one turn. |
+| `background-tasks` | Background tasks are running (the reason names each one's type and id), or no turn end has reported yet. | Let them finish, or stop one by its id; finish one turn. A type that runs on safely through a restart can go in `restart.ignoreBackground`. |
 | `not-needed` | Context is below `restart.minContext`. | Nothing to do; the model goes on working. Lower `restart.minContext` or set it to `"off"`. |
 | `too-soon` | This session restarted less than `restart.selfGap` (default `1m`) ago. | Wait, or set `"selfGap": "0"`. |
 | `role-shared` | Another live session holds this role's lease. | End the other session or give it another role. A dead session's lease expires after 15 minutes. |

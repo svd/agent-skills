@@ -2,7 +2,7 @@
 // restart is judged on and the fail-closed verdict over them, the peer race,
 // and what to do with a pending resume found after a reload. Pure: no `$`,
 // never throws.
-import type { LastCompact, PendingCompact, PendingResume, Quantity, RestartVia } from '../types'
+import type { BackgroundTask, LastCompact, PendingCompact, PendingResume, Quantity, RestartVia } from '../types'
 import type { Lease } from './roles'
 import { humanDuration, humanQuantity, humanTokens } from './messages'
 
@@ -142,7 +142,7 @@ export type Facts = {
   // Agent ids seen stepping within STEP_SEEN_MS with no turn.complete since.
   steps: readonly string[]
   // null: unknown (no Stop reported its list since the session started).
-  background: readonly { type: string; description: string }[] | null
+  background: readonly BackgroundTask[] | null
   lease: Lease
   handoff: HandoffFact
   startedAt: number
@@ -175,10 +175,20 @@ function agentsFail(agents: readonly AgentRow[], steps: readonly string[]): stri
   return busy.length ? `agents still running: ${busy.join(', ')}` : null
 }
 
+// A Stop's task in a status that has ended: it holds nothing back. Any other status is in flight.
+const ENDED_STATUSES: readonly string[] = ['completed', 'failed', 'killed']
+
+/** The tasks of a Stop's list that hold a restart or compact back: in flight, and not of a type in `ignore`. Null stays unknown. */
+export function blockingTasks(bg: readonly BackgroundTask[] | null, ignore: readonly string[]): BackgroundTask[] | null {
+  return bg === null ? null : bg.filter(t => !ENDED_STATUSES.includes(t.status) && !ignore.includes(t.type))
+}
+
+// `shell b1 (the build)`: the type, the id the task-stop tool takes, and the description.
+const taskName = (t: BackgroundTask): string => [t.type || 'task', t.id].filter(Boolean).join(' ') + (t.description ? ` (${t.description})` : '')
+
 function backgroundFail(bg: Facts['background']): string | null {
   if (bg === null) return 'background tasks unknown: no Stop has reported them since the session started'
-  const names = bg.map(t => t.description || t.type)
-  return names.length ? `background tasks still running: ${names.join(', ')}` : null
+  return bg.length ? `background tasks still running: ${bg.map(taskName).join(', ')}` : null
 }
 
 function youngPeer(f: Facts): { role: string; at: number } | null {

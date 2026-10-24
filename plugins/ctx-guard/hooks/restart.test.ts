@@ -12,6 +12,7 @@ import {
   checkDetail,
   checkLines,
   compactArgs,
+  blockingTasks,
   compactBusy,
   compactGate,
   compactRequest,
@@ -163,8 +164,8 @@ describe('verdict: one refusal per code', () => {
   })
 
   test('background-tasks', () => {
-    const v = verdict(facts({ background: [{ type: 'shell', description: 'npm run watch' }] }))
-    expect(v).toEqual({ ok: false, code: 'background-tasks', text: 'background tasks still running: npm run watch' })
+    const v = verdict(facts({ background: [{ id: 'b1', type: 'shell', status: 'running', description: 'npm run watch' }] }))
+    expect(v).toEqual({ ok: false, code: 'background-tasks', text: 'background tasks still running: shell b1 (npm run watch)' })
   })
 
   test('background-tasks: an unknown list refuses', () => {
@@ -285,7 +286,7 @@ describe('verdict order and the check list', () => {
       lastRestartAt: NOW - MIN,
       commands: [],
       agents: [{ id: 'x', status: 'running' }],
-      background: [{ type: 'shell', description: 'x' }],
+      background: [{ id: 'b1', type: 'shell', status: 'running', description: 'x' }],
       lease: { kind: 'shared', sessionId: 'y' },
       handoff: { kind: 'absent', path: 'h.md' },
       ownStamp: { kind: 'unreadable', detail: '' },
@@ -493,7 +494,7 @@ describe('the quiet re-check before the stamp and before /clear', () => {
     expect(quietVerdict({ ...q, agents: [{ id: 'a', status: 'pending', description: 'x' }] }).ok ? '' : 'agents-running').toBe('agents-running')
     expect(quietVerdict({ ...q, steps: ['wf'] })).toEqual({ ok: false, code: 'agents-running', text: 'agents still running: agent wf (stepped recently) (started after the checks)' })
     expect(quietVerdict({ ...q, background: null }).ok).toBe(false)
-    expect(quietVerdict({ ...q, background: [{ type: 'shell', description: 'tail' }] }).ok).toBe(false)
+    expect(quietVerdict({ ...q, background: [{ id: 'b2', type: 'shell', status: 'running', description: 'tail' }] }).ok).toBe(false)
   })
 
   test('a sent resume is only flagged after a reload', () => {
@@ -506,6 +507,22 @@ describe('the quiet re-check before the stamp and before /clear', () => {
     expect(isReadyAnswer('— CTX-READY ✅', 'CTX-READY')).toBe(true)
     expect(isReadyAnswer('éCTX-READY', 'CTX-READY')).toBe(false)
     expect(isReadyAnswer('CTX-READY_', 'CTX-READY')).toBe(true)
+  })
+})
+
+describe('background tasks', () => {
+  const task = (type: string, status: string) => ({ id: `${type}-1`, type, status, description: 'd' })
+
+  test('an ended task, or one of an ignored type, holds nothing back; any other status does', () => {
+    const list = [task('shell', 'running'), task('subagent', 'pending'), task('shell', 'completed'), task('shell', 'failed'), task('shell', 'killed'), task('monitor', 'running'), task('workflow', 'paused')]
+    expect(blockingTasks(list, ['monitor'])?.map(t => t.id)).toEqual(['shell-1', 'subagent-1', 'workflow-1'])
+    expect(blockingTasks(list, [])?.map(t => `${t.type}:${t.status}`)).toEqual(['shell:running', 'subagent:pending', 'monitor:running', 'workflow:paused'])
+    expect(blockingTasks(null, ['monitor'])).toBeNull()
+  })
+
+  test('the refusal names each task by type, id and description', () => {
+    const v = verdict(facts({ background: [{ id: 'b1', type: 'shell', status: 'running', description: 'npm run watch' }, { id: 'm2', type: 'monitor', status: 'running', description: '' }] }))
+    expect(v).toEqual({ ok: false, code: 'background-tasks', text: 'background tasks still running: shell b1 (npm run watch), monitor m2' })
   })
 })
 
@@ -543,7 +560,7 @@ describe('compact', () => {
     expect(compactBusy({ ...q, agents: [{ id: 'a', status: 'running', description: 'scan' }] })).toBe('agents still running: scan')
     expect(compactBusy({ ...q, steps: ['wf'] })).toBe('agents still running: agent wf (stepped recently)')
     expect(compactBusy({ ...q, background: null })).toContain('background tasks unknown')
-    expect(compactBusy({ ...q, background: [{ type: 'shell', description: 'tail' }] })).toBe('background tasks still running: tail')
+    expect(compactBusy({ ...q, background: [{ id: 'b2', type: 'shell', status: 'running', description: 'tail' }] })).toBe('background tasks still running: shell b2 (tail)')
   })
 
   test('arguments, and the stored shapes read back', () => {

@@ -694,7 +694,7 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
   checkKeys(ctx, hp, handoff, ['path', 'instructions'])
   const restart = objAt(ctx, join(path, 'restart'), o.restart)
   const rp = join(path, 'restart')
-  checkKeys(ctx, rp, restart, ['mode', 'via', 'command', 'prompt', 'peers', 'peerGap', 'selfGap', 'minContext', 'readyChecks'])
+  checkKeys(ctx, rp, restart, ['mode', 'via', 'command', 'prompt', 'peers', 'peerGap', 'selfGap', 'minContext', 'readyChecks', 'ignoreBackground'])
   const compact = objAt(ctx, join(path, 'compact'), o.compact)
   checkKeys(ctx, join(path, 'compact'), compact, ['instructions'])
 
@@ -705,6 +705,16 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
       restart.peers.forEach((p, i) => {
         if (typeof p === 'string' && ROLE_NAME.test(p)) peers.push(p)
         else err(ctx, `${join(rp, 'peers')}[${i}]`, `${shown(p)} must match ${ROLE_NAME.source}`)
+      })
+    }
+  }
+  const ignoreBackground: string[] = []
+  if (restart.ignoreBackground !== undefined) {
+    if (!Array.isArray(restart.ignoreBackground)) err(ctx, join(rp, 'ignoreBackground'), `expected a list of task type labels, got ${shown(restart.ignoreBackground)}`)
+    else {
+      restart.ignoreBackground.forEach((t, i) => {
+        if (typeof t === 'string' && t.trim() !== '') ignoreBackground.push(t.trim())
+        else err(ctx, `${join(rp, 'ignoreBackground')}[${i}]`, `${shown(t)} is not a task type label`)
       })
     }
   }
@@ -739,6 +749,7 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
       selfGap: gapAt(ctx, join(rp, 'selfGap'), restart.selfGap, DEFAULT_SELF_GAP),
       minContext: restart.minContext === undefined || restart.minContext === 'off' ? null : qtyAt(ctx, join(rp, 'minContext'), restart.minContext, ['tokens', 'percent'], 'tokens'),
       readyChecks,
+      ignoreBackground,
     },
     compact: { instructions: textAt(ctx, join(path, 'compact.instructions'), compact.instructions, null) },
   }
@@ -1210,10 +1221,11 @@ export function trustMaterial(config: Config): unknown {
   for (const name of Object.keys(config.roles).sort()) {
     const spec = roleSpec(config, name)
     if (!spec) continue
-    const { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext } = spec.restart
+    const { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext, ignoreBackground } = spec.restart
     const auto = spec.triggers.filter(t => t.do.includes('ping') || t.do.includes('prompt') || liftHas(t, 'prompt'))
     out[name] = {
-      restart: { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext },
+      // ignoreBackground only when set, so an approval given before it existed still matches.
+      restart: { mode, via, command, prompt, readyChecks, peers, peerGap, selfGap, minContext, ...(ignoreBackground?.length ? { ignoreBackground } : {}) },
       // The handoff path lands in the resume command line.
       handoff: { path: spec.handoff.path },
       compact: spec.compact.instructions,

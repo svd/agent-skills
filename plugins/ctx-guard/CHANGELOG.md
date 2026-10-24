@@ -6,16 +6,25 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ### Added
 
+- `restart.ignoreBackground`: a list of background task type labels (the `type` a Stop reports)
+  that do not refuse the ready token as `background-tasks` or hold a queued compact back. Empty
+  by default; needs `/ctx-guard trust`.
 - `/ctx-guard wake <5h|7d> [text]`: the operator asks the session to start work once that usage
   window resets. It sets a hold of the session's role on the window's usage at the time, refused
   below 5 %, and answers with the reset time. At the reset the lift check reads fresh usage and
   the wake prompt goes, with the operator's text or one that asks the model to check where the
   work stands and carry on. The gates of a lift's `prompt` apply (trust, `autoActions`, no
   pause), with a `notify` when one is closed; input the operator types first cancels it with a
-  toast, as does `/ctx-guard wake off`, while their `/clear` and `/compact` leave it. It outlives `/clear` and a reload, a role change drops it,
-  and the `/ctx-guard` report shows it.
+  toast, as does `/ctx-guard wake off`, while their `/clear` and `/compact` leave it. It
+  outlives `/clear` and a reload, a role change drops it, and the `/ctx-guard` report shows it.
 
 ### Changed
+
+- The `background-tasks` refusal names each task by its type, its id and its description
+  (`shell b1 (npm run watch)`), so the model can stop a task that never ends by its id. A task the
+  Stop reports as `completed`, `failed` or `killed` does not count. The guide splits the code:
+  wait for a task that ends on its own, stop a watch or a monitor by its id, and tell the operator
+  when it cannot be stopped.
 
 - The `/ctx-guard:clear` ask holds for the session's role until a restart, a `/clear`, a role
   claim (`/ctx-guard role`, a typed resume or restart command), a role change (a role resolved

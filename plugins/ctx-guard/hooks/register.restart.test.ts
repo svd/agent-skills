@@ -238,11 +238,29 @@ test('agents-running: an unlisted agent seen stepping, until its turn completes'
   expect(w.ran).toEqual(['clear', RESUME])
 })
 
+test('background-tasks: a task of a type in restart.ignoreBackground, or one that ended, does not refuse', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w, autoConfig({ ignoreBackground: ['monitor'] }))
+  await ready($, clock, undefined, [
+    { id: 'm1', type: 'monitor', status: 'running', description: 'watch the artifact' },
+    { id: 'b1', type: 'shell', status: 'completed', description: 'npm test' },
+  ])
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('background-tasks: restart.ignoreBackground is a setting trust covers', async ($, on) => {
+  const w = restartWorld()
+  await armed($, on, w)
+  writeConfig(w, autoConfig({ ignoreBackground: ['monitor'] }))
+  await ctxGuard($, 'reload')
+  expect(await ctxGuard($, '')).toContain('trust: not approved (needs approval: lead.restart)')
+})
+
 test('background-tasks from the last Stop', async ($, on) => {
   const w = restartWorld()
   const { clock, session } = await armed($, on, w)
   await ready($, clock, undefined, [{ id: 'b1', type: 'shell', status: 'running', description: 'npm run watch' }])
-  expect(refusals(session)[0]).toContain('(background-tasks): background tasks still running: npm run watch')
+  expect(refusals(session)[0]).toContain('(background-tasks): background tasks still running: shell b1 (npm run watch)')
   // A Stop with no list is unknown, not empty.
   await ready($, clock, undefined, 'none')
   expect(refusals(session)[1]).toContain('(background-tasks): background tasks unknown')
@@ -778,7 +796,7 @@ test('/ctx-guard:clear: a token refused for now keeps the ask, and the next toke
   await typedClear($)
   await turn($, 'start')
   await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
-  expect(refusals(session).at(-1)).toContain('background tasks still running: the build')
+  expect(refusals(session).at(-1)).toContain('background tasks still running: local_bash b1 (the build)')
   await turn($, 'start')
   await ready($, clock)
   expect(w.ran.slice(1)).toEqual(['clear', RESUME])
@@ -1104,7 +1122,7 @@ test('busy work survives a reload: a running background task and a stepping agen
   await start($)
   await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.settle()
-  expect(refusals(session)[1]).toContain('(background-tasks): background tasks still running: npm run watch')
+  expect(refusals(session)[1]).toContain('(background-tasks): background tasks still running: shell b1 (npm run watch)')
   expect(w.ran).toEqual([])
 })
 

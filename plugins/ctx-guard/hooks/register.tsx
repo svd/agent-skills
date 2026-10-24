@@ -8,6 +8,7 @@ import type { PluginState, Register } from 'claude-code'
 import type {
   Activity,
   AgentKind,
+  BackgroundTask,
   Band,
   BandCache,
   BandProbe,
@@ -127,6 +128,7 @@ import {
   compactBusy,
   compactGate,
   compactRequest,
+  blockingTasks,
   isReadyAnswer,
   isTypedPrompt,
   isUnder,
@@ -1107,7 +1109,7 @@ function asWork(v: unknown): Work {
   const bg = Array.isArray(o.background)
     ? o.background
         .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
-        .map(t => ({ type: String(t.type ?? ''), description: String(t.description ?? '') }))
+        .map(t => ({ id: String(t.id ?? ''), type: String(t.type ?? ''), status: String(t.status ?? ''), description: String(t.description ?? '') }))
     : null
   return { steps, background: bg }
 }
@@ -1651,7 +1653,7 @@ async function gather($: EngineInterface, role: string, spec: RoleSpec, busy: st
     facts.commands = (await $.command.list()).map(c => c.name)
     facts.agents = await $.agent.list()
     facts.steps = await recentSteps($, now)
-    facts.background = work().background
+    facts.background = blockingTasks(work().background, spec.restart.ignoreBackground ?? [])
     facts.startedAt = (await $.session.usage()).startedAt
     facts.lastClearAt = mem.lastClearAt
     if (via === 'clear') {
@@ -1743,8 +1745,15 @@ async function quiet($: EngineInterface, tokenAt: number): Promise<Verdict> {
     lastMainEndAt: a.lastMainEndAt,
     agents: await $.agent.list(),
     steps: await recentSteps($, now),
-    background: work().background,
+    background: busyTasks(),
   })
+}
+
+// The last Stop's tasks that hold a restart or compact back, for the session's role (blockingTasks).
+function busyTasks(): BackgroundTask[] | null {
+  const role = mod.role.role
+  const spec = mod.eff && role !== null ? roleSpec(mod.eff.config, role) : null
+  return blockingTasks(work().background, spec?.restart.ignoreBackground ?? [])
 }
 
 const settle = ($: EngineInterface, ms: number): Promise<void> =>
@@ -2057,7 +2066,7 @@ async function tryCompact($: EngineInterface): Promise<void> {
       restart: await restartBusy($, now),
       agents: await $.agent.list(),
       steps: await recentSteps($, now),
-      background: work().background,
+      background: busyTasks(),
     })
     if (busy) {
       // One toast per wait: the first busy try, or the first after a hold ended.
@@ -3914,7 +3923,7 @@ export const register: Register = (on, options) => {
     if (needsReady()) await quietly(() => ready($))
     // No list at all is unknown, not empty: the guard refuses on unknown.
     const list = Array.isArray(e.background_tasks)
-      ? e.background_tasks.map(t => ({ type: String(t.type), description: String(t.description ?? '') }))
+      ? e.background_tasks.map(t => ({ id: String(t.id ?? ''), type: String(t.type), status: String(t.status ?? ''), description: String(t.description ?? '') }))
       : null
     await quietly(() => change($, 'work', v => ({ ...(v ?? asWork(null)), background: list })))
     // An empty path is the engine's stamp for none.

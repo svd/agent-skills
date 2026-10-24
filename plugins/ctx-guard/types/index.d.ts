@@ -113,6 +113,8 @@ export type RoleSpec = {
     // Below this context fill the ready token is refused (not-needed); null is no such check.
     minContext: Quantity | null
     readyChecks: ReadyCheck[]
+    // Background task type labels (a Stop's `type`) that do not hold the restart back.
+    ignoreBackground: string[]
   }
   compact: { instructions: string | null }
 }
@@ -382,7 +384,8 @@ export type Activity = {
   shown: string[]
 }
 
-export type BackgroundTask = { type: string; description: string }
+// One in-flight task of a Stop's list: its id (for the task-stop tool), type label, status and description.
+export type BackgroundTask = { id: string; type: string; status: string; description: string }
 
 // Work the restart guard must see finished, kept across reloads: subagent ids
 // seen stepping (and when) with no turn.complete since, and what the last
