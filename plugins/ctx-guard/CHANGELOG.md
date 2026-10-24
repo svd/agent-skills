@@ -15,8 +15,10 @@ All notable changes to the `ctx-guard` plugin are documented here.
   the wake prompt goes, with the operator's text or one that asks the model to check where the
   work stands and carry on. The gates of a lift's `prompt` apply (trust, `autoActions`, no
   pause), with a `notify` when one is closed; input the operator types first cancels it with a
-  toast, as does `/ctx-guard wake off`, while their `/clear` and `/compact` leave it. It
-  outlives `/clear` and a reload, a role change drops it, and the `/ctx-guard` report shows it.
+  toast, as does `/ctx-guard wake off`, while their `/clear` and `/compact`, and input the
+  person did not type (a peer session, an SDK host, a channel), leave it and a wake prompt
+  waiting to go. It outlives `/clear` and a reload, a role change drops it, and the
+  `/ctx-guard` report shows it.
 
 ### Changed
 

@@ -198,7 +198,7 @@ import {
   track,
 } from './subagents'
 import type { Tracked } from './subagents'
-import { LIFT_CHECK_TIMEOUT_MS, LIFT_TRIES, asLifts, checkTries, earliestReset, emptyLifts, gateWhy, liftsFor, operatorInput, wakeVerdict, wakesOnLift } from './lifts'
+import { LIFT_CHECK_TIMEOUT_MS, LIFT_TRIES, asLifts, checkTries, earliestReset, emptyLifts, gateWhy, keepsWake, liftsFor, operatorInput, wakeVerdict, wakesOnLift } from './lifts'
 import type { WakeGate } from './lifts'
 import { parseProbe, probeSegment, probeState, scriptEnv } from './scripts'
 import type { ProbeOutcome, ProbeRun, ScriptContext, ScriptPurpose } from './scripts'
@@ -2795,9 +2795,6 @@ async function endPending($: EngineInterface, m: Metrics | null, why: NotWoken |
   await runLifts($, [{ trigger: t, hold: hold, why, steer, wake: false }], metrics)
 }
 
-// The operator's commands that leave a /ctx-guard wake set.
-const KEEP_WAKE: ReadonlySet<string> = new Set(['clear', 'compact'])
-
 // The commands whose own command.run handlers run onOperator.
 const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guard:clear'])
 
@@ -2807,12 +2804,13 @@ const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guar
  * is dropped; the operator is steering, so they get a toast and the model the
  * lift note. Their /clear would wipe that note: the prompt is dropped after
  * the clear, by their next input or the next idle tick (tryPending). Input
- * the person typed cancels a /ctx-guard wake: they are back. Their /clear and
- * /compact do not: a context action before stepping away.
+ * the person typed cancels a /ctx-guard wake: they are back. Input that
+ * leaves the wake (keepsWake) leaves its waiting prompt too.
  */
 async function onOperator($: EngineInterface, command: string | null, origin: string | undefined): Promise<void> {
   if (!active() || mod.role.role === null || !liftsOn()) return
-  if (wakeSet() && !KEEP_WAKE.has(command ?? '') && origin !== undefined && isTypedPrompt({ origin: { kind: origin } })) {
+  const keeps = keepsWake(command, origin !== undefined && isTypedPrompt({ origin: { kind: origin } }))
+  if (wakeSet() && !keeps) {
     const w = liftsNow().holds[WAKE_ID]?.manual
     await dropWake($)
     if (w) $.ui.toast(`ctx-guard: the wake after the ${windowName(w.window)} reset is cancelled: you are back.`)
@@ -2821,7 +2819,7 @@ async function onOperator($: EngineInterface, command: string | null, origin: st
   const now = await $.clock.now()
   const pending = liftsNow().pending
   await putLifts($, l => ({ ...l, operatorAt: now, attempts: {} }))
-  if (pending && command !== 'clear') $.clock.after(0, () => void serial(() => timed($, () => endPending($, null, null, true))))
+  if (pending && command !== 'clear' && !(keeps && pending.triggerId === WAKE_ID)) $.clock.after(0, () => void serial(() => timed($, () => endPending($, null, null, true))))
 }
 
 // The /ctx-guard wake gone, with its waiting prompt.

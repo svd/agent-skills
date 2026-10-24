@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { asLifts, checkTries, earliestReset, emptyLifts, liftsFor, operatorInput, wakeVerdict, wakesOnLift } from './lifts'
+import { asLifts, checkTries, earliestReset, emptyLifts, keepsWake, liftsFor, operatorInput, wakeVerdict, wakesOnLift } from './lifts'
 import type { WakeFacts, WakeGate } from './lifts'
 import { NOT_WOKEN } from './messages'
 import type { Hold } from '../types'
@@ -80,6 +80,12 @@ describe('waking', () => {
     expect(operatorInput('composer', 'ctx-guard:resume')).toBe(true)
     expect(operatorInput('composer', 'clear')).toBe(true)
     expect(operatorInput(undefined, null)).toBe(false)
+  })
+
+  test('keepsWake: input the person did not type, and their /clear and /compact', () => {
+    for (const command of [null, 'review', 'clear']) expect(keepsWake(command, false)).toBe(true)
+    for (const command of ['clear', 'compact']) expect(keepsWake(command, true)).toBe(true)
+    for (const command of [null, 'review', 'ctx-guard:resume']) expect(keepsWake(command, true)).toBe(false)
   })
 
   test('wakesOnLift: prompt in lift.do, gates open, times left', () => {

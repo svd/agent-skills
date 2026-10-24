@@ -97,6 +97,17 @@ export function operatorInput(origin: string | undefined, command: string | null
   return origin !== undefined && OPERATOR_ORIGINS.has(origin) && command !== 'ctx-guard'
 }
 
+// The operator's commands that leave a /ctx-guard wake set: a context action before stepping away.
+const KEEP_WAKE: ReadonlySet<string> = new Set(['clear', 'compact'])
+
+/**
+ * Whether operator input leaves a /ctx-guard wake set, and its waiting
+ * prompt: input the person did not type, and their /clear and /compact.
+ */
+export function keepsWake(command: string | null, typed: boolean): boolean {
+  return !typed || (command !== null && KEEP_WAKE.has(command))
+}
+
 export type WakeGate = { trusted: boolean; autoActions: boolean; paused: boolean }
 
 /** Why the gates hold a wake back; null when they let it through. */

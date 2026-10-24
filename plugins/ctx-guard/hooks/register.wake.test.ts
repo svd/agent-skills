@@ -23,14 +23,15 @@ const CONFIG = { version: 1, roles: { lead: { triggers: [{ id: 'away', when: { i
 
 const wakes = (w: World): string[] => w.prompts.filter(p => p.includes('/ctx-guard wake'))
 
-// A trusted lead with the five-hour window at `pct`; each lift check's fork reports `after`.
-async function lead($: Engine, on: On, pct = 60, after: Limit[] = [fiveAt(3, NOW + 7 * HOUR)], config: unknown = CONFIG): Promise<{ w: World; clock: MockClock; session: MockSession; forks: string[] }> {
+// A trusted lead with the five-hour window at `pct`; each lift check's fork reports `after`, `hang` ms after it starts.
+async function lead($: Engine, on: On, pct = 60, after: Limit[] = [fiveAt(3, NOW + 7 * HOUR)], config: unknown = CONFIG, hang = 0): Promise<{ w: World; clock: MockClock; session: MockSession; forks: string[] }> {
   const w = newWorld({ limits: [fiveAt(pct, RESETS_AT), weekAt(40, NOW + 3 * 24 * HOUR)] })
   writeConfig(w, config)
   const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
   const forks: string[] = []
   on('model.fork', async ($, e) => {
     forks.push(e.prompt)
+    if (hang > 0) await clock.sleep(hang)
     w.limits = after
     return { value: { isAnswered: true, text: 'OK', usage: { input_tokens: 13, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } } as never
   })
@@ -120,6 +121,47 @@ test('/ctx-guard wake: a peer session\'s message, and its turn, leave it', async
   await mainTurnEnd($, clock)
   await clock.advance(PAST_RESET)
   expect(wakes(w).length).toBe(1)
+})
+
+// The lift check's fork hangs 30 s; a turn that starts while it runs leaves the wake prompt waiting for the turn's end.
+async function wakeWaiting($: Engine, on: On): Promise<{ w: World; clock: MockClock }> {
+  const { w, clock, forks } = await lead($, on, 60, undefined, CONFIG, 30_000)
+  await ctxGuard($, 'wake 5h')
+  await clock.advance(HOUR)
+  for (let i = 0; i < 30 && !forks.length; i++) await clock.advance(10_000)
+  await $.prompt.submit({ text: 'done', origin: { kind: 'task-notification' } } as never)
+  await turn($, 'start')
+  await clock.advance(MIN)
+  expect(await ctxGuard($, '')).toContain('the wake prompt waits for an idle moment')
+  return { w, clock }
+}
+
+const leaveWaiting: [string, ($: Engine) => Promise<unknown>][] = [
+  ['the operator\'s /compact', $ => $.command.run({ command: 'compact', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })],
+  ['a peer session\'s message', $ => $.prompt.submit({ text: 'from the reviewer', origin: { kind: 'peer' } } as never)],
+  ['an SDK host\'s command', $ => $.command.run({ command: 'review', args: '', origin: { kind: 'sdk' } as never, presentation: { isFullscreen: false, columns: 120 } })],
+]
+
+for (const [what, input] of leaveWaiting) {
+  test(`/ctx-guard wake: ${what} leaves its waiting prompt, which goes at the turn's end`, async ($, on) => {
+    const { w, clock } = await wakeWaiting($, on)
+    await input($)
+    await clock.settle()
+    await mainTurnEnd($, clock)
+    await clock.advance(MIN)
+    expect(w.toasts.filter(t => t.includes('/ctx-guard wake'))).toEqual([])
+    expect(wakes(w).length).toBe(1)
+  })
+}
+
+test('/ctx-guard wake: a prompt the operator types cancels its waiting prompt too', async ($, on) => {
+  const { w, clock } = await wakeWaiting($, on)
+  await $.prompt.submit({ text: 'I am here', origin: { kind: 'composer' }, turnId: 't1' } as never)
+  await clock.settle()
+  expect(w.toasts).toContain('ctx-guard: the wake after the 5-hour reset is cancelled: you are back.')
+  await mainTurnEnd($, clock)
+  await clock.advance(MIN)
+  expect(wakes(w)).toEqual([])
 })
 
 test('/ctx-guard wake off cancels it', async ($, on) => {
