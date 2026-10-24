@@ -16,12 +16,6 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ### Fixed
 
-- A lift added by a reload while its brake already held never woke the session: the new hold
-  had no record of the brake's note, so it read as never touched. Such a hold now takes the
-  note its brake fired before the reload. The first main-loop request sent after a note stamps
-  the trigger's mark with its send time; the new hold counts the note read, and itself touched,
-  at that time. A `/clear` since the note leaves it out, unless the operator spoke after the read
-  time: that hold is steered, as a hold that existed through the `/clear` would be.
 - `/ctx-guard:clear` is the operator's command only: its frontmatter sets
   `disable-model-invocation: true`, so the model cannot run it through the Skill tool.
 - A second ctx-guard copy that does not own `/ctx-guard` (a `--plugin-dir` copy beside the

@@ -25,7 +25,6 @@ import type {
   LiftPending,
   Lifts,
   MainReading,
-  Mark,
   Marks,
   Pause,
   PendingCompact,
@@ -980,7 +979,7 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
     await put($, 'marks', ev.marks)
     await quietly(() => dropRearmedCompact($, ev.marks))
   }
-  const exempt = role === null ? new Set<string>() : await stepLifts($, triggers, metrics, prev)
+  const exempt = role === null ? new Set<string>() : await stepLifts($, triggers, metrics)
   // Counted before acting too: a fire counts toward its trigger's `times` whether or not its actions succeed.
   const fired = cacheState().fired
   const capped = applyTimes(ev.fire, fired, exempt)
@@ -2434,12 +2433,11 @@ function noteContext(): NoteContext | null {
  * figures: the first reported figures show them holding, and that fire does
  * not count in their `times`.
  */
-async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Metrics, marks: Marks | null): Promise<Set<string>> {
+async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Metrics): Promise<Set<string>> {
   const l = liftsNow()
   if (!triggers.some(t => t.lift) && !Object.keys(l.holds).length && !l.estimatedLift.length) return new Set()
   const byId = new Map(triggers.map(t => [t.id, t]))
-  const stepped = stepHolds(l.holds, triggers, m, { blocking: mod.eff?.blocking === true, reports: l.reports, frozen: mod.checking ?? undefined })
-  const step = { ...stepped, holds: inheritNotes(stepped.holds, l.holds, byId, marks) }
+  const step = stepHolds(l.holds, triggers, m, { blocking: mod.eff?.blocking === true, reports: l.reports, frozen: mod.checking ?? undefined })
   const reported = (id: string): Trigger | null => {
     const t = byId.get(id)
     return t && !onEstimate(t, m) && whenState(t, m) !== null ? t : null
@@ -2458,31 +2456,6 @@ async function stepLifts($: EngineInterface, triggers: readonly Trigger[], m: Me
   const estimatedLift = l.estimatedLift.filter(id => byId.has(id) && reported(id) === null)
   await putLifts($, x => ({ ...x, holds: lifted, estimatedLift }))
   return exempt
-}
-
-/**
- * A hold that starts while its brake already fired (a reload gave the trigger
- * its lift): the note that rising edge appended counts as this hold's note,
- * read when the mark has a read time, and the hold is touched then. A /clear
- * since the note leaves it out, unless the operator steered after the read,
- * as liftsOnClear keeps such a hold's stamps.
- */
-function inheritNotes(holds: Record<string, Hold>, prev: Readonly<Record<string, Hold>>, byId: ReadonlyMap<string, Trigger>, marks: Marks | null): Record<string, Hold> {
-  const role = mod.role.role
-  if (role === null || marks === null || marks.role !== role) return holds
-  const cleared = mem.lastClearAt
-  const operatorAt = liftsNow().operatorAt
-  const ids = Object.keys(holds).filter(id => {
-    const t = byId.get(id)
-    const mark = Object.hasOwn(marks.byId, id) ? marks.byId[id] : undefined
-    if (mark === undefined || Object.hasOwn(prev, id) || holds[id]?.notedAt !== null || t?.do.includes('note') !== true || mark.at >= (holds[id]?.startedAt ?? 0)) return false
-    const steered = mark.readAt !== undefined && operatorAt !== null && operatorAt > mark.readAt
-    return cleared === null || cleared < mark.at || steered
-  })
-  return stamp(holds, ids, (hold, id) => {
-    const mark = marks.byId[id] as Mark
-    return { ...hold, notedAt: mark.at, touchedAt: mark.readAt ?? null }
-  })
 }
 
 type LiftItem = { trigger: Trigger; hold: Hold; why: NotWoken | null; steer: boolean; wake: boolean }
@@ -2820,24 +2793,6 @@ async function liftsOnClear($: EngineInterface): Promise<void> {
 // A refused call of one of a hold's tools touches it, whichever trigger refused the call.
 async function touchHolds($: EngineInterface, tool: string, now: number): Promise<void> {
   await putLifts($, l => ({ ...l, holds: stamp(l.holds, Object.keys(l.holds).filter(id => l.holds[id]?.tools.includes(tool)), hold => ({ ...hold, touchedAt: now })) }))
-}
-
-// A mark of the role whose note no main request has carried yet.
-function marksUnread(): boolean {
-  const m = mem.marks
-  if (m === null || m.role !== mod.role.role) return false
-  const noted = new Set(roleTriggers().filter(t => t.do.includes('note')).map(t => t.id))
-  return Object.entries(m.byId).some(([id, mark]) => mark.readAt === undefined && noted.has(id))
-}
-
-// A main request went out: each mark whose note it carries (the note came before it) is read now.
-async function onMarkStep($: EngineInterface, sentAt: Promise<number | null> | null): Promise<void> {
-  const at = (await sentAt) ?? (await $.clock.now())
-  const m = mem.marks
-  if (m === null || m.role !== mod.role.role) return
-  const read = Object.entries(m.byId).filter(([, mark]) => mark.readAt === undefined && at > mark.at)
-  if (!read.length) return
-  await put($, 'marks', { ...m, byId: { ...m.byId, ...Object.fromEntries(read.map(([id, mark]) => [id, { ...mark, readAt: at }])) } })
 }
 
 // A main step's work for the lifts: a hold's note read, a lift note read mid-turn, a usage report for a stall.
@@ -3795,9 +3750,6 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined && active()) {
       noteStep($, e.agentId)
       if (budgetsOn()) subagentStep($, e.agentId, stepTokens(r.usage))
-    }
-    if (e.agentId === undefined && active() && marksUnread()) {
-      $.clock.after(0, () => void serial(() => timed($, () => onMarkStep($, sentAt))))
     }
     if (e.agentId === undefined && active() && liftStepDue()) {
       $.clock.after(0, () => void serial(() => timed($, () => onLiftStep($, sentAt))))
