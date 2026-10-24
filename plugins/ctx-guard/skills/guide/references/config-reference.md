@@ -455,12 +455,13 @@ Once the reset is confirmed, the wake prompt goes as ctx-guard's own:
 
 With `[text]`, the operator's text replaces the part after the first sentence. Input the operator
 types before the wake goes (a prompt or a command, in the prompt box or from a remote client)
-cancels it, with a toast: the operator is back. `/ctx-guard` itself, `/clear` and `/compact` leave
-it: the operator may clear or compact the context before stepping away. Input from other
-origins (a peer session, an SDK host, a channel) leaves it. Input that leaves the wake leaves its
-wake prompt too, when the prompt waits for an idle moment. `/ctx-guard wake off` cancels it. The
-wake is kept in `$.state`: it outlives `/clear` and a hot reload, and a role change drops it, as it
-drops the role's other holds. `blocking` off leaves it. The `/ctx-guard` report shows it on a
+cancels it, with a toast: the operator is back. `/ctx-guard` itself, `/clear`, `/compact`,
+`/ctx-guard:clear` and a role's restart command (`/ctx-guard:resume` by default) leave it: the
+operator may clear or compact the context before stepping away. Input from other origins (a peer
+session, an SDK host, a channel) leaves it. Input that leaves the wake leaves its wake prompt too,
+when the prompt waits for an idle moment. `/ctx-guard wake off` cancels it. The wake is kept in
+`$.state`: it outlives `/clear` and a hot reload, and a role change drops it, as it drops the
+role's other holds. `blocking` off leaves it. The `/ctx-guard` report shows it on a
 `wake:` line, with its window, the reset time and where it stands.
 
 ## Notes and template variables

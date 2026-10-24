@@ -2809,7 +2809,8 @@ const OWN_COMMANDS: ReadonlySet<string> = new Set(['ctx-guard:resume', 'ctx-guar
  */
 async function onOperator($: EngineInterface, command: string | null, origin: string | undefined): Promise<void> {
   if (!active() || mod.role.role === null || !liftsOn()) return
-  const keeps = keepsWake(command, origin !== undefined && isTypedPrompt({ origin: { kind: origin } }))
+  const restart = command !== null && mod.eff !== null && roleForCommand(mod.eff.config, command) !== null
+  const keeps = keepsWake(command, origin !== undefined && isTypedPrompt({ origin: { kind: origin } }), restart)
   if (wakeSet() && !keeps) {
     const w = liftsNow().holds[WAKE_ID]?.manual
     await dropWake($)

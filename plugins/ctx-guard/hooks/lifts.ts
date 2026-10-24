@@ -1,7 +1,7 @@
 // ctx-guard lifts: the stored shape of holds and wake attempts, and the rules
 // that decide whether a lift may wake the session. Pure: no `$`, never throws.
 import type { Hold, HoldPhase, LiftPending, Lifts, ManualWake, Trigger } from '../types'
-import { isObj, liftHas, num } from './config'
+import { DEFAULT_RESTART_COMMAND, isObj, liftHas, num } from './config'
 import { NOT_WOKEN } from './messages'
 import type { NotWoken } from './messages'
 import { WINDOW_MS } from './triggers'
@@ -98,14 +98,17 @@ export function operatorInput(origin: string | undefined, command: string | null
 }
 
 // The operator's commands that leave a /ctx-guard wake set: a context action before stepping away.
-const KEEP_WAKE: ReadonlySet<string> = new Set(['clear', 'compact'])
+// The default restart command is every role's that names none.
+const KEEP_WAKE: ReadonlySet<string> = new Set(['clear', 'compact', 'ctx-guard:clear', DEFAULT_RESTART_COMMAND])
 
 /**
  * Whether operator input leaves a /ctx-guard wake set, and its waiting
- * prompt: input the person did not type, and their /clear and /compact.
+ * prompt: input the person did not type, and their /clear, /compact,
+ * /ctx-guard:clear and a role's restart command (`restart`, or the default
+ * /ctx-guard:resume).
  */
-export function keepsWake(command: string | null, typed: boolean): boolean {
-  return !typed || (command !== null && KEEP_WAKE.has(command))
+export function keepsWake(command: string | null, typed: boolean, restart: boolean): boolean {
+  return !typed || restart || (command !== null && KEEP_WAKE.has(command))
 }
 
 export type WakeGate = { trusted: boolean; autoActions: boolean; paused: boolean }
@@ -139,7 +142,8 @@ export type WakeVerdict = { kind: 'untouched' } | { kind: 'steering' } | { kind:
  * input since the last touch; the gates are open; `lift.times` is not spent.
  * A hold whose attempt is already charged (`tries` above 0) skips the count.
  * The /ctx-guard wake's hold skips rules 1 and 2: the operator asked for the
- * wake, and their typed input cancels it outright.
+ * wake, and their typed input cancels it outright, but for the input that
+ * keepsWake names.
  */
 export function wakeVerdict(h: Hold, f: WakeFacts): WakeVerdict {
   if (!h.manual) {

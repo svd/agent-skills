@@ -44,7 +44,8 @@ test('/ctx-guard wake 5h: set with the reset time; at the reset one lift check, 
   const { w, clock, forks } = await lead($, on)
   expect(await ctxGuard($, 'wake 5h')).toBe(
     '[ctx-guard] wake set: when the 5-hour usage window resets in 1h (2026-10-13 13:00 UTC), ctx-guard reads fresh usage and wakes this session with ' +
-      'a prompt to check where the work stands and carry on. Anything you type first cancels it, as does /ctx-guard wake off.',
+      'a prompt to check where the work stands and carry on. Anything you type first cancels it, as does /ctx-guard wake off; ' +
+      '/clear, /compact, /ctx-guard:clear and a restart command leave it.',
   )
   await clock.advance(30 * MIN)
   expect(wakes(w)).toEqual([])
@@ -109,6 +110,21 @@ for (const command of ['clear', 'compact']) {
     await clock.advance(PAST_RESET)
     expect(w.toasts.filter(t => t.includes('cancelled'))).toEqual([])
     expect(wakes(w).length).toBe(1)
+  })
+}
+
+// /ctx-guard:clear and a role's restart command (the default /ctx-guard:resume too): the context action before stepping away.
+const RESTART_CONFIG = { ...CONFIG, roles: { ...CONFIG.roles, lead: { ...CONFIG.roles.lead, restart: { command: 'restart-lead' } } } }
+
+for (const command of ['ctx-guard:clear', 'restart-lead', 'ctx-guard:resume']) {
+  test(`/ctx-guard wake: the operator's typed /${command} leaves it`, async ($, on) => {
+    const { w, clock } = await lead($, on, 60, undefined, RESTART_CONFIG)
+    await ctxGuard($, 'wake 5h')
+    await clock.advance(MIN)
+    await $.command.run({ command, args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+    await clock.settle()
+    expect(w.toasts.filter(t => t.includes('cancelled'))).toEqual([])
+    expect(await ctxGuard($, '')).toContain('wake: after the 5-hour reset')
   })
 }
 

@@ -82,10 +82,11 @@ describe('waking', () => {
     expect(operatorInput(undefined, null)).toBe(false)
   })
 
-  test('keepsWake: input the person did not type, and their /clear and /compact', () => {
-    for (const command of [null, 'review', 'clear']) expect(keepsWake(command, false)).toBe(true)
-    for (const command of ['clear', 'compact']) expect(keepsWake(command, true)).toBe(true)
-    for (const command of [null, 'review', 'ctx-guard:resume']) expect(keepsWake(command, true)).toBe(false)
+  test('keepsWake: input the person did not type, their /clear, /compact, /ctx-guard:clear and a restart command', () => {
+    for (const command of [null, 'review', 'clear']) expect(keepsWake(command, false, false)).toBe(true)
+    for (const command of ['clear', 'compact', 'ctx-guard:clear', 'ctx-guard:resume']) expect(keepsWake(command, true, false)).toBe(true)
+    expect(keepsWake('restart-lead', true, true)).toBe(true)
+    for (const command of [null, 'review', 'restart-lead']) expect(keepsWake(command, true, false)).toBe(false)
   })
 
   test('wakesOnLift: prompt in lift.do, gates open, times left', () => {

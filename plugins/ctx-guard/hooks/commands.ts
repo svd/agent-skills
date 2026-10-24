@@ -123,7 +123,7 @@ export function wakeSetText(w: ManualWake, now: number, closed: string | null): 
   const gate = closed ? ` Note: ${closed} now, so the wake would only notify you.` : ''
   return (
     `${PREFIX} wake set: when the ${name} usage window resets${resetWhen(w.resetsAt, now)}, ctx-guard reads fresh usage and wakes this session with ${prompt}. ` +
-    `Anything you type first cancels it, as does /ctx-guard wake off.${gate}`
+    `Anything you type first cancels it, as does /ctx-guard wake off; /clear, /compact, /ctx-guard:clear and a restart command leave it.${gate}`
   )
 }
 
