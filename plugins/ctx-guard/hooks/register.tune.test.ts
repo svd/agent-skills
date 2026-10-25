@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import {
+  NOW,
   ROOT,
   STATE,
   LEAD_SOFT,
@@ -20,6 +21,7 @@ import {
   restartWorld,
   compactBottom,
   compactSession,
+  ctxGuard,
 } from './register.fixtures'
 import type { CompactAnswer, World } from './register.fixtures'
 
@@ -362,4 +364,200 @@ test('a part that would pass 256 KiB continues in -2', async ($, on) => {
   expect(kinds(w, 's1')).toEqual(['start', 'req', 'req'])
   expect(kinds(w, 's1', 2)).toEqual(['req'])
   for (const p of ledgerFiles(w)) expect(new TextEncoder().encode(w.files[p]?.text ?? '').length).toBeLessThanOrEqual(256 * 1024)
+})
+
+// ---- the reach check --------------------------------------------------------------
+
+const HOUR = 60 * 60_000
+
+const seedPath = (role: string | null, i: number, t: number): string => `${LEDGER}/${new Date(t).toISOString().slice(0, 10)}-seed_${role ?? 'none'}_${i}.jsonl`
+
+// One landed part per session, `daysAgo` days before NOW: a start, two requests up to its peak, then `extra`.
+function seed(w: World, peaks: number[], { role = 'lead' as string | null, daysAgo = 1, extra = (_t: number): Rec[] => [] } = {}): string[] {
+  return peaks.map((peak, i) => {
+    const t = NOW - daysAgo * 24 * HOUR - i * HOUR
+    const req = (dt: number, ctx: number): Rec => ({ t: t + dt, k: 'req', role, ctx, cw: 0, cr: ctx, out: 10, model: 'm', miss: 0, gap: null })
+    const recs: Rec[] = [{ t, k: 'start', role, window: 1_000_000 }, req(1, peak / 2), req(2, peak), ...extra(t + 3)]
+    const path = seedPath(role, i, t)
+    w.files[path] = { text: recs.map(r => JSON.stringify(r)).join('\n') + '\n', mtimeMs: 0 }
+    return path
+  })
+}
+
+const UNDER = [100_000, 150_000, 200_000, 220_000, 250_000]
+
+const UNREACHED = 'ctx-guard: context triggers for lead never fired in 14 days; sessions peaked at 250k (p90), the lowest is 300k. /ctx-guard tune'
+
+test('reach: 5 lead sessions peaking under the lowest context trigger toast unreached once; check lists the finding', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER)
+  const { clock } = await lead($, on, w)
+  await clock.settle()
+  expect(w.toasts.filter(t => t.includes('never fired'))).toEqual([UNREACHED])
+  const out = await ctxGuard($, 'check')
+  expect(out).toContain('reach (last 14 days, from the ledger):\n  lead: 5 sessions, 10 requests; peak per session median 200k, p90 250k, max 250k')
+  expect(out).toContain('    finding: unreached: the lowest context trigger, soft at 300k, is above the p90 peak (250k) and no context note fired')
+  expect(w.toasts.filter(t => t.includes('never fired'))).toHaveLength(1)
+})
+
+test('reach: auto compacts at 203k and 298k give the engine-compacted toast', async ($, on) => {
+  const w = newWorld()
+  const pres = [203_000, 298_000]
+  seed(w, UNDER, { extra: t => { const pre = pres.shift(); return pre === undefined ? [] : [{ t, k: 'compact', role: 'lead', trigger: 'auto', pre, post: 20_000 }] } })
+  const { clock } = await lead($, on, w)
+  await clock.settle()
+  expect(w.toasts.filter(t => t.startsWith('ctx-guard: context triggers'))).toEqual([
+    'ctx-guard: context triggers for lead never fired in 14 days; engine compacted at 203k–298k. /ctx-guard tune',
+  ])
+})
+
+test('reach: a second start in the same engine does not toast the same finding again', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER)
+  const { clock } = await lead($, on, w)
+  await clock.settle()
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await start($)
+  await clock.settle()
+  expect(w.toasts.filter(t => t.includes('never fired'))).toEqual([UNREACHED])
+})
+
+test('reach: 4 sessions say not enough data and toast nothing', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER.slice(0, 4))
+  const { clock } = await lead($, on, w)
+  await clock.settle()
+  expect(w.toasts.filter(t => t.includes('/ctx-guard tune'))).toEqual([])
+  expect(await ctxGuard($, 'check')).toContain('    not enough data (4 sessions; a finding needs 5)')
+})
+
+test('reach: ledger off prints off and never lists the folder; no config file prints no ledger', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER)
+  const { clock } = await lead($, on, w, OFF)
+  await clock.settle()
+  expect(await ctxGuard($, 'check')).toContain('\nreach: off (ledger.enabled is false)')
+  expect(w.listed.filter(p => p.startsWith(LEDGER))).toEqual([])
+  expect(w.toasts.filter(t => t.includes('/ctx-guard tune'))).toEqual([])
+})
+
+test('reach: with no config file check prints no ledger', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER)
+  stepBottom(on, () => 120_000)
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  expect(await ctxGuard($, 'check')).toContain('\nreach: no ledger (no ctx-guard config file in this repo)')
+  expect(w.toasts.filter(t => t.includes('/ctx-guard tune'))).toEqual([])
+})
+
+test('reach: records still in the buffer count in check, and once after the turn end lands them', async ($, on) => {
+  const w = newWorld()
+  const { clock } = await lead($, on, w)
+  await step($, clock)
+  expect(ledgerFiles(w)).toEqual([])
+  expect(await ctxGuard($, 'check')).toContain('  lead: 1 session, 1 request;')
+  await turnEnd($, clock)
+  expect(ledgerFiles(w)).toEqual([partPath('s1')])
+  expect(await ctxGuard($, 'check')).toContain('  lead: 1 session, 1 request;')
+})
+
+test('reach: a session with no role still prints the section, with none', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER, { role: null })
+  writeConfig(w, LEAD_SOFT)
+  const { clock } = world(on, w)
+  await start($)
+  await clock.settle()
+  const out = await ctxGuard($, 'check')
+  expect(out).toContain('ctx-guard check: no role, so no restart to check\nreach (last 14 days, from the ledger):\n  none: 5 sessions, 10 requests;')
+})
+
+test('reach: the report shows its line right after the cache line', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER)
+  const { clock } = await lead($, on, w)
+  await clock.settle()
+  const lines = (await ctxGuard($, '')).split('\n')
+  const at = lines.findIndex(l => l.startsWith('cache:'))
+  expect(at).toBeGreaterThan(-1)
+  expect(lines[at + 1]).toBe('reach (14 days): lead unreached')
+})
+
+test('reach: parts older than 14 days are not read', async ($, on) => {
+  const w = newWorld()
+  const old = seed(w, UNDER, { daysAgo: 20 })
+  const { clock } = await lead($, on, w)
+  await clock.settle()
+  expect(await ctxGuard($, 'check')).toContain('\nreach: no sessions recorded in the last 14 days')
+  for (const p of old) expect(w.reads[p]).toBeUndefined()
+  expect(w.toasts.filter(t => t.includes('/ctx-guard tune'))).toEqual([])
+})
+
+test('reach: a failed read of the reach memory toasts nothing and stores nothing', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER)
+  stepBottom(on, () => 120_000, () => 'm')
+  writeConfig(w, LEAD_SOFT)
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' }, { store: false })
+  // A store whose reads of the reach memory fail.
+  const kept = new Map<string, unknown>()
+  const sets: string[] = []
+  on('store.get', ($, e) => {
+    if (e.key.startsWith('reach:')) throw new Error('store down')
+    return { value: kept.get(e.key) }
+  })
+  on('store.set', ($, e) => {
+    sets.push(e.key)
+    kept.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    kept.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...kept.keys()] }))
+  await start($)
+  await clock.settle()
+  expect(w.toasts.filter(t => t.includes('/ctx-guard tune'))).toEqual([])
+  expect(sets.filter(k => k.startsWith('reach:'))).toEqual([])
+})
+
+test('reach: a ledger started on a reload counts its buffer and its landed part as one session', async ($, on) => {
+  const w = newWorld()
+  stepBottom(on, () => 120_000, () => 'm')
+  writeConfig(w, OFF)
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  // A part this session landed before the ledger went off.
+  const req: Rec = { t: NOW - HOUR, k: 'req', role: 'lead', ctx: 90_000, cw: 0, cr: 90_000, out: 10, model: 'm', miss: 0, gap: null }
+  w.files[partPath('s1')] = { text: JSON.stringify(req) + '\n', mtimeMs: 0 }
+  // The ledger starts on this reload, before any flush has read the session id.
+  writeConfig(w, LEAD_SOFT)
+  await measure($, w, 120_000)
+  await clock.settle()
+  await step($, clock)
+  expect(await ctxGuard($, 'check')).toContain('  lead: 1 session, 2 requests;')
+})
+
+test('reach: ledger.days 7 keeps 7 days, and the check, report and toast say 7 days', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER)
+  const { clock } = await lead($, on, w, { ...LEAD_SOFT, ledger: { days: 7 } })
+  await clock.settle()
+  expect(w.toasts.filter(t => t.includes('/ctx-guard tune'))).toEqual([UNREACHED.replace('in 14 days', 'in 7 days')])
+  expect(await ctxGuard($, 'check')).toContain('\nreach (last 7 days, from the ledger):\n  lead: 5 sessions')
+  expect((await ctxGuard($, '')).split('\n')).toContain('reach (7 days): lead unreached')
+})
+
+test('reach: the report reads the ledger again once ledger.days changes the window', async ($, on) => {
+  const w = newWorld()
+  seed(w, UNDER)
+  const { clock } = await lead($, on, w)
+  await clock.settle()
+  expect((await ctxGuard($, '')).split('\n')).toContain('reach (14 days): lead unreached')
+  writeConfig(w, { ...LEAD_SOFT, ledger: { days: 7 } })
+  await measure($, w, 120_000)
+  await clock.settle()
+  expect((await ctxGuard($, '')).split('\n')).toContain('reach (7 days): lead unreached')
 })

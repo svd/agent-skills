@@ -27,6 +27,9 @@ import type {
 } from '../types'
 
 export const ROLE_NAME = /^[a-z][a-z0-9-]{0,31}$/
+// `none` means no role (CTX_GUARD_ROLE=none, `/ctx-guard role none`), so no role is named it.
+const NO_ROLE = 'none'
+const NO_ROLE_TEXT = '"none" means no role and cannot name one'
 const TRIGGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const READY_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const COMMAND_NAME = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/
@@ -718,7 +721,8 @@ function normalizeRole(ctx: Ctx, path: string, v: unknown, stateDir: string): Ro
     if (!Array.isArray(restart.peers)) err(ctx, join(rp, 'peers'), `expected a list of role names, got ${shown(restart.peers)}`)
     else {
       restart.peers.forEach((p, i) => {
-        if (typeof p === 'string' && ROLE_NAME.test(p)) peers.push(p)
+        if (p === NO_ROLE) err(ctx, `${join(rp, 'peers')}[${i}]`, NO_ROLE_TEXT)
+        else if (typeof p === 'string' && ROLE_NAME.test(p)) peers.push(p)
         else err(ctx, `${join(rp, 'peers')}[${i}]`, `${shown(p)} must match ${ROLE_NAME.source}`)
       })
     }
@@ -826,7 +830,8 @@ function normalizeConfig(ctx: Ctx, raw: unknown): Config {
   const stateDir = pathAt(ctx, 'stateDir', o.stateDir, DEFAULT_STATE_DIR)
   let defaultRole: string | null = null
   if (o.defaultRole !== undefined && o.defaultRole !== '') {
-    defaultRole = strAt(ctx, 'defaultRole', o.defaultRole, '', ROLE_NAME) || null
+    if (o.defaultRole === NO_ROLE) err(ctx, 'defaultRole', NO_ROLE_TEXT)
+    else defaultRole = strAt(ctx, 'defaultRole', o.defaultRole, '', ROLE_NAME) || null
   }
   let contextWindow: number | 'auto' = 'auto'
   if (o.contextWindow !== undefined && o.contextWindow !== 'auto') {
@@ -846,6 +851,10 @@ function normalizeConfig(ctx: Ctx, raw: unknown): Config {
     }
     if (RESERVED_KEYS.has(name)) {
       err(ctx, p, 'role name is reserved')
+      continue
+    }
+    if (name === NO_ROLE) {
+      err(ctx, p, NO_ROLE_TEXT)
       continue
     }
     if (!isObj(rawRole)) {
@@ -949,7 +958,8 @@ export function readSwitches(options: Readonly<Record<string, unknown>>): { swit
   let defaultRole: string | null = null
   const dr = options.defaultRole
   if (typeof dr === 'string' && dr.trim() !== '') {
-    if (ROLE_NAME.test(dr.trim())) defaultRole = dr.trim()
+    if (dr.trim() === NO_ROLE) err(ctx, 'defaultRole', NO_ROLE_TEXT)
+    else if (ROLE_NAME.test(dr.trim())) defaultRole = dr.trim()
     else err(ctx, 'defaultRole', `${shown(dr)} must match ${ROLE_NAME.source}`)
   }
   return {

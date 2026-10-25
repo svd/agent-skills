@@ -10,6 +10,8 @@ import { METRIC_ORDER, contextPercent, holdsBelow } from './triggers'
 import type { DenyEntry, LimitKind, Metrics } from './triggers'
 import type { CheckLine } from './restart'
 import { shortId } from './subagents'
+import { REACH_MIN_SESSIONS, rangeText } from './tune'
+import type { RoleReach } from './tune'
 
 export const COMMAND = 'ctx-guard'
 // The first engine with every event and `$` call ctx-guard uses.
@@ -308,6 +310,8 @@ export type ReportInput = {
   probes?: { id: string; state: string }[]
   // The main thread's prompt cache; absent leaves its line out.
   cache?: CacheReport
+  // The reach check; absent leaves its line out.
+  reach?: ReachState
 }
 
 export type CacheReport = {
@@ -473,6 +477,7 @@ export function reportText(r: ReportInput): string {
   if (m.cost !== null) lines.push(`cost: ${humanUsd(m.cost)}`)
   lines.push(`idle: ${m.idleMs === null ? 'no turn has ended yet' : m.idleMs === 0 ? 'a turn is running' : humanDuration(m.idleMs)}`)
   if (r.cache) lines.push(cacheLine(r.cache))
+  if (r.reach) lines.push(reachLine(r.reach, r.now))
   if (r.lastClearAt !== null) lines.push(`last /clear: ${ago(r.now - r.lastClearAt)}`)
 
   const marks = Object.entries(r.marks?.byId ?? {})
@@ -490,6 +495,75 @@ export function reportText(r: ReportInput): string {
     lines.push(`subagent budgets: ${budgets.length ? budgets.join(', ') : 'none'}`)
   }
   return lines.join('\n')
+}
+
+// The reach check: off with the ledger off, none with no config file, else its roles over the
+// last `days` days as of `at`.
+export type ReachState = 'off' | 'no ledger' | { at: number; days: number; roles: readonly RoleReach[] }
+
+// An off state's line, or null when there are roles to show.
+function reachOff(s: ReachState): string | null {
+  if (s === 'off') return 'reach: off (ledger.enabled is false)'
+  if (s === 'no ledger') return 'reach: no ledger (no ctx-guard config file in this repo)'
+  return s.roles.length ? null : `reach: no sessions recorded in the last ${s.days} days`
+}
+
+function reachVerdict(r: RoleReach): string[] {
+  const low = r.lowest
+  switch (r.verdict) {
+    case 'unconfigured':
+      return ['not in the config now; no finding']
+    case 'no-ladder':
+      return ['no context triggers']
+    case 'few':
+      return [`not enough data (${r.sessions} session${r.sessions === 1 ? '' : 's'}; a finding needs ${REACH_MIN_SESSIONS})`]
+    case 'ok':
+      return ['no finding']
+  }
+  return r.findings.map(f =>
+    f === 'unreached'
+      ? `finding: unreached: the lowest context trigger, ${low?.id} at ${tokensOr(low?.tokens ?? null)}, is above the p90 peak (${tokensOr(r.peak?.p90 ?? null)}) and no context note fired`
+      : `finding: pre-empted: the engine compacted at ${r.below ? rangeText(r.below) : '-'}, below ${low?.id} (${tokensOr(low?.tokens ?? null)})`,
+  )
+}
+
+/** The `/ctx-guard check` section: per role its sessions, peaks, notes, clears, compacts and verdict. */
+export function reachLines(s: ReachState): string[] {
+  const off = reachOff(s)
+  if (off !== null || typeof s === 'string') return [off ?? '']
+  const lines = [`reach (last ${s.days} days, from the ledger):`]
+  for (const r of s.roles) {
+    const p = r.peak
+    const peak = p ? `; peak per session median ${humanTokens(p.median)}, p90 ${humanTokens(p.p90)}, max ${humanTokens(p.max)}` : ''
+    lines.push(`  ${r.role}: ${r.sessions} session${r.sessions === 1 ? '' : 's'}, ${r.requests} request${r.requests === 1 ? '' : 's'}${peak}`)
+    const n = r.notes
+    const c = r.compacts
+    lines.push(
+      `    notes: soft ${n.soft}, hard ${n.hard}, stop ${n.stop}${n.other ? `, other ${n.other}` : ''}; ` +
+        `clears: ${r.clears.ready} by ready token, ${r.clears.operator} by operator; ` +
+        `compacts: auto ${c.auto}${r.autoPre ? ` (${rangeText(r.autoPre)})` : ''}, manual ${c.manual}, ctx-guard ${c['ctx-guard']}`,
+    )
+    for (const v of reachVerdict(r)) lines.push(`    ${v}`)
+  }
+  if (s.roles.some(r => r.findings.length)) lines.push('  /ctx-guard tune proposes context thresholds that fit these sessions')
+  return lines
+}
+
+/** The report's line: `reach (14 days): lead unreached, pre-empted; none not enough data`. */
+export function reachLine(s: ReachState, now: number): string {
+  const off = reachOff(s)
+  if (off !== null || typeof s === 'string') return off ?? ''
+  const age = now - s.at > 60 * 60_000 ? `, as of ${ago(now - s.at)}` : ''
+  const head = `reach (${s.days} days${age}):`
+  if (s.roles.every(r => r.verdict === 'ok')) return `${head} no finding (${s.roles.map(r => r.role).join(', ')})`
+  const short: Record<RoleReach['verdict'], string> = {
+    few: 'not enough data',
+    unconfigured: 'not in the config now',
+    'no-ladder': 'no context triggers',
+    ok: 'no finding',
+    findings: '',
+  }
+  return `${head} ${s.roles.map(r => `${r.role} ${r.verdict === 'findings' ? r.findings.join(', ') : short[r.verdict]}`).join('; ')}`
 }
 
 const tokensOr = (v: number | null): string => (v === null ? '-' : humanTokens(v))

@@ -12,6 +12,8 @@ import {
   parsePause,
   presetPath,
   presetProblem,
+  reachLine,
+  reachLines,
   reportText,
   triggerLine,
   versionBelow,
@@ -19,6 +21,7 @@ import {
   wantsTrust,
 } from './commands'
 import type { CacheReport, ReportInput, RestartReport } from './commands'
+import type { RoleReach } from './tune'
 import { BUILTIN_LAYER, builtInConfig, mergeLayers, roleSpec, validate } from './config'
 import { metricsOf } from './triggers'
 
@@ -414,5 +417,102 @@ describe('report', () => {
     expect(at({ gap: 300_000, lastRestartAt: null })).toContain('self gap: 5m; no restart yet in this session')
     expect(at({ gap: 0, lastRestartAt: now - 1_000 })).toContain('self gap: off (selfGap 0)')
     expect(at(null)).not.toContain('self gap')
+  })
+})
+
+describe('reach', () => {
+  const H = 60 * 60_000
+  const lead: RoleReach = {
+    role: 'lead',
+    sessions: 23,
+    requests: 1912,
+    peak: { median: 142_000, p90: 231_000, max: 329_000 },
+    notes: { soft: 0, hard: 0, stop: 0, other: 0 },
+    clears: { ready: 14, operator: 3 },
+    compacts: { auto: 6, manual: 1, 'ctx-guard': 0 },
+    autoPre: { min: 203_000, max: 298_000 },
+    below: { min: 203_000, max: 203_000 },
+    lowest: { id: 'ctx-soft', tokens: 400_000 },
+    verdict: 'findings',
+    findings: ['unreached', 'pre-empted'],
+  }
+  const none: RoleReach = {
+    ...lead,
+    role: 'none',
+    sessions: 3,
+    requests: 120,
+    peak: { median: 60_000, p90: 90_000, max: 95_000 },
+    notes: { soft: 1, hard: 0, stop: 0, other: 2 },
+    clears: { ready: 0, operator: 1 },
+    compacts: { auto: 0, manual: 0, 'ctx-guard': 0 },
+    autoPre: null,
+    below: null,
+    verdict: 'few',
+    findings: [],
+  }
+  const ok: RoleReach = { ...lead, verdict: 'ok', findings: [] }
+
+  test('the check section: stats per role, findings, not enough data, no ladder, not in the config', () => {
+    expect(reachLines({ at: 0, days: 14, roles: [lead, none] })).toEqual([
+      'reach (last 14 days, from the ledger):',
+      '  lead: 23 sessions, 1912 requests; peak per session median 142k, p90 231k, max 329k',
+      '    notes: soft 0, hard 0, stop 0; clears: 14 by ready token, 3 by operator; compacts: auto 6 (203k–298k), manual 1, ctx-guard 0',
+      '    finding: unreached: the lowest context trigger, ctx-soft at 400k, is above the p90 peak (231k) and no context note fired',
+      '    finding: pre-empted: the engine compacted at 203k, below ctx-soft (400k)',
+      '  none: 3 sessions, 120 requests; peak per session median 60k, p90 90k, max 95k',
+      '    notes: soft 1, hard 0, stop 0, other 2; clears: 0 by ready token, 1 by operator; compacts: auto 0, manual 0, ctx-guard 0',
+      '    not enough data (3 sessions; a finding needs 5)',
+      '  /ctx-guard tune proposes context thresholds that fit these sessions',
+    ])
+    const other = reachLines({
+      at: 0,
+      days: 14,
+      roles: [ok, { ...lead, role: 'dev', verdict: 'no-ladder', lowest: null, findings: [] }, { ...lead, role: 'gone', verdict: 'unconfigured', lowest: null, findings: [], sessions: 1, requests: 1, peak: null }],
+    })
+    expect(other.filter(l => l.startsWith('    ') && !l.startsWith('    notes'))).toEqual(['    no finding', '    no context triggers', '    not in the config now; no finding'])
+    expect(other).toContain('  gone: 1 session, 1 request')
+    expect(other.some(l => l.includes('/ctx-guard tune'))).toBe(false)
+  })
+
+  test('the report line and the off states', () => {
+    expect(reachLine({ at: 0, days: 14, roles: [lead, none] }, H)).toBe('reach (14 days): lead unreached, pre-empted; none not enough data')
+    expect(reachLine({ at: 0, days: 14, roles: [ok, { ...ok, role: 'none' }] }, 0)).toBe('reach (14 days): no finding (lead, none)')
+    expect(reachLine({ at: 0, days: 14, roles: [ok] }, 2 * H)).toBe('reach (14 days, as of 2h ago): no finding (lead)')
+    expect(reachLine({ at: 0, days: 14, roles: [ok, { ...lead, role: 'gone', verdict: 'unconfigured' }] }, 0)).toBe('reach (14 days): lead no finding; gone not in the config now')
+    for (const f of [(s: Parameters<typeof reachLine>[0]) => reachLine(s, 0), (s: Parameters<typeof reachLine>[0]) => reachLines(s).join('\n')]) {
+      expect(f('off')).toBe('reach: off (ledger.enabled is false)')
+      expect(f('no ledger')).toBe('reach: no ledger (no ctx-guard config file in this repo)')
+      expect(f({ at: 0, days: 14, roles: [] })).toBe('reach: no sessions recorded in the last 14 days')
+    }
+    // ledger.days below 14 keeps fewer days, and the reach check says so.
+    expect(reachLine({ at: 0, days: 7, roles: [lead] }, 0)).toBe('reach (7 days): lead unreached, pre-empted')
+    expect(reachLines({ at: 0, days: 7, roles: [lead] })[0]).toBe('reach (last 7 days, from the ledger):')
+    expect(reachLines({ at: 0, days: 7, roles: [] })).toEqual(['reach: no sessions recorded in the last 7 days'])
+  })
+
+  test('the report shows the reach line after the cache line, and leaves it out when absent', () => {
+    const base: ReportInput = {
+      now: 0,
+      interactive: true,
+      off: null,
+      pause: null,
+      role: { role: 'lead', source: 'env', problem: null },
+      configState: null,
+      config: builtInConfig(),
+      switches: { blocking: true, autoActions: true, noteToasts: true, display: 'band' },
+      windowSource: 'model window',
+      mode: null,
+      metrics: metricsOf({}, 1_000_000, null, 0),
+      marks: null,
+      triggers: [],
+      denies: [],
+      lastClearAt: null,
+      cache: { ttl: 3_600_000, source: 'observed', expiresIn: null, busy: false, pings: null, cold: false, miss: 0, missCause: null, retry: null },
+    }
+    const lines = reportText({ ...base, reach: 'off' }).split('\n')
+    expect(lines[lines.findIndex(l => l.startsWith('cache:')) + 1]).toBe('reach: off (ledger.enabled is false)')
+    const without = reportText(base).split('\n')
+    expect(without.some(l => l.startsWith('reach'))).toBe(false)
+    expect(lines.filter(l => !l.startsWith('reach'))).toEqual(without)
   })
 })

@@ -161,6 +161,11 @@ refuses them unless typed in the prompt box (`wake`: or from a remote client of 
 
 In a repo with a config file, the ledger records the context of each main-loop request and the
 session's boundaries in `<stateDir>/ledger/`. `"ledger": { "enabled": false }` turns it off.
+When the user asks whether thresholds fit, ask them to run `/ctx-guard check` and read its reach
+section: *unreached* means a role's lowest context trigger sits above the p90 session peak and
+none of its context triggers fired a note in the period (14 days, or `ledger.days` when fewer); *pre-empted* means the engine auto-compacted below that
+trigger. Either way the trigger never gets a say; lower it to fit. Under 5 sessions there is not
+enough data.
 
 | Command | Does |
 |---|---|

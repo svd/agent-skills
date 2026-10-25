@@ -15,6 +15,19 @@ All notable changes to the `ctx-guard` plugin are documented here.
   long files are kept. Older files are deleted once per session start by `rm -f --` with no
   shell; where `rm` is missing, nothing is deleted. A new `session.compact` hook records
   compacts and passes the event on unchanged.
+- A reach check in `/ctx-guard check` and the `/ctx-guard` report. Per role (`none` included)
+  over the last 14 days of the ledger (`ledger.days` when that is fewer): sessions, requests,
+  peak context per session (median, p90, max), context notes by level, clears and compacts. It
+  finds a role whose lowest context trigger is above the p90 peak with no note of its context
+  triggers fired (unreached), or that the engine auto-compacted below it (pre-empted). Under 5
+  sessions it says not enough data. At session start each new finding toasts once per 7 days per
+  repo, in its own words; when the stored memory of shown findings cannot be read, nothing
+  toasts.
+
+### Changed
+
+- The config refuses `none` as a role name, `defaultRole` (in the config and in userConfig) and
+  `restart.peers` entry, since `none` means no role to `CTX_GUARD_ROLE` and `/ctx-guard role`.
 
 ### Fixed
 

@@ -710,7 +710,7 @@ test('/ctx-guard check with no role, and in manual mode', async ($, on) => {
   writeConfig(w, autoConfig({ mode: 'manual' }))
   world(on, w)
   await start($)
-  expect(await ctxGuard($, 'check')).toBe('ctx-guard check: no role, so no restart to check')
+  expect(await ctxGuard($, 'check')).toBe('ctx-guard check: no role, so no restart to check\nreach: no sessions recorded in the last 14 days')
   await ctxGuard($, 'role lead')
   expect(await ctxGuard($, 'check')).toContain('note: the ready token is not acted on now (restart mode is manual)')
 })

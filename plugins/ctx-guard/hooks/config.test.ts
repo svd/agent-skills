@@ -471,6 +471,15 @@ describe('validation', () => {
     expect(subagentBudget(e.config, 'Explore')).toEqual({ type: 'Explore', warn: 100_000, stop: null, message: null })
   })
 
+  test('"none" means no role: refused as a role name, defaultRole and peer', () => {
+    const text = '"none" means no role and cannot name one'
+    expect(errorsOf({ roles: { none: {} } })).toEqual([`config: roles.none: ${text}`])
+    expect(errorsOf({ defaultRole: 'none' })).toEqual([`config: defaultRole: ${text}`])
+    expect(errorsOf(role({ restart: { peers: ['none'] } }))).toEqual([`config: roles.lead.restart.peers[0]: ${text}`])
+    expect(readSwitches({ defaultRole: 'none' })).toMatchObject({ switches: { defaultRole: null }, errors: [`userConfig: defaultRole: ${text}`] })
+    ok({ roles: { nonce: {}, 'none-2': {} } })
+  })
+
   test('reserved names are refused as roles and subagent types', () => {
     for (const name of ['constructor', 'prototype']) {
       expect(errorsOf(JSON.parse(`{"roles": {"${name}": {}}}`))).toEqual([`config: roles.${name}: role name is reserved`])

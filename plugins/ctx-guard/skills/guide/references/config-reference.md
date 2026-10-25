@@ -95,7 +95,7 @@ Every quantity must be above zero.
 | `defaultRole` | role name, `""` or `null` | none | Role for an interactive session that no command or `CTX_GUARD_ROLE` sets. |
 | `contextWindow` | `"auto"` or tokens | `"auto"` | What context percents count against. `auto` uses the engine's own compaction window when it reports one (never above the model window), else the model window lowered to the `autoCompactWindow` setting. |
 | `defaults` | role object | `{}` | Settings every role inherits. Objects deep-merge under each role; arrays (such as `triggers`) replace. |
-| `roles` | object of role name → role object | `{ "main": {} }` | The roles. Names match `^[a-z][a-z0-9-]{0,31}$`. The built-in `main` stays unless a layer sets `"main": null`, so a userConfig `defaultRole` of `main` works in every repo. Once the project names roles of its own, `/ctx-guard` and role errors leave out a `main` that has no settings of its own and is neither the `defaultRole` nor the session's role. |
+| `roles` | object of role name → role object | `{ "main": {} }` | The roles. Names match `^[a-z][a-z0-9-]{0,31}$`; `none` means no role, so no role, `defaultRole` or `restart.peers` entry is named it. The built-in `main` stays unless a layer sets `"main": null`, so a userConfig `defaultRole` of `main` works in every repo. Once the project names roles of its own, `/ctx-guard` and role errors leave out a `main` that has no settings of its own and is neither the `defaultRole` nor the session's role. |
 | `subagents` | object of subagent type (or `*`, `fork`, `teammate`) → budget | `{}` | [Subagent budgets](#subagent-budgets). |
 | `band` | object | `{ "probes": [] }` | [Band probes](#band-probes): project scripts whose output is a band segment. Shared by every role. |
 | `cache` | object | see [Prompt cache](#prompt-cache) | The cache TTL, the band countdown and the ping limit. Shared by every role. |
@@ -642,7 +642,8 @@ With `via: compact` it ends "Nothing was compacted."
 `/ctx-guard check` runs the same checks as a dry run: it writes no stamp, races nobody and
 clears nothing. It runs the ready checks only when the repo is trusted. Within 5 minutes (or
 `selfGap`, if longer) of a restart it warns when the context is already past the role's lowest
-context threshold: the next note may ask for another restart at once.
+context threshold: the next note may ask for another restart at once. It ends with the
+[reach check](#reach-check), also in a session with no role.
 
 ### A successful restart
 
@@ -1002,8 +1003,8 @@ cache that expired costs a re-write at the cache-write rate: 1.25 times the inpu
 ## Ledger
 
 The ledger records what each main-loop request carried in context and where the session's
-boundaries fell: notes, ready tokens, `/clear` and compacts. It takes no action. A later version
-reads it to suggest thresholds.
+boundaries fell: notes, ready tokens, `/clear` and compacts. It takes no action. The
+[reach check](#reach-check) reads it to tell whether a role's context triggers fit its sessions.
 
 ```json
 {
@@ -1062,6 +1063,47 @@ from the project root; this needs no trust. Where `rm` is missing, nothing is de
 memory, opens no ledger file and runs no retention. A reload that turns it off writes the held
 records first. Files already in `<stateDir>/ledger/` are kept, so turning it back on carries on
 with that history. Deleting the folder is yours to do.
+
+### Reach check
+
+The reach check reads the ledger files dated in the last 14 days (UTC), or the last `ledger.days`
+days when that is fewer, plus the records not yet written, and reports per role, with `none`
+(sessions with no role) counted as a role:
+
+- sessions and requests; the peak context per session (median, p90, max);
+- context notes by level; clears by ready token and by the operator; compacts by trigger, with the
+  range of `pre` of the engine's auto compacts.
+
+A role's **context triggers** are those whose `when` holds only `context` (plus `every`) and whose
+`do` holds no `compact`, `prompt` or `ping`; a percent resolves on the role's latest recorded
+window, else the current one. A context condition ANDed with another metric does not count.
+`none` uses the [zero-config](#zero-config-behaviour) triggers. With 5 sessions or more a role
+gets a **finding** when either holds:
+
+- *unreached*: its lowest context trigger is above the p90 session peak and none of its context
+  triggers fired a note (a note of any other trigger does not count);
+- *pre-empted*: the engine auto-compacted at a `pre` below its lowest context trigger.
+
+Under 5 sessions it says not enough data. A role with no context trigger, or no longer in the
+config, gets its numbers and no finding.
+
+It shows as a section at the end of `/ctx-guard check`, computed then, and as one line after the
+`cache:` line of the `/ctx-guard` report, from the check made at session start or by the last
+`/ctx-guard check` (with its age past an hour). At session start, off the hook's path, each
+finding not shown in the last 7 days toasts once, in its own words, for example:
+
+```
+ctx-guard: context triggers for lead never fired in 14 days; engine compacted at 203k–298k. /ctx-guard tune
+```
+
+```
+ctx-guard: the engine compacted lead at 203k, below its lowest context trigger (300k). /ctx-guard tune
+```
+
+Which findings it has shown is kept in Claude Code's plugin storage, per repo root; when that
+cannot be read, nothing toasts and nothing is stored. With
+`ledger.enabled: false` it reads nothing and says it is off; with no ctx-guard config file in the
+repo it says there is no ledger.
 
 ## Subagent budgets
 

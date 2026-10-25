@@ -54,13 +54,14 @@ import {
   reportText,
   presetPath,
   presetProblem,
+  reachLines,
   wantsTrust,
   versionBelow,
   wakeLine,
   wakePlan,
   wakeSetText,
 } from './commands'
-import type { CacheReport, Preset, RestartReport, SubagentReport } from './commands'
+import type { CacheReport, Preset, ReachState, RestartReport, SubagentReport } from './commands'
 import {
   DEFAULT_CACHE,
   DEFAULT_SELF_GAP,
@@ -200,8 +201,10 @@ import {
   track,
 } from './subagents'
 import type { Tracked } from './subagents'
-import { commitFlush, compactTrigger, expiredParts, newLedger, parsePartName, planFlush, pushRecord, reqRecord, thresholdTokens } from './ledger'
+import { commitFlush, compactTrigger, expiredParts, fileId, newLedger, parsePartName, planFlush, pushRecord, reqRecord, thresholdTokens } from './ledger'
 import type { LedgerMem, LedgerRecord } from './ledger'
+import { REACH_DAYS, asReachMemory, groupSessions, newFindings, reach, reachKey, windowParts } from './tune'
+import type { RoleReach, SessionRecords } from './tune'
 import { LIFT_CHECK_TIMEOUT_MS, LIFT_TRIES, asLifts, checkTries, earliestReset, emptyLifts, gateWhy, keepsWake, liftsFor, operatorInput, wakeVerdict, wakesOnLift } from './lifts'
 import type { WakeGate } from './lifts'
 import { parseProbe, probeSegment, probeState, scriptEnv } from './scripts'
@@ -353,6 +356,8 @@ type Mod = {
   ledger: LedgerMem | null
   // Retention ran for this start.
   ledgerSwept: boolean
+  // The reach check as of start or the last /ctx-guard check.
+  reach: { at: number; days: number; roles: readonly RoleReach[] } | null
 }
 
 const fresh = (): Mod => ({
@@ -410,6 +415,7 @@ const fresh = (): Mod => ({
   operatorOwed: null,
   ledger: null,
   ledgerSwept: false,
+  reach: null,
 })
 
 let mod: Mod = fresh()
@@ -1673,6 +1679,73 @@ async function sweepLedger($: EngineInterface): Promise<void> {
   for (let i = 0; i < old.length; i += SWEEP_BATCH) {
     await $.process.run(['rm', '-f', '--', ...old.slice(i, i + SWEEP_BATCH).map(n => `${dir}/${n}`)], { cwd: root, timeoutMs: 10_000 })
   }
+}
+
+// The reach check over the last 14 days (fewer when ledger.days keeps fewer) of parts plus
+// the records not landed yet. Runs in the chain, so no flush is half-done and no record
+// counts twice.
+async function computeReach($: EngineInterface): Promise<ReachState> {
+  const config = mod.eff?.config
+  const l = mod.ledger
+  const dir = l ? l.dir : await ledgerDir($).catch(() => null)
+  if (!config || !dir) return 'no ledger'
+  const now = await $.clock.now()
+  const days = Math.min(REACH_DAYS, config.ledger.days)
+  const names = await $.fs.list(dir).then(es => es.filter(f => f.kind === 'file' && !f.isLink).map(f => f.name), () => [])
+  const texts: { sessionId: string; text: string }[] = []
+  for (const s of windowParts(names, now, days)) {
+    for (const p of s.parts) {
+      const text = await $.fs.read(`${dir}/${p}`).catch(() => null)
+      if (typeof text === 'string') texts.push({ sessionId: s.sessionId, text })
+    }
+  }
+  const extra: SessionRecords[] = []
+  if (l?.held?.buffer.length) extra.push({ sessionId: l.held.sessionId ? fileId(l.held.sessionId) : 'held', records: l.held.buffer })
+  // The buffer goes under its session's id, as the parts that session landed do. An unread id
+  // is read here and left for the first flush to read again.
+  if (l?.buffer.length) {
+    const sid = l.sessionId ?? (await $.session.id().catch(() => null))
+    extra.push({ sessionId: sid ? fileId(sid) : 'current', records: l.buffer })
+  }
+  const triggers = (r: string) => (r === 'none' ? triggersFor(config, null) : (roleSpec(config, r)?.triggers ?? null))
+  const roles = reach({ sessions: groupSessions(texts, extra), now, days, triggers, window: windowFor(mod.engineModelWindow ?? Number.NaN).tokens })
+  return { at: now, days, roles }
+}
+
+// The reach check now, kept for the report (`cached` takes the kept one); null with the config not loaded.
+async function reachNow($: EngineInterface, cached = false): Promise<ReachState | null> {
+  const eff = mod.eff
+  if (!eff) return null
+  if (!eff.config.ledger.enabled) return 'off'
+  if (!(mem.config?.files.some(f => f.mtime !== null) ?? false)) return 'no ledger'
+  if (cached && mod.reach?.days === Math.min(REACH_DAYS, eff.config.ledger.days)) return mod.reach
+  let s: ReachState = 'no ledger'
+  await serial(async () => {
+    s = await computeReach($)
+  })
+  if (typeof s === 'object') mod.reach = s
+  return s
+}
+
+// At session start: a toast per new finding, once in 7 days per repo. The memory is stored
+// first, so a failed store toasts nothing rather than the same finding each start; a failed
+// read toasts and stores nothing, so the stored memory stays.
+async function reachAtStart($: EngineInterface): Promise<void> {
+  if (!active() || !mod.ledger) return
+  const s = await computeReach($)
+  if (typeof s !== 'object') return
+  mod.reach = s
+  const key = reachKey(await $.session.root())
+  let stored: unknown
+  try {
+    stored = await $.store.get(key)
+  } catch {
+    return
+  }
+  const { toasts, next } = newFindings(s.roles, asReachMemory(stored), s.at, s.days)
+  if (!toasts.length) return
+  await $.store.set(key, next)
+  for (const t of toasts) $.ui.toast(t)
 }
 
 // A /clear: its record, the old session's parts landed, and a start for the new one,
@@ -3400,6 +3473,8 @@ async function fromMemory($: EngineInterface): Promise<void> {
   await resolveNow($)
   await syncActive($)
   if (!active()) return
+  // Off the start's path, behind the ledger's listing; it reads no $.state, so it waits on no ready().
+  if (mod.ledger) $.clock.after(0, () => void serial(() => reachAtStart($)))
   await serial(() => evaluateCurrent($, 'always'))
   await quietly(() => leaseBeat($, true))
   await quietly(() => undoHeldStamp($))
@@ -3663,6 +3738,7 @@ async function report($: EngineInterface): Promise<string> {
     subagents: subagentReport(config, eff?.blocking ?? true, isPausedNow),
     probes: configuredProbes().map(p => ({ id: p.id, state: probeState(mod.probeResults.get(p.id) ?? null, now, probesOff()) })),
     cache: cacheReport(metrics),
+    reach: (await reachNow($, true).catch(() => null)) ?? undefined,
   })
 }
 
@@ -4003,7 +4079,9 @@ async function checkCommand($: EngineInterface): Promise<string> {
   const eff = mod.eff
   const role = mod.role.role
   const spec = eff && role !== null ? roleSpec(eff.config, role) : null
-  if (!eff || role === null || !spec) return checkText(null, null, null, null)
+  const r = await reachNow($).catch(() => null)
+  const tail = r ? `\n${reachLines(r).join('\n')}` : ''
+  if (!eff || role === null || !spec) return checkText(null, null, null, null) + tail
   const now = await $.clock.now()
   const g = await gather($, role, spec, await busyText($, now))
   if (g.facts.trusted && g.facts.error === null) g.facts.checks = await runChecks($, spec, g.facts, 'dry-run')
@@ -4012,7 +4090,7 @@ async function checkCommand($: EngineInterface): Promise<string> {
   if (!eff.autoActions) why.push('autoActions is off in /config')
   if (paused(now)) why.push('ctx-guard is paused')
   const notes = [why.length ? `note: the ready token is not acted on now (${why.join('; ')}).` : null, renoteRisk(g.facts)].filter(Boolean)
-  return checkText(role, spec.restart.via, checkLines(g.facts), notes.length ? notes.join('\n') : null)
+  return checkText(role, spec.restart.via, checkLines(g.facts), notes.length ? notes.join('\n') : null) + tail
 }
 
 // Changing what ctx-guard does is the person's alone, never the model's or another plugin's.

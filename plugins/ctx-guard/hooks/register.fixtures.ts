@@ -157,10 +157,11 @@ export function dirsOf(w: World): Set<string> {
   return dirs
 }
 
-export function world(on: On, w: World, env: Record<string, string> = {}): { clock: MockClock; session: MockSession } {
+// `store: false` leaves `$.store` to the test's own hooks.
+export function world(on: On, w: World, env: Record<string, string> = {}, { store = true } = {}): { clock: MockClock; session: MockSession } {
   const session = mock.session(on)
   mock.env(on, env)
-  mock.store(on)
+  if (store) mock.store(on)
   const clock = mock.clock(on, { now: NOW })
   w.clock = clock
   on('session.start', ($, e) => ({ cwd: e.cwd }))
