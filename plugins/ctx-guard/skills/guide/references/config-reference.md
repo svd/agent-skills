@@ -99,7 +99,7 @@ Every quantity must be above zero.
 | `subagents` | object of subagent type (or `*`, `fork`, `teammate`) → budget | `{}` | [Subagent budgets](#subagent-budgets). |
 | `band` | object | `{ "probes": [] }` | [Band probes](#band-probes): project scripts whose output is a band segment. Shared by every role. |
 | `cache` | object | see [Prompt cache](#prompt-cache) | The cache TTL, the band countdown and the ping limit. Shared by every role. |
-| `ledger` | object | `{ "enabled": true, "days": 30 }` | [Ledger](#ledger): a record of each session's context per request and its boundaries. Shared by every role. |
+| `ledger` | object | `{ "enabled": true, "days": 30 }` | [Ledger](#ledger): a record of each session's context per request and its boundaries, read by the reach check and tune. Shared by every role. |
 
 ## Role keys
 
@@ -1004,7 +1004,8 @@ cache that expired costs a re-write at the cache-write rate: 1.25 times the inpu
 
 The ledger records what each main-loop request carried in context and where the session's
 boundaries fell: notes, ready tokens, `/clear` and compacts. It takes no action. The
-[reach check](#reach-check) reads it to tell whether a role's context triggers fit its sessions.
+[reach check](#reach-check) reads it to tell whether a role's context triggers fit its sessions,
+and [tune](#tune) replays it to recommend a ladder.
 
 ```json
 {
@@ -1016,7 +1017,7 @@ boundaries fell: notes, ready tokens, `/clear` and compacts. It takes no action.
 | Key | Values | Default | Meaning |
 |---|---|---|---|
 | `ledger.enabled` | boolean | `true` | `false` turns the ledger off. |
-| `ledger.days` | whole number, 1 to 3650 | `30` | Files dated more than this many days back are deleted at session start. |
+| `ledger.days` | whole number, 1 to 3650 | `30` | Files dated more than this many days back are deleted at session start. Also the period `/ctx-guard tune` replays. |
 
 Unknown keys in `ledger` are errors. `ledger` is a top-level key, shared by every role; a role
 cannot set it. The usual layering applies, so one operator can turn it off in
@@ -1104,6 +1105,44 @@ Which findings it has shown is kept in Claude Code's plugin storage, per repo ro
 cannot be read, nothing toasts and nothing is stored. With
 `ledger.enabled: false` it reads nothing and says it is off; with no ctx-guard config file in the
 repo it says there is no ledger.
+
+### Tune
+
+`/ctx-guard tune [role]` replays the ledger's last `ledger.days` days per role (the one named,
+else every role with a request) and recommends a context ladder. It runs only when typed; no
+hook runs it.
+
+- **Data.** A role needs 10 sessions and 1,500 requests; with less it says not enough data.
+- **Model.** Each request costs its cache read and its miss on a virtual context that grows by
+  each request's increase; a drop over 30k resets it. At boundary B plus the overshoot the
+  replay clears once: the restart write and the handoff output are added, and the context
+  starts again at the restart start.
+- **Inputs.** Restart start (the 4th request after a ctx-guard clear), restart write (its first
+  request's cache write), handoff out (the 4 requests before a ready token) and overshoot
+  (context at the ready token past the soft threshold) are medians from the ledger. Under 5
+  samples each uses its fallback (65k, 32k, 3k, 25k), marked in the output.
+- **Ceiling.** The window, or the lowest engine auto-compact minus 10k when that is lower.
+- **Candidates.** 100k up to the ceiling in 25k steps, plus `current` (the role's lowest context
+  trigger on each session's window) and `none`. Costs print relative to `none`.
+- **Weights.** Per token, relative to the model's input price: cache read 0.05 for Opus 5.5 and
+  Sonnet 5.5, 0.025 for Fable 5.1 and Mythos 5.1, 0.1 for other Claude models; cache write 1.25
+  at the 5-minute TTL (also when the TTL is unknown) or 2 at the 1-hour TTL; output 5. Each request
+  weighs by its own model. They live in `MODEL_WEIGHTS` in `hooks/tune.ts`.
+- **Recommendation.** The highest candidate within 2% of the cheapest. It is recommended when it
+  costs at least 5% less than `current`, else the current boundary is fine. The ladder from B:
+  soft B, hard B + 50k, stop B + 100k every 25k, each capped at the ceiling.
+
+`/ctx-guard tune apply [role]` (the session's role by default) writes that ladder into
+`.claude/ctx-guard.local.json` under `roles.<role>.triggers`, keeping every other key of the
+file, then reads the config again. The role's context-only triggers (`when` holds only
+`context` and `every`, `do` no compact, prompt or ping) map in order to soft, hard and stop; a
+percent `every` on soft or hard turns to tokens. The whole trigger list of the role is then
+pinned in the local file: later edits to the team file's triggers for that role do not reach it
+until `roles.<role>.triggers` is removed there. When the change touches a trusted setting (a
+trigger whose lift prompts), the reply says to run `/ctx-guard trust` again. Apply refuses with
+nothing written when there is no recommendation, for role `none`, when the local file is not
+valid JSON or sets `roles.<role>` to null, when the config has errors, and when the role has
+more than three context-only triggers (named).
 
 ## Subagent budgets
 
@@ -1248,6 +1287,8 @@ The cache countdown follows the context figure ([Prompt cache](#prompt-cache)). 
 | *(none)* | anyone | Report: role and its source, config files and errors, effective config, metrics, marks, live denies, band probes, trust, handoff age, lease, last verdict, self gap (`selfGap` and the time left before the ready token is no longer `too-soon`). |
 | `role <name\|none>` | operator | Sets this session's role. |
 | `check` | operator | Dry-runs the restart verdict. |
+| `tune [role]` | operator | Replays the ledger and recommends a context ladder ([Tune](#tune)). |
+| `tune apply [role]` | operator | Writes that ladder into the local config file ([Tune](#tune)). |
 | `trust` | operator | Approves the repo's restart, ready-check, compact, ping, prompt and band-probe settings. |
 | `trust off` | operator | Withdraws that approval. |
 | `reload` | anyone | Re-reads the config files. |

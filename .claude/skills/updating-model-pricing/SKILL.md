@@ -11,8 +11,11 @@ two plugins should report the same cost for the same session:
 - `PRICING` in `plugins/session-analyzer/skills/session-analyzer/scripts/parse_session.py`
 - `PRICING` in `plugins/manage-claude-projects/skills/manage-claude-projects/scripts/projects.py`
 - the table and notes in `docs/pricing.md`
+- the read weights in `plugins/ctx-guard/hooks/tune.ts` (`MODEL_WEIGHTS`: cache read / input per
+  row) and the "ctx-guard tune weights" table in `docs/pricing.md`
 
-1. Read all three and note any drift between them.
+1. Read all four and note any drift between them, including the tune read weights against the
+   cache read / input ratios of the table.
 2. Get current model ids and rates from the `claude-api` skill, or from
    https://platform.claude.com/docs/en/about-claude/pricing if it lacks something: input, output,
    cache read, 5m and 1h cache write, long-context tiers, fast-mode rates. Look every number up even

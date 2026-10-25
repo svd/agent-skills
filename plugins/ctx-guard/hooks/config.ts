@@ -996,6 +996,23 @@ export function parseLayer(file: FileLayer): { raw: Obj | null; errors: string[]
   return { raw, errors: [] }
 }
 
+/**
+ * A role's trigger list as the files write it, before validation: the files
+ * merged over the built-in layer, then `defaults` merged under the role, else
+ * the built-in ladder. Null when the role is not in the merged files. A file
+ * that does not parse counts as absent.
+ */
+export function rawRoleTriggers(files: readonly FileLayer[], role: string): unknown[] | null {
+  const merged = mergeLayers(BUILTIN_LAYER, ...files.map(f => parseLayer(f).raw ?? {}))
+  const roles = isObj(merged) ? merged.roles : undefined
+  const own = isObj(roles) && !RESERVED_KEYS.has(role) ? roles[role] : undefined
+  if (!isObj(own)) return null
+  const spec = deepMerge(isObj(merged) ? merged.defaults : undefined, own)
+  const triggers = isObj(spec) ? spec.triggers : undefined
+  // A copy: the caller may edit it.
+  return JSON.parse(JSON.stringify(Array.isArray(triggers) ? triggers : DEFAULT_TRIGGERS_RAW)) as unknown[]
+}
+
 export type Effective = {
   config: Config
   source: ConfigSource

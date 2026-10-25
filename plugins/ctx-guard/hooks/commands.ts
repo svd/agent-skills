@@ -10,15 +10,15 @@ import { METRIC_ORDER, contextPercent, holdsBelow } from './triggers'
 import type { DenyEntry, LimitKind, Metrics } from './triggers'
 import type { CheckLine } from './restart'
 import { shortId } from './subagents'
-import { REACH_MIN_SESSIONS, rangeText } from './tune'
-import type { RoleReach } from './tune'
+import { FIRST, REACH_MIN_SESSIONS, STOP_EVERY, TUNE_MIN_REQUESTS, TUNE_MIN_SESSIONS, rangeText } from './tune'
+import type { InputName, LadderChange, RoleReach, RoleTune } from './tune'
 
 export const COMMAND = 'ctx-guard'
 // The first engine with every event and `$` call ctx-guard uses.
 export const MIN_VERSION = '2.1.293'
 export const DEFAULT_PAUSE_MS = 30 * 60 * 1000
 
-export const ARGUMENT_HINT = '[role <name|none> | check | trust [off] | reload | pause [30m|off] | wake <5h|7d|off> [text] | init [solo|peers]]'
+export const ARGUMENT_HINT = '[role <name|none> | check | trust [off] | reload | pause [30m|off] | wake <5h|7d|off> [text] | init [solo|peers] | tune [apply] [role]]'
 
 export const USAGE = [
   'Usage:',
@@ -32,6 +32,8 @@ export const USAGE = [
   '  /ctx-guard wake <5h|7d> [text]  wake this session when that usage window resets (typed by you only)',
   '  /ctx-guard wake off          cancel that wake',
   '  /ctx-guard init [solo|peers] write a starter config if there is none, and .gitignore lines',
+  '  /ctx-guard tune [role]       replay the ledger for context boundaries and recommend a ladder (typed by you only)',
+  '  /ctx-guard tune apply [role] write that ladder into the local config file (typed by you only)',
 ].join('\n')
 
 // ---- arguments ---------------------------------------------------------------
@@ -49,6 +51,8 @@ export type Subcommand =
   | { kind: 'pause'; arg: string }
   | { kind: 'wake'; window: LimitKind | null; text: string | null }
   | { kind: 'init'; preset: Preset }
+  | { kind: 'tune'; role: string | null }
+  | { kind: 'tune-apply'; role: string | null }
   | { kind: 'usage'; error: string | null }
 
 export function parseCommand(args: string): Subcommand {
@@ -77,9 +81,19 @@ export function parseCommand(args: string): Subcommand {
         ? { kind: 'init', preset: preset as Preset }
         : { kind: 'usage', error: `unknown preset "${arg}"; use solo or peers` }
     }
+    case 'tune':
+      return parseTune(rest)
     default:
       return { kind: 'usage', error: `unknown subcommand "${head}"` }
   }
+}
+
+// `tune [role]` or `tune apply [role]`.
+function parseTune(words: readonly string[]): Subcommand {
+  const apply = words[0]?.toLowerCase() === 'apply'
+  const names = apply ? words.slice(1) : words
+  if (names.length > 1) return { kind: 'usage', error: `tune${apply ? ' apply' : ''} takes at most one role` }
+  return { kind: apply ? 'tune-apply' : 'tune', role: names[0] ?? null }
 }
 
 const WAKE_WINDOWS: Readonly<Record<string, LimitKind>> = { '5h': 'five_hour', '7d': 'seven_day' }
@@ -567,6 +581,92 @@ export function reachLine(s: ReachState, now: number): string {
 }
 
 const tokensOr = (v: number | null): string => (v === null ? '-' : humanTokens(v))
+
+// ---- tune --------------------------------------------------------------------
+
+// The tune: off with the ledger off, none with no config file, else its roles over the last
+// `days` days (`role` the one asked for, null for all).
+export type TuneState = 'off' | 'no ledger' | { days: number; role: string | null; roles: readonly RoleTune[] }
+
+const plural = (n: number, word: string): string => `${grouped(n)} ${word}${n === 1 ? '' : 's'}`
+const grouped = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+const dayText = (t: number | null): string => (t === null ? '-' : new Date(t).toISOString().slice(0, 10))
+
+const INPUT_NAMES: readonly [InputName, string][] = [
+  ['restartStart', 'restart start'],
+  ['restartWrite', 'restart write'],
+  ['handoffOut', 'handoff out'],
+  ['overshoot', 'overshoot'],
+]
+
+function tuneVerdict(r: RoleTune): string[] {
+  switch (r.verdict) {
+    case 'few':
+      return [`not enough data (a recommendation needs ${TUNE_MIN_SESSIONS} sessions and ${grouped(TUNE_MIN_REQUESTS)} requests)`]
+    case 'unconfigured':
+      return ['not in the config now; no recommendation']
+    case 'no-ladder':
+      return ['no context triggers; no recommendation']
+    case 'fine':
+      if (!r.rows.some(row => typeof row.boundary === 'number')) return [`no boundary from ${humanTokens(FIRST)} fits under the ceiling (${humanTokens(r.ceiling)}); current boundary is fine`]
+      return [`current boundary is fine${r.best && r.saving !== null && r.saving > 0 ? ` (the best, ${r.best.label}, saves ${humanPercent(r.saving * 100)})` : ''}`]
+  }
+  const l = r.ladder
+  if (!r.best || !l || r.saving === null) return []
+  return [
+    `recommend: boundary ${r.best.label}, ${humanPercent(r.saving * 100)} below current`,
+    `  soft ${humanTokens(l.soft)}, hard ${humanTokens(l.hard)}, stop ${humanTokens(l.stop)} every ${humanTokens(STOP_EVERY)}`,
+    r.role === 'none'
+      ? '  tune apply cannot write role none; add a role to the config to apply it'
+      : `  /ctx-guard tune apply ${r.role} writes it to the local config file`,
+  ]
+}
+
+function tuneTable(rows: RoleTune['rows']): string[] {
+  const table = [['B', 'clears', 'cost vs none'], ...rows.map(row => [row.label, grouped(row.clears), humanPercent(row.vsNone * 100)])]
+  const widths = table[0]?.map((_, i) => Math.max(...table.map(r => (r[i] ?? '').length))) ?? []
+  return table.map(r => r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(widths[i] ?? 0))).join('  '))
+}
+
+/** `/ctx-guard tune`: per role its data, measured inputs, current ladder, the candidates' table and the recommendation. Costs are relative, never money. */
+export function tuneText(s: TuneState): string {
+  if (s === 'off') return 'tune: off (ledger.enabled is false)'
+  if (s === 'no ledger') return 'tune: no ledger (no ctx-guard config file in this repo)'
+  if (!s.roles.length) return `tune: no ${s.role === null ? 'sessions' : `requests of ${s.role}`} recorded in the last ${s.days} days`
+  const lines = [`tune (last ${s.days} days, from the ledger):`]
+  for (const r of s.roles) {
+    lines.push(`  ${r.role}: ${plural(r.sessions, 'session')}, ${plural(r.requests, 'request')}, ${dayText(r.from)} → ${dayText(r.to)}`)
+    const body: string[] = []
+    if (r.verdict !== 'few') {
+      const inputs = INPUT_NAMES.map(([k, name]) => {
+        const m = r.inputs[k]
+        return `${name} ${humanTokens(m.value)}${m.fallback ? ` (fallback, ${plural(m.samples, 'sample')})` : ''}`
+      })
+      body.push(`inputs: ${inputs.join(', ')}`)
+      body.push(`weights: ${r.weights}, cache TTL ${r.ttl === null ? 'unknown' : humanDuration(r.ttl)}; window ${humanTokens(r.window)}, ceiling ${humanTokens(r.ceiling)}`)
+      body.push(`current: ${r.current.length ? r.current.map(c => `${c.id} ${humanTokens(c.tokens)}`).join(', ') : 'no context triggers'}`)
+      if (r.rows.length) body.push(...tuneTable(r.rows))
+    }
+    body.push(...tuneVerdict(r))
+    for (const b of body) lines.push(`    ${b}`)
+  }
+  return lines.join('\n')
+}
+
+export type TuneApplied = { role: string; file: string; changed: readonly LadderChange[]; trustAgain: boolean } | { refused: string }
+
+/** `/ctx-guard tune apply`: what changed in which file, that the role's list is now pinned there, and whether trust is needed again. */
+export function tuneApplyText(r: TuneApplied): string {
+  if ('refused' in r) return `${PREFIX} tune apply: ${r.refused}; nothing changed.`
+  const lines = [`${PREFIX} tune apply: wrote roles.${r.role}.triggers to ${r.file}:`]
+  for (const c of r.changed) lines.push(`  ${c.id}: ${c.from} → ${c.to}`)
+  lines.push(
+    `The whole trigger list of ${r.role} is now pinned in ${r.file}: later edits to the team file's triggers for ${r.role} ` +
+      `do not reach you until you remove roles.${r.role}.triggers there.`,
+  )
+  if (r.trustAgain) lines.push('This changed a trusted setting: run /ctx-guard trust to approve it again.')
+  return lines.join('\n')
+}
 
 function budgetText({ type, budget: b }: { type: string; budget: Budget | null }): string {
   if (!b) return `${type} off`

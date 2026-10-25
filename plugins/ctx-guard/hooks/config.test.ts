@@ -18,6 +18,7 @@ import {
   parseLayer,
   parseQuantity,
   pathError,
+  rawRoleTriggers,
   readSwitches,
   roleSpec,
   sha256Hex,
@@ -735,6 +736,26 @@ describe('layers and fallback', () => {
     const e = effectiveConfig({ switches: { ...sw, blocking: false, autoActions: false, noteToasts: false, display: 'status' }, files: [], lastGood: null })
     expect(e).toMatchObject({ enabled: true, blocking: false, autoActions: false, noteToasts: false, display: 'status' })
     expect(effectiveConfig({ switches: sw, files: [], lastGood: null }).noteToasts).toBe(true)
+  })
+
+  test('rawRoleTriggers: defaults inherit, local replaces team, built-in ladder, unknown role null', () => {
+    const soft = { id: 'ctx-soft', when: { context: '300k' }, do: ['note'], level: 'soft' }
+    const mine = { id: 'ctx-soft', when: { context: '150k' }, do: ['note'], level: 'soft' }
+    const team = file(TEAM, { version: 1, defaults: { triggers: [soft] }, roles: { lead: {}, dev: { triggers: [] } } })
+    expect(rawRoleTriggers([team, absent(LOCAL)], 'lead')).toEqual([soft])
+    expect(rawRoleTriggers([team, absent(LOCAL)], 'dev')).toEqual([])
+    expect(rawRoleTriggers([team, file(LOCAL, { roles: { lead: { triggers: [mine] } } })], 'lead')).toEqual([mine])
+    // A local file that does not parse counts as absent.
+    expect(rawRoleTriggers([team, { path: LOCAL, text: '{' }], 'lead')).toEqual([soft])
+    const builtIn = rawRoleTriggers([file(TEAM, { version: 1, roles: { lead: {} } })], 'lead')
+    expect(builtIn?.map(t => (t as { id: string }).id)).toEqual(defaultTriggers().map(t => t.id))
+    // The built-in layer's main role, with no file.
+    expect(rawRoleTriggers([], 'main')?.length).toBe(defaultTriggers().length)
+    expect(rawRoleTriggers([team], 'qa')).toBeNull()
+    expect(rawRoleTriggers([team], 'constructor')).toBeNull()
+    // A copy: editing it leaves the built-in ladder alone.
+    ;(builtIn?.[0] as { id: string }).id = 'x'
+    expect(rawRoleTriggers([], 'main')?.[0]).toMatchObject({ id: 'ctx-soft' })
   })
 
   test('parseLayer: absent, bad JSON, non-object', () => {

@@ -55,13 +55,15 @@ import {
   presetPath,
   presetProblem,
   reachLines,
+  tuneApplyText,
+  tuneText,
   wantsTrust,
   versionBelow,
   wakeLine,
   wakePlan,
   wakeSetText,
 } from './commands'
-import type { CacheReport, Preset, ReachState, RestartReport, SubagentReport } from './commands'
+import type { CacheReport, Preset, ReachState, RestartReport, SubagentReport, TuneState } from './commands'
 import {
   DEFAULT_CACHE,
   DEFAULT_SELF_GAP,
@@ -73,10 +75,12 @@ import {
   checkScripts,
   confinePath,
   effectiveConfig,
+  isObj,
   liftHas,
   localPathFor,
   num,
   onCacheMetric,
+  rawRoleTriggers,
   readSwitches,
   resolveWindow,
   roleSpec,
@@ -203,7 +207,7 @@ import {
 import type { Tracked } from './subagents'
 import { commitFlush, compactTrigger, expiredParts, fileId, newLedger, parsePartName, planFlush, pushRecord, reqRecord, thresholdTokens } from './ledger'
 import type { LedgerMem, LedgerRecord } from './ledger'
-import { REACH_DAYS, asReachMemory, groupSessions, newFindings, reach, reachKey, windowParts } from './tune'
+import { REACH_DAYS, applyLadder, asReachMemory, groupSessions, newFindings, reach, reachKey, tune, windowParts } from './tune'
 import type { RoleReach, SessionRecords } from './tune'
 import { LIFT_CHECK_TIMEOUT_MS, LIFT_TRIES, asLifts, checkTries, earliestReset, emptyLifts, gateWhy, keepsWake, liftsFor, operatorInput, wakeVerdict, wakesOnLift } from './lifts'
 import type { WakeGate } from './lifts'
@@ -1681,16 +1685,14 @@ async function sweepLedger($: EngineInterface): Promise<void> {
   }
 }
 
-// The reach check over the last 14 days (fewer when ledger.days keeps fewer) of parts plus
-// the records not landed yet. Runs in the chain, so no flush is half-done and no record
+// The ledger's sessions over the last `days` days of parts plus the records not landed yet;
+// null with no ledger folder. Run it in the chain, so no flush is half-done and no record
 // counts twice.
-async function computeReach($: EngineInterface): Promise<ReachState> {
-  const config = mod.eff?.config
+async function ledgerSessions($: EngineInterface, days: number): Promise<{ sessions: SessionRecords[]; now: number } | null> {
   const l = mod.ledger
   const dir = l ? l.dir : await ledgerDir($).catch(() => null)
-  if (!config || !dir) return 'no ledger'
+  if (!dir) return null
   const now = await $.clock.now()
-  const days = Math.min(REACH_DAYS, config.ledger.days)
   const names = await $.fs.list(dir).then(es => es.filter(f => f.kind === 'file' && !f.isLink).map(f => f.name), () => [])
   const texts: { sessionId: string; text: string }[] = []
   for (const s of windowParts(names, now, days)) {
@@ -1707,9 +1709,21 @@ async function computeReach($: EngineInterface): Promise<ReachState> {
     const sid = l.sessionId ?? (await $.session.id().catch(() => null))
     extra.push({ sessionId: sid ? fileId(sid) : 'current', records: l.buffer })
   }
-  const triggers = (r: string) => (r === 'none' ? triggersFor(config, null) : (roleSpec(config, r)?.triggers ?? null))
-  const roles = reach({ sessions: groupSessions(texts, extra), now, days, triggers, window: windowFor(mod.engineModelWindow ?? Number.NaN).tokens })
-  return { at: now, days, roles }
+  return { sessions: groupSessions(texts, extra), now }
+}
+
+// A role's triggers now (none: the zero-config ones); null when the role is not in the config.
+const triggersOf = (config: Config) => (r: string) => (r === 'none' ? triggersFor(config, null) : (roleSpec(config, r)?.triggers ?? null))
+
+// The reach check over the last 14 days (fewer when ledger.days keeps fewer).
+async function computeReach($: EngineInterface): Promise<ReachState> {
+  const config = mod.eff?.config
+  if (!config) return 'no ledger'
+  const days = Math.min(REACH_DAYS, config.ledger.days)
+  const read = await ledgerSessions($, days)
+  if (!read) return 'no ledger'
+  const roles = reach({ ...read, days, triggers: triggersOf(config), window: windowFor(mod.engineModelWindow ?? Number.NaN).tokens })
+  return { at: read.now, days, roles }
 }
 
 // The reach check now, kept for the report (`cached` takes the kept one); null with the config not loaded.
@@ -3439,7 +3453,7 @@ async function start($: EngineInterface, isInteractive: boolean, surface: Render
     try {
       await $.command.register({
         name: 'ctx-guard',
-        description: 'Context and usage guard: report, role, check, trust, reload, pause, init',
+        description: 'Context and usage guard: report, role, check, trust, reload, pause, init, tune',
         argumentHint: ARGUMENT_HINT,
         immediate: true,
       })
@@ -3913,6 +3927,81 @@ async function initCommand($: EngineInterface, preset: Preset): Promise<string> 
   return `${PREFIX} ${lines.join(' ')}`
 }
 
+// The tune over the last ledger.days days (`role` only, null for all); null with the config not
+// loaded. Runs in the chain, as reachNow does, and only on the command.
+async function tuneState($: EngineInterface, role: string | null): Promise<TuneState | null> {
+  const config = mod.eff?.config
+  if (!config) return null
+  if (!config.ledger.enabled) return 'off'
+  if (!(mem.config?.files.some(f => f.mtime !== null) ?? false)) return 'no ledger'
+  const days = config.ledger.days
+  let s: TuneState = 'no ledger'
+  await serial(async () => {
+    const read = await ledgerSessions($, days)
+    const window = windowFor(mod.engineModelWindow ?? Number.NaN).tokens
+    if (read) s = { days, role, roles: tune({ ...read, days, triggers: triggersOf(config), window, role }) }
+  })
+  return s
+}
+
+async function tuneCommand($: EngineInterface, role: string | null): Promise<string> {
+  const s = await tuneState($, role)
+  if (s === null) return `${PREFIX} the config is not loaded.`
+  const known = role === null || role === 'none' || (mod.eff && roleSpec(mod.eff.config, role))
+  if (!known && typeof s === 'object' && !s.roles.length) return `${PREFIX} no role "${role}" in the config or the ledger.`
+  return tuneText(s)
+}
+
+/**
+ * `/ctx-guard tune apply [role]` (the session's role by default): the
+ * recommended ladder written into the local config file under
+ * `roles.<role>.triggers`, every other key of that file kept, then the config
+ * read again. Refused unless tune recommends a change.
+ */
+async function tuneApplyCommand($: EngineInterface, arg: string | null): Promise<string> {
+  const refusal = (why: string): string => tuneApplyText({ refused: why })
+  const root = await $.session.root()
+  const rels = [switches.configPath, localPathFor(switches.configPath)] as const
+  const files: FileLayer[] = []
+  for (const rel of rels) {
+    const c = confinePath(root, rel)
+    if ('error' in c) return refusal(`${rel} ${c.error}`)
+    files.push({ path: c.path, text: (await $.fs.exists(c.path)) ? await $.fs.read(c.path) : null })
+  }
+  const target = files[1] as FileLayer
+  let local: unknown = {}
+  try {
+    if (target.text !== null) local = JSON.parse(target.text)
+  } catch {
+    return refusal(`${rels[1]} is not valid JSON`)
+  }
+  if (!isObj(local)) return refusal(`${rels[1]} does not hold a JSON object`)
+  const role = arg ?? mod.role.role
+  if (!role || role === 'none') return refusal('no role to write; give one, or set a role with /ctx-guard role')
+  const roles = isObj(local.roles) ? local.roles : {}
+  if (roles[role] === null) return refusal(`${rels[1]} removes the role ${role} (roles.${role} is null)`)
+  await reloadConfig($, true)
+  const eff = mod.eff
+  if (!eff) return refusal('the config is not loaded')
+  if (eff.fallback) return refusal('the config has errors (/ctx-guard lists them)')
+  const s = await tuneState($, role)
+  const rt = typeof s === 'object' && s !== null ? s.roles.find(r => r.role === role) : undefined
+  if (!rt || rt.verdict !== 'recommend' || typeof rt.best?.boundary !== 'number') return refusal(`nothing to apply for ${role} (/ctx-guard tune ${role} shows why)`)
+  const raw = rawRoleTriggers(files, role)
+  if (!raw) return refusal(`no role ${role} in the config files`)
+  const plan = applyLadder(raw, rt.current, rt.best.boundary, rt.ceiling, rt.window)
+  if (!plan.ok) return refusal(`${plan.reason}${plan.unmapped.length ? ` (${plan.unmapped.join(', ')})` : ''}`)
+  const cur = roles[role]
+  const own = isObj(cur) ? cur : {}
+  const next = { ...local, roles: { ...roles, [role]: { ...own, triggers: plan.triggers } } }
+  const before = trusted() ? trustHash(eff.config) : null
+  await $.fs.write(target.path, `${JSON.stringify(next, null, 2)}\n`)
+  await reloadConfig($, true)
+  await serial(() => evaluateCurrent($, 'always'))
+  const after = mod.eff?.config
+  return tuneApplyText({ role, file: rels[1], changed: plan.changed, trustAgain: before !== null && !!after && trustHash(after) !== before })
+}
+
 /**
  * `/ctx-guard:resume role=<r> …` typed by the person: a session with no role
  * takes it, the same role passes, a different held role is refused. Answers
@@ -4094,7 +4183,7 @@ async function checkCommand($: EngineInterface): Promise<string> {
 }
 
 // Changing what ctx-guard does is the person's alone, never the model's or another plugin's.
-const OPERATOR_ONLY = new Set(['role', 'pause', 'init', 'trust', 'trust-off', 'check'])
+const OPERATOR_ONLY = new Set(['role', 'pause', 'init', 'trust', 'trust-off', 'check', 'tune', 'tune-apply'])
 
 async function runCommand($: EngineInterface, e: CommandRunInput): Promise<CommandRunResult> {
   const sub = parseCommand(e.args)
@@ -4127,6 +4216,10 @@ async function runCommand($: EngineInterface, e: CommandRunInput): Promise<Comma
       return { text: await wakeCommand($, sub.window, sub.text) }
     case 'init':
       return { text: await initCommand($, sub.preset) }
+    case 'tune':
+      return { text: await tuneCommand($, sub.role) }
+    case 'tune-apply':
+      return { text: await tuneApplyCommand($, sub.role) }
     case 'usage':
       return { text: `${sub.error ? `${PREFIX} ${sub.error}.\n` : ''}${USAGE}` }
   }

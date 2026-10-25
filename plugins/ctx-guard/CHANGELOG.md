@@ -23,6 +23,17 @@ All notable changes to the `ctx-guard` plugin are documented here.
   sessions it says not enough data. At session start each new finding toasts once per 7 days per
   repo, in its own words; when the stored memory of shown findings cannot be read, nothing
   toasts.
+- `/ctx-guard tune [role]`, typed by the operator: replays the last `ledger.days` days of the
+  ledger per role with candidate boundaries from 100k up to the ceiling (the window, or below
+  the lowest engine auto-compact), weighs reads, cache writes and output by the model's price
+  ratios, and prints each candidate's cost relative to none, the measured inputs (marked when a
+  fallback stands in) and a recommended soft, hard and stop ladder when it saves at least 5%. A
+  role needs 10 sessions and 1,500 requests.
+- `/ctx-guard tune apply [role]`, typed by the operator: writes the recommended ladder into
+  `.claude/ctx-guard.local.json` under `roles.<role>.triggers`, keeps the file's other keys,
+  reloads the config and says when `/ctx-guard trust` is needed again. It refuses with nothing
+  to apply, for role `none`, on an invalid local file or `roles.<role>: null`, on config
+  errors, and on more than three context-only triggers.
 
 ### Changed
 

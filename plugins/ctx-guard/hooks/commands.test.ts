@@ -16,12 +16,15 @@ import {
   reachLines,
   reportText,
   triggerLine,
+  tuneApplyText,
+  tuneText,
   versionBelow,
   wakePlan,
   wantsTrust,
 } from './commands'
 import type { CacheReport, ReportInput, RestartReport } from './commands'
-import type { RoleReach } from './tune'
+import { FALLBACK } from './tune'
+import type { Inputs, RoleReach, RoleTune } from './tune'
 import { BUILTIN_LAYER, builtInConfig, mergeLayers, roleSpec, validate } from './config'
 import { metricsOf } from './triggers'
 
@@ -57,6 +60,15 @@ describe('parseCommand', () => {
     expect(wakePlan('seven_day', null, m(five))).toEqual({ ok: false, error: 'no weekly usage figures yet; try again after the next reply' })
     expect(wakePlan('five_hour', null, m([{ kind: 'five_hour', percentUsed: 4, resetsAt: '2026-10-13T14:00:00Z' }])).ok).toBe(false)
     expect(wakePlan('five_hour', null, m([{ kind: 'five_hour', percentUsed: 60, resetsAt: '2026-10-13T11:00:00Z' }]))).toEqual({ ok: false, error: 'the 5-hour usage window has already reset' })
+  })
+
+  test('tune: a role, apply and a role, at most one role', () => {
+    expect(parseCommand('tune')).toEqual({ kind: 'tune', role: null })
+    expect(parseCommand('tune lead')).toEqual({ kind: 'tune', role: 'lead' })
+    expect(parseCommand('TUNE Apply')).toEqual({ kind: 'tune-apply', role: null })
+    expect(parseCommand('tune apply lead')).toEqual({ kind: 'tune-apply', role: 'lead' })
+    expect(parseCommand('tune a b c')).toEqual({ kind: 'usage', error: 'tune takes at most one role' })
+    expect(parseCommand('tune apply a b')).toEqual({ kind: 'usage', error: 'tune apply takes at most one role' })
   })
 
   test('anything else is usage with the reason', () => {
@@ -514,5 +526,93 @@ describe('reach', () => {
     const without = reportText(base).split('\n')
     expect(without.some(l => l.startsWith('reach'))).toBe(false)
     expect(lines.filter(l => !l.startsWith('reach'))).toEqual(without)
+  })
+})
+
+describe('tune text', () => {
+  const inputs = (over: Partial<Inputs> = {}): Inputs => ({
+    restartStart: { value: 70_000, samples: 6, fallback: false },
+    restartWrite: { value: FALLBACK.restartWrite, samples: 2, fallback: true },
+    handoffOut: { value: 3_000, samples: 0, fallback: true },
+    overshoot: { value: 20_000, samples: 5, fallback: false },
+    ...over,
+  })
+  const row = (label: string, boundary: number | 'current' | null, clears: number, vsNone: number) => ({ label, boundary, clears, cost: vsNone * 1000, vsNone })
+  const lead: RoleTune = {
+    role: 'lead',
+    sessions: 40,
+    requests: 3413,
+    from: Date.UTC(2026, 9, 13, 9),
+    to: Date.UTC(2026, 9, 24, 18),
+    window: 1_000_000,
+    ceiling: 990_000,
+    inputs: inputs(),
+    weights: 'Opus 5.5',
+    ttl: 60 * 60_000,
+    current: [{ id: 'ctx-soft', tokens: 300_000 }, { id: 'ctx-hard', tokens: 400_000 }],
+    rows: [row('100k', 100_000, 52, 0.84), row('150k', 150_000, 30, 0.8), row('current', 'current', 10, 0.97), row('none', null, 0, 1)],
+    verdict: 'recommend',
+    best: row('150k', 150_000, 30, 0.8),
+    saving: 0.175,
+    ladder: { soft: 150_000, hard: 200_000, stop: 250_000 },
+  }
+
+  test('a role with a recommendation: data, inputs with fallback marks, weights, current, table, ladder; no money', () => {
+    const text = tuneText({ days: 30, role: null, roles: [lead] })
+    expect(text).toBe(
+      [
+        'tune (last 30 days, from the ledger):',
+        '  lead: 40 sessions, 3,413 requests, 2026-10-13 → 2026-10-24',
+        '    inputs: restart start 70k, restart write 32k (fallback, 2 samples), handoff out 3k (fallback, 0 samples), overshoot 20k',
+        '    weights: Opus 5.5, cache TTL 1h; window 1M, ceiling 990k',
+        '    current: ctx-soft 300k, ctx-hard 400k',
+        '    B        clears  cost vs none',
+        '    100k     52      84%',
+        '    150k     30      80%',
+        '    current  10      97%',
+        '    none     0       100%',
+        '    recommend: boundary 150k, 18% below current',
+        '      soft 150k, hard 200k, stop 250k every 25k',
+        '      /ctx-guard tune apply lead writes it to the local config file',
+      ].join('\n'),
+    )
+    expect(text).not.toContain('$')
+     const none = tuneText({ days: 30, role: null, roles: [{ ...lead, role: 'none' }] })
+    expect(none).toContain('\n      tune apply cannot write role none; add a role to the config to apply it')
+    expect(none).not.toContain('/ctx-guard tune apply')
+  })
+
+  test('fine, few, a ceiling under 100k, unknown TTL, and the off states', () => {
+    const fine = tuneText({ days: 30, role: null, roles: [{ ...lead, verdict: 'fine', ttl: null, saving: 0.03, ladder: null }] })
+    expect(fine).toContain('cache TTL unknown')
+    expect(fine).toContain('    current boundary is fine (the best, 150k, saves 3%)')
+    const dearer = tuneText({ days: 30, role: null, roles: [{ ...lead, verdict: 'fine', ttl: null, saving: -0.01, ladder: null }] })
+    expect(dearer.endsWith('\n    current boundary is fine')).toBe(true)
+    expect(dearer).not.toContain('saves')
+    const low = tuneText({ days: 30, role: null, roles: [{ ...lead, verdict: 'fine', ceiling: 90_000, rows: [row('current', 'current', 0, 1), row('none', null, 0, 1)], best: null, saving: null, ladder: null }] })
+    expect(low).toContain('no boundary from 100k fits under the ceiling (90k); current boundary is fine')
+    const few = tuneText({ days: 30, role: null, roles: [{ ...lead, sessions: 1, requests: 9, verdict: 'few', rows: [], best: null, saving: null, ladder: null }] })
+    expect(few.split('\n')).toEqual([
+      'tune (last 30 days, from the ledger):',
+      '  lead: 1 session, 9 requests, 2026-10-13 → 2026-10-24',
+      '    not enough data (a recommendation needs 10 sessions and 1,500 requests)',
+    ])
+    expect(tuneText('off')).toBe('tune: off (ledger.enabled is false)')
+    expect(tuneText('no ledger')).toBe('tune: no ledger (no ctx-guard config file in this repo)')
+    expect(tuneText({ days: 30, role: null, roles: [] })).toBe('tune: no sessions recorded in the last 30 days')
+    expect(tuneText({ days: 30, role: 'qa', roles: [] })).toBe('tune: no requests of qa recorded in the last 30 days')
+  })
+
+  test('tune apply: the changes, the pinned notice, the trust line only when needed, a refusal', () => {
+    const changed = [{ id: 'ctx-soft', from: '40%', to: '150k' }, { id: 'ctx-stop', from: '75% every 5%', to: '250k every 25k' }]
+    const text = tuneApplyText({ role: 'lead', file: '.claude/ctx-guard.local.json', changed, trustAgain: false })
+    expect(text.split('\n')).toEqual([
+      '[ctx-guard] tune apply: wrote roles.lead.triggers to .claude/ctx-guard.local.json:',
+      '  ctx-soft: 40% → 150k',
+      '  ctx-stop: 75% every 5% → 250k every 25k',
+      "The whole trigger list of lead is now pinned in .claude/ctx-guard.local.json: later edits to the team file's triggers for lead do not reach you until you remove roles.lead.triggers there.",
+    ])
+    expect(tuneApplyText({ role: 'lead', file: 'x.json', changed, trustAgain: true }).split('\n').pop()).toBe('This changed a trusted setting: run /ctx-guard trust to approve it again.')
+    expect(tuneApplyText({ refused: 'nothing to apply' })).toBe('[ctx-guard] tune apply: nothing to apply; nothing changed.')
   })
 })

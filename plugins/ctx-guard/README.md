@@ -56,6 +56,8 @@ Each note also shows a toast, so you see what the model was told (`noteToasts`).
 
 A **reach check** reads the ledger's last 14 days and tells you when a role's context triggers
 never fire before the engine compacts or the session ends (`/ctx-guard check`, plus a toast).
+`/ctx-guard tune` replays the ledger to recommend a context ladder per role, and
+`/ctx-guard tune apply` writes it into `.claude/ctx-guard.local.json`.
 
 The prompt cache gets the same treatment. The band counts down to the cache's expiry
 (`cache 8m`), and a `cache.miss` trigger, such as the presets' `cache-miss` toast, flags a request
@@ -151,8 +153,9 @@ it can start are model requests that Claude Code sends like any other: a keep-wa
   5-minute cache from a 1-hour one, and keeps nothing else from it. Its config,
   `.claude/ctx-guard.json` and `.claude/ctx-guard.local.json`. A role's handoff file when it
   resumes. The ready-check and probe scripts your config names, to hash them for trust. The last
-  14 days of ledger files, at session start and on `/ctx-guard check`, for the reach check.
-- **Writes.** Role leases (`<role>.owner`) and restart stamps in the project's state folder,
+  14 days of ledger files, at session start and on `/ctx-guard check`, for the reach check, and
+  the last `ledger.days` days on `/ctx-guard tune`.
+- **Writes.** `.claude/ctx-guard.local.json` on `/ctx-guard tune apply`, which you type. Role leases (`<role>.owner`) and restart stamps in the project's state folder,
   `.ctx-guard/` by default (`stateDir`). In a repo with a ctx-guard config file, the ledger in
   that folder's `ledger/`: one JSON-lines file per session per day, holding figures only (each
   main-loop request's context and token counts, its model, and when notes, ready tokens,

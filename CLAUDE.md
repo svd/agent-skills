@@ -207,5 +207,6 @@ pricing table, matched by substring against the model id (cache write = 1.25× i
 for 1-hour-TTL writes; cache read = 0.1× input). Both dedupe usage to one row per API request
 (`requestId`, else `request_id`, else `message.id`; last copy wins), because transcripts write
 one record per content block and each repeats the request's usage. If you update pricing in one
-script, update the other to match, and the table in `docs/pricing.md`. Non-Claude models (e.g. `glm-5.1`) have no matching tier and are reported as
+script, update the other to match, the table in `docs/pricing.md`, and the ctx-guard tune
+weights (`MODEL_WEIGHTS` in `plugins/ctx-guard/hooks/tune.ts`). Non-Claude models (e.g. `glm-5.1`) have no matching tier and are reported as
 "tokens only", excluded from cost totals.

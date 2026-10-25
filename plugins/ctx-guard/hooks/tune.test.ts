@@ -1,9 +1,20 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { roleSpec, validate, zeroConfigTriggers } from './config'
-import type { LedgerRecord } from './ledger'
+import type { LedgerRecord, ReqRecord } from './ledger'
 import {
+  FALLBACK,
   FINDING_MEMORY_MS,
+  applyLadder,
+  candidates,
+  ceilingFor,
+  choose,
+  ladderFrom,
+  measureInputs,
+  replay,
+  tune,
+  weightsFor,
+  writeWeight,
   asReachMemory,
   contextLadder,
   groupSessions,
@@ -13,7 +24,7 @@ import {
   reachToast,
   windowParts,
 } from './tune'
-import type { ReachInput, RoleReach, SessionRecords } from './tune'
+import type { ReachInput, ReplayCtx, RoleReach, RoleTune, Segment, SessionRecords } from './tune'
 import type { Config, Trigger } from '../types'
 
 // 2026-10-25T12:00:00Z
@@ -292,5 +303,190 @@ describe('reach size', () => {
       ['dev', 56, 5600, 100_000],
       ['lead', 56, 5600, 100_000],
     ])
+  })
+})
+
+describe('tune', () => {
+  const q = (t: number, ctx: number, miss = 0, model: string | null = 'claude-opus-4-7'): ReqRecord => ({ t, k: 'req', role: 'lead', ctx, cw: 0, cr: ctx, out: 100, model, miss, gap: null })
+  const seg = (ctxs: number[], ttl: number | null = null): Segment => ({ reqs: ctxs.map((c, i) => q(i, c)), window: 1_000_000, ttl })
+  const ins = { restartStart: 60_000, restartWrite: 30_000, handoffOut: 2_000, overshoot: 10_000 }
+  const ctx: ReplayCtx = { inputs: ins, window: 1_000_000 }
+
+  test('replay: grows by increases only, a drop over 30k resets, read and miss exact', () => {
+    // v: 100k, 120k, 120k (drop of 20k), then a drop of 50k resets to 70k.
+    expect(replay([seg([100_000, 120_000, 100_000, 50_000])], () => null, ctx)).toEqual({ cost: (100_000 + 120_000 + 120_000 + 50_000) * 0.1, clears: 0 })
+    const miss = { reqs: [q(0, 100_000, 50_000), q(1, 0, 10)], window: null, ttl: 60 * 60_000 }
+    // miss share 50% of v 100k at the 1h write weight 2; ctx 0 adds no miss.
+    expect(replay([miss], () => null, ctx).cost).toBe(100_000 * 0.1 + 50_000 * 2)
+  })
+
+  test('replay: a clear at boundary + overshoot sets v to restartStart and adds its cost; none never clears', () => {
+    const s = seg([100_000, 160_000, 170_000])
+    // 160k ≥ 150k + 10k: clear (5m write 1.25), then v = 60k + 10k.
+    const want = (100_000 + 160_000 + 70_000) * 0.1 + 30_000 * 1.25 + 2_000 * 5
+    expect(replay([s], () => 150_000, ctx)).toEqual({ cost: want, clears: 1 })
+    expect(replay([s], () => null, ctx).clears).toBe(0)
+  })
+
+  test('weights by model substring; the write follows the TTL', () => {
+    expect(weightsFor('claude-opus-5-5[1m]').w.read).toBe(0.05)
+    expect(weightsFor('claude-sonnet-5-5').w.read).toBe(0.05)
+    expect(weightsFor('claude-fable-5-1').w.read).toBe(0.025)
+    expect(weightsFor('claude-opus-4-7').w.read).toBe(0.1)
+    expect(weightsFor(null).label).toBe('other Claude models')
+    const w = weightsFor(null).w
+    expect([writeWeight(w, 60 * 60_000), writeWeight(w, 5 * 60_000), writeWeight(w, null)]).toEqual([2, 1.25, 1.25])
+  })
+
+  test('measureInputs: fallback below 5 samples, median at 5; the 4th request after a ctx-guard clear; overshoot only when positive', () => {
+    const s: SessionRecords[] = []
+    for (let n = 0; n < 5; n++) {
+      const t0 = n * 1000 * M
+      s.push({ sessionId: `a${n}`, records: [q(t0, 300_000), { t: t0 + M, k: 'ready', role: 'lead', ctx: 320_000 + n * 1000 }, { t: t0 + 2 * M, k: 'clear', role: 'lead', by: 'ctx-guard' }] })
+      s.push({ sessionId: `b${n}`, records: [{ t: t0 + 2 * M + 1000, k: 'start', role: 'lead', window: 1_000_000 }, ...[1, 2, 3, 4].map(i => ({ ...q(t0 + 3 * M + i, 50_000 + i * 1000), cw: 40_000 }))] })
+    }
+    // An operator clear links nothing.
+    s.push({ sessionId: 'c', records: [{ t: 9e9, k: 'clear', role: 'lead', by: 'operator' }, { t: 9e9 + 1, k: 'start', role: 'lead', window: 1_000_000 }, q(9e9 + 2, 1)] })
+    const m = measureInputs(s, 'lead', () => 300_000, 1_000_000)
+    expect(m.restartStart).toEqual({ value: 54_000, samples: 5, fallback: false })
+    expect(m.restartWrite.value).toBe(40_000)
+    expect(m.handoffOut).toEqual({ value: 100, samples: 5, fallback: false })
+    expect(m.overshoot.value).toBe(22_000)
+    expect(measureInputs(s.slice(0, 4), 'lead', () => 400_000, 1_000_000).overshoot).toEqual({ value: FALLBACK.overshoot, samples: 0, fallback: true })
+  })
+
+  test('ceiling, candidates and the ladder from a boundary', () => {
+    const auto = (pre: number, trigger: 'auto' | 'manual' = 'auto'): LedgerRecord => ({ t: 0, k: 'compact', role: 'lead', trigger, pre, post: 1 })
+    expect(ceilingFor(1_000_000, [auto(200_000, 'manual')])).toBe(1_000_000)
+    expect(ceilingFor(1_000_000, [auto(200_000), auto(300_000)])).toBe(190_000)
+    expect(candidates(190_000).map(c => c.label)).toEqual(['100k', '125k', '150k', '175k', 'current', 'none'])
+    expect(candidates(90_000).map(c => c.label)).toEqual(['current', 'none'])
+    expect(candidates(1_000_000).slice(-4).map(c => c.label)).toEqual(['975k', '1M', 'current', 'none'])
+    expect(ladderFrom(150_000, 230_000)).toEqual({ soft: 150_000, hard: 200_000, stop: 230_000 })
+  })
+
+  test('tune: few below the minimum; a recommendation with a percent current ladder on each session window', () => {
+    const mk = (n: number, per: number): SessionRecords[] =>
+      Array.from({ length: n }, (_, i) => ({
+        sessionId: `s${i}`,
+        records: [{ t: NOW - DAY + i * M, k: 'start', role: 'lead', window: 1_000_000 }, ...Array.from({ length: per }, (_, j) => q(NOW - DAY + i * M + j + 1, 20_000 + j * 3_000))],
+      }))
+    const pct = trigs({ id: 'ctx-soft', when: { context: '60%' }, do: ['note'], level: 'soft' })
+    const base = { now: NOW, days: 30, triggers: () => pct, window: 200_000 }
+    expect(tune({ ...base, sessions: mk(9, 200) })[0]?.verdict).toBe('few')
+    expect(tune({ ...base, sessions: mk(10, 149) })[0]?.verdict).toBe('few')
+    const r = tune({ ...base, sessions: mk(10, 200) })[0] as RoleTune
+    // 60% of the session's 1M window, not of the current 200k: current never clears below 620k peaks.
+    expect(r.rows.find(x => x.label === 'current')?.clears).toBe(0)
+    expect(r.verdict).toBe('recommend')
+    expect(r.best?.label).toBe('100k')
+    expect(r.ladder).toEqual({ soft: 100_000, hard: 150_000, stop: 200_000 })
+  })
+
+  test('applyLadder: maps soft, hard, stop; keeps other fields and entries; converts a percent every; refuses', () => {
+    const raw = [
+      { id: 'ctx-soft', when: { context: '40%', every: '5%' }, do: ['note'], level: 'soft', message: 'm' },
+      { id: 'limit-soft', when: { 'limit.any': 80 }, do: ['note'] },
+      { id: 'ctx-hard', when: { context: '60%' }, do: ['note'], level: 'hard' },
+      { id: 'ctx-stop', when: { context: '75%', every: '5%' }, do: ['note'], level: 'stop' },
+    ]
+    const cur = [{ id: 'ctx-soft', tokens: 400_000 }, { id: 'ctx-hard', tokens: 600_000 }, { id: 'ctx-stop', tokens: 750_000 }]
+    const p = applyLadder(raw, cur, 150_000, 990_000, 1_000_000)
+    expect(p).toEqual({
+      ok: true,
+      triggers: [
+        { ...raw[0], when: { context: '150k', every: '50k' } },
+        raw[1],
+        { ...raw[2], when: { context: '200k' } },
+        { ...raw[3], when: { context: '250k', every: '25k' } },
+      ],
+      changed: [
+        { id: 'ctx-soft', from: '40% every 5%', to: '150k every 50k' },
+        { id: 'ctx-hard', from: '60%', to: '200k' },
+        { id: 'ctx-stop', from: '75% every 5%', to: '250k every 25k' },
+      ],
+    })
+    expect(raw[0]?.when.context).toBe('40%')
+    expect(applyLadder(raw, [], 150_000, 990_000, 1e6)).toEqual({ ok: false, unmapped: [], reason: 'no context-only triggers' })
+    const four = [...cur, { id: 'ctx-x', tokens: 800_000 }]
+    expect(applyLadder(raw, four, 150_000, 990_000, 1e6)).toEqual({ ok: false, unmapped: ['ctx-soft', 'ctx-hard', 'ctx-stop', 'ctx-x'], reason: 'more than three context-only triggers' })
+    expect(applyLadder(raw.slice(1), cur, 150_000, 990_000, 1e6)).toMatchObject({ ok: false, unmapped: ['ctx-soft'] })
+  })
+
+  test('replay caps the miss at v; ceilingFor ignores ctx-guard compacts and a null pre', () => {
+    // miss 200k on ctx 100k: capped at v 100k, at the 5m write 1.25.
+    expect(replay([{ reqs: [q(0, 100_000, 200_000)], window: null, ttl: null }], () => null, ctx).cost).toBe(100_000 * 0.1 + 100_000 * 1.25)
+    const c = (trigger: 'auto' | 'ctx-guard', pre: number | null): LedgerRecord => ({ t: 0, k: 'compact', role: 'lead', trigger, pre, post: 1 })
+    expect(ceilingFor(1_000_000, [c('ctx-guard', 200_000), c('auto', null)])).toBe(1_000_000)
+  })
+
+  test('tune verdicts: unconfigured, no-ladder, fine under a low ceiling, fine at the best; the best is the highest near the cheapest', () => {
+    const mk = (extra: LedgerRecord[] = []): SessionRecords[] =>
+      Array.from({ length: 10 }, (_, i) => ({
+        sessionId: `s${i}`,
+        records: [{ t: NOW - DAY + i * M, k: 'start', role: 'lead', window: 1_000_000 }, ...extra, ...Array.from({ length: 150 }, (_, j) => q(NOW - DAY + i * M + j + 1, 24_000 + j * 4_000))],
+      }))
+    const base = { now: NOW, days: 30, window: 1_000_000 }
+    const at = (k: string) => trigs({ id: 'soft', when: { context: k }, do: ['note'], level: 'soft' })
+    expect(tune({ ...base, sessions: mk(), triggers: () => null })[0]?.verdict).toBe('unconfigured')
+    expect(tune({ ...base, sessions: mk(), triggers: () => trigs({ id: 'l', when: { 'limit.any': 90 }, do: ['note'] }) })[0]?.verdict).toBe('no-ladder')
+    const low = tune({ ...base, sessions: mk([{ t: NOW - DAY, k: 'compact', role: 'lead', trigger: 'auto', pre: 95_000, post: 1 }]), triggers: () => at('300k') })[0] as RoleTune
+    expect([low.ceiling, low.verdict, low.rows.map(r => r.label)]).toEqual([85_000, 'fine', ['current', 'none']])
+    const r = tune({ ...base, sessions: mk(), triggers: () => at('300k') })[0] as RoleTune
+    const cost = (l: string) => r.rows.find(x => x.label === l)?.cost as number
+    expect(cost('100k')).toBeLessThan(cost('125k'))
+    expect([r.verdict, r.best?.label]).toEqual(['recommend', '125k'])
+    expect(tune({ ...base, sessions: mk(), triggers: () => at('125k') })[0]?.verdict).toBe('fine')
+  })
+
+  test('choose: exactly 5% recommends, a rounding hair under 5% still does, 4.9% is fine', () => {
+    const rows = (best: number, cur: number) => [
+      { label: '100k', boundary: 100_000, clears: 1, cost: best, vsNone: 0 },
+      { label: 'current', boundary: 'current' as const, clears: 0, cost: cur, vsNone: 0 },
+      { label: 'none', boundary: null, clears: 0, cost: cur * 2, vsNone: 1 },
+    ]
+    expect(choose(rows(95, 100))).toMatchObject({ saving: 0.05, verdict: 'recommend' })
+    // (0.7 - 0.665) / 0.7 is 0.04999999999999989 in floating point.
+    expect(choose(rows(0.665, 0.7)).verdict).toBe('recommend')
+    expect(choose(rows(951, 1000))).toMatchObject({ saving: 0.049, verdict: 'fine' })
+  })
+
+  test('tune: 10 sessions with 1,499 requests are few; 1,500 are enough', () => {
+    const mk = (last: number): SessionRecords[] =>
+      Array.from({ length: 10 }, (_, i) => ({
+        sessionId: `s${i}`,
+        records: Array.from({ length: i === 9 ? last : 150 }, (_, j) => q(NOW - DAY + i * M + j, 20_000 + j * 3_000)),
+      }))
+    const base = { now: NOW, days: 30, window: 1_000_000, triggers: () => trigs({ id: 'soft', when: { context: '300k' }, do: ['note'], level: 'soft' }) }
+    const few = tune({ ...base, sessions: mk(149) })[0] as RoleTune
+    expect([few.sessions, few.requests, few.verdict]).toEqual([10, 1_499, 'few'])
+    expect(tune({ ...base, sessions: mk(150) })[0]?.verdict).not.toBe('few')
+  })
+
+  test('measureInputs: a restart through a ctx-guard compact adds no restart sample', () => {
+    const s: SessionRecords[] = []
+    for (let n = 0; n < 5; n++) {
+      const t0 = n * 1000 * M
+      const reqs = (from: number) => [1, 2, 3, 4].map(i => ({ ...q(from + i, 50_000 + i * 1000), cw: 40_000 }))
+      // Ready, then /compact in the same session.
+      s.push({ sessionId: `a${n}`, records: [q(t0, 300_000), { t: t0 + M, k: 'ready', role: 'lead', ctx: 320_000 }, { t: t0 + 2 * M, k: 'compact', role: 'lead', trigger: 'ctx-guard', pre: 320_000, post: 20_000 }, ...reqs(t0 + 3 * M)] })
+      // A clear whose next session compacts before its requests.
+      s.push({ sessionId: `b${n}`, records: [{ t: t0 + 10 * M, k: 'clear', role: 'lead', by: 'ctx-guard' }] })
+      s.push({ sessionId: `c${n}`, records: [{ t: t0 + 10 * M, k: 'start', role: 'lead', window: 1_000_000 }, { t: t0 + 10 * M + 1, k: 'compact', role: 'lead', trigger: 'ctx-guard', pre: 50_000, post: 20_000 }, ...reqs(t0 + 11 * M)] })
+    }
+    const m = measureInputs(s, 'lead', () => 300_000, 1_000_000)
+    expect([m.restartStart.samples, m.restartWrite.samples]).toEqual([0, 0])
+    expect(m.handoffOut.samples).toBe(5)
+  })
+
+  test('applyLadder: one rung maps to soft, two to soft and hard', () => {
+    const raw = [
+      { id: 'a', when: { context: '300k' }, do: ['note'] },
+      { id: 'b', when: { context: '400k' }, do: ['note'] },
+    ]
+    const one = applyLadder(raw, [{ id: 'a', tokens: 300_000 }], 150_000, 990_000, 1e6)
+    expect(one.ok && one.changed).toEqual([{ id: 'a', from: '300k', to: '150k' }])
+    const two = applyLadder(raw, [{ id: 'a', tokens: 300_000 }, { id: 'b', tokens: 400_000 }], 150_000, 990_000, 1e6)
+    expect(two.ok && two.changed.map(c => c.to)).toEqual(['150k', '200k'])
   })
 })

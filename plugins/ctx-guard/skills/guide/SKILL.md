@@ -165,13 +165,16 @@ When the user asks whether thresholds fit, ask them to run `/ctx-guard check` an
 section: *unreached* means a role's lowest context trigger sits above the p90 session peak and
 none of its context triggers fired a note in the period (14 days, or `ledger.days` when fewer); *pre-empted* means the engine auto-compacted below that
 trigger. Either way the trigger never gets a say; lower it to fit. Under 5 sessions there is not
-enough data.
+enough data. For a recommended ladder, ask them to run `/ctx-guard tune [role]`; it replays the
+ledger and says whether a lower or higher boundary costs less. `/ctx-guard tune apply [role]`
+writes that ladder into `.claude/ctx-guard.local.json`; suggest it only when the user asks.
 
 | Command | Does |
 |---|---|
 | `/ctx-guard` | Report. |
 | `/ctx-guard role <name\|none>` | Set this session's role. |
 | `/ctx-guard check` | Dry-run the restart verdict. |
+| `/ctx-guard tune [apply] [role]` | Recommend a context ladder from the ledger; apply writes it to the local file. |
 | `/ctx-guard trust` | Approve the repo's restart, ready-check, compact, ping, prompt and band-probe settings. |
 | `/ctx-guard trust off` | Withdraw that approval. |
 | `/ctx-guard reload` | Re-read the config files. |

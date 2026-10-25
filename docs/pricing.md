@@ -26,3 +26,17 @@ and Google Vertex AI ids (`anthropic.claude-opus-4-20250514-v1:0`, `claude-opus-
 get the same row as Claude API ids. Ids that match no row (non-Claude models) are reported as
 tokens only and left out of cost totals. Fast-mode requests are flagged but priced at the
 standard rate.
+
+## ctx-guard tune weights
+
+`/ctx-guard tune` weighs tokens relative to the model's input price, from the table above: the
+read weight is cache read / input of the model's row, cache writes weigh 1.25 (5m) or 2 (1h),
+and output 5. The rule lives in `plugins/ctx-guard/hooks/tune.ts` (`MODEL_WEIGHTS`) and matches
+a model id by substring; update it with this table.
+
+| Model           | Read | Write 5m | Write 1h | Output |
+|-----------------|------|----------|----------|--------|
+| Opus 5.5        | 0.05 | 1.25     | 2        | 5      |
+| Sonnet 5.5      | 0.05 | 1.25     | 2        | 5      |
+| Fable/Mythos 5.1 | 0.025 | 1.25    | 2        | 5      |
+| Other Claude    | 0.1  | 1.25     | 2        | 5      |
