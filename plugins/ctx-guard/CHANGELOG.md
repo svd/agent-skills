@@ -2,6 +2,16 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- A session that cannot read ctx-guard's stored state no longer writes its blank defaults over
+  it. What it records before a later hook reads the state (turn times, the last role, readings,
+  trigger marks, notices shown, subagent work, the cache record, the last good config) is applied
+  on top of the stored values once read. A /ctx-guard:clear ask, the last good config and work
+  still running carry on as they were.
+
 ## [0.6.0] - 2026-10-25
 
 ### Added

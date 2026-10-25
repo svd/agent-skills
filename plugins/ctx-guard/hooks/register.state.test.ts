@@ -230,6 +230,61 @@ test('a failed read at a session start is tried again by the next hook', { plugi
   expect(await ctxGuard($, '')).toContain('ctx-guard: paused for 2h')
 })
 
+test('a notice shown while $.state is unread keeps the stored ones: a toast shown before is not shown again', { plugins: [DENY_READS, PEEK_ALL] }, async ($, on) => {
+  const w = newWorld({ failRegister: '"/ctx-guard" refused: it is taken' })
+  writeConfig(w, LEAD_SOFT)
+  world(on, w, { CTX_GUARD_ROLE: 'ghost' })
+  await start($)
+  const roleToasts = (): number => w.toasts.filter(t => t.includes('ghost') && !t.includes('command is unavailable')).length
+  expect(w.toasts.filter(t => t.includes('command is unavailable')).length).toBe(1)
+  expect(roleToasts()).toBe(1)
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  writeConfig(w, { version: 1, roles: { ghost: LEAD_SOFT.roles.lead } })
+  await run($, 'deny-reads')
+  // The command notice is shown again while $.state is unread.
+  await start($)
+  await measure($, w, 100_000)
+  await run($, 'allow-reads')
+  await turn($, 'start')
+  const shown = (await peekAll($)).activity as { shown: string[] }
+  expect(shown.shown.filter(k => k === 'command').length).toBe(1)
+  expect(shown.shown.some(k => k.startsWith('role:'))).toBe(true)
+  writeConfig(w, LEAD_SOFT)
+  await start($)
+  expect(roleToasts()).toBe(1)
+})
+
+test('a config loaded while $.state is unread keeps the stored last good config', { plugins: [DENY_READS, PEEK_ALL] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await clock.advance(1000)
+  writeConfig(w, '{ broken')
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  await run($, 'allow-reads')
+  await turn($, 'start')
+  await clock.settle()
+  expect((await peekAll($)).config?.source).toBe('last-good')
+})
+
+test('a /clear after a failed read: the first hook after the wipe writes what the clear recorded', { plugins: [DENY_READS, WIPE, PEEK_ALL] }, async ($, on) => {
+  const w = newWorld()
+  writeConfig(w, LEAD_SOFT)
+  world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  await run($, 'allow-reads')
+  await $.turn.start({ text: 'go', turnId: 't2' })
+  expect(typeof (await peekAll($)).lastClearAt).toBe('number')
+})
+
 // Holds ctx-guard's clock reads (/hold-clock) or the answer of its roleClaim reads (/hold-claim:
 // read at once, answered on release), or the command list (/hold-list), until /release.
 const HOLD: Plugin = {

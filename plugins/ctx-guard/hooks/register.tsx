@@ -507,8 +507,14 @@ let mem: Stored = emptyMem()
 let hydrated = false
 let hydrating: Promise<void> | null = null
 let hydrations = 0
-// Keys put while a hydrate reads: memory's value is the newer, so the read leaves them.
-let putSince: Set<Key> | null = null
+// While `$.state` is unread: the keys put outright since it was last read, whose memory value is the
+// newer, so a read leaves them; and the changes owed to the rest, in order, applied over what a read finds.
+// Unbounded until a read succeeds: every hook tries the read again, and memory alone would overwrite `$.state`.
+let known = new Set<Key>()
+let owed = new Map<Key, ((v: unknown) => unknown)[]>()
+const unread = (key: Key): boolean => !hydrated && !known.has(key)
+// The config was replayed over a stored one: the next load runs in full, though no file changed.
+let configReplayed = false
 // A /clear emptied `$.state`: the next hook or timer writes memory back.
 let flushOwed = false
 // The session start could not read `$.state`: once a hook reads it, the start's work from memory runs again.
@@ -576,13 +582,21 @@ function persist($: EngineInterface, key: Key, value: unknown): Promise<void> {
 
 function put<K extends Key>($: EngineInterface, key: K, value: Stored[K]): Promise<void> {
   mem[key] = value
-  putSince?.add(key)
+  if (!hydrated) {
+    known.add(key)
+    owed.delete(key)
+  }
   return persist($, key, value)
 }
 
-// Read-modify-write on memory: synchronous, so two hooks never lose each other's change.
+// Read-modify-write on memory: synchronous, so two hooks never lose each other's change. While the key
+// is unread, the change is owed rather than written: memory's value would overwrite what `$.state` holds.
+// So `fn` reads only its argument and the constants captured at the call, never `mem` or `mod`.
 function change<K extends Key>($: EngineInterface, key: K, fn: (v: Stored[K]) => Stored[K]): Promise<void> {
-  return put($, key, fn(mem[key]))
+  if (!unread(key)) return put($, key, fn(mem[key]))
+  mem[key] = fn(mem[key])
+  owed.set(key, [...(owed.get(key) ?? []), fn as (v: unknown) => unknown])
+  return Promise.resolve()
 }
 
 const writesSettled = (): Promise<unknown> => Promise.all(Object.values(writing))
@@ -638,8 +652,13 @@ async function readStored($: EngineInterface): Promise<Stored> {
 
 /** Memory replaced by what `$.state` holds, once this copy's own writes landed; a failed read keeps memory. */
 function hydrate($: EngineInterface): Promise<void> {
+  // Memory was in step with `$.state`: only what comes from here on is kept or owed. After a failed
+  // read, what came before is kept or owed too.
+  if (hydrated) {
+    known = new Set()
+    owed = new Map()
+  }
   hydrated = false
-  putSince = new Set()
   const run = fill($, ++hydrations)
   hydrating = run
   return run
@@ -656,10 +675,20 @@ async function fill($: EngineInterface, gen: number): Promise<void> {
   // A later hydrate replaced this one: its read is the newer.
   if (gen !== hydrations) return
   hydrating = null
-  const kept = putSince
-  putSince = null
   if (!next) return
-  for (const key of kept ?? []) setMem(next, key, mem[key])
+  for (const key of known) {
+    // Its put landed before this read, unless a /clear's wipe came between: then it is written again.
+    if (JSON.stringify(next[key]) !== JSON.stringify(mem[key])) void persist($, key, mem[key])
+    setMem(next, key, mem[key])
+  }
+  for (const [key, fns] of owed) {
+    const value = fns.reduce((v, fn) => fn(v), next[key] as unknown) as Stored[Key]
+    setMem(next, key, value)
+    void persist($, key, value)
+    if (key === 'config') configReplayed = true
+  }
+  known = new Set()
+  owed = new Map()
   mem = next
   hydrated = true
 }
@@ -671,6 +700,9 @@ function setMem<K extends Key>(into: Stored, key: K, value: Stored[K]): void {
 // Fire-and-forget: reads never wait on it, since they come from memory.
 function flush($: EngineInterface): void {
   flushOwed = false
+  // `$.state` was emptied: memory is all there is, so a later read leaves every key and replays nothing.
+  known = new Set(Object.keys(mem) as Key[])
+  owed = new Map()
   for (const key of Object.keys(mem) as Key[]) void persist($, key, mem[key])
 }
 
@@ -706,18 +738,17 @@ async function patchActivity($: EngineInterface, fn: (a: Activity) => Activity):
 const cacheState = (): CacheState => mem.cache ?? emptyCache()
 
 // Memory on every call; `$.state` only when `durable`, so a step costs no write.
+// While the cache is unread, a step is owed like a durable change.
 async function setCache($: EngineInterface, fn: (c: CacheState) => CacheState, durable = true): Promise<void> {
-  const next = fn(cacheState())
-  if (durable) return put($, 'cache', next)
-  mem.cache = next
-  // A hydrate under way keeps memory's value, as it does for a put.
-  putSince?.add('cache')
+  const step = (c: CacheState | null): CacheState => fn(c ?? emptyCache())
+  if (durable || unread('cache')) return change($, 'cache', step)
+  mem.cache = step(mem.cache)
 }
 
 // A toast once per session for `key`, reloads included.
 async function noticeOnce($: EngineInterface, key: string, text: string): Promise<void> {
   if (activity().shown.includes(key)) return
-  await patchActivity($, a => ({ ...a, shown: [...a.shown, key].slice(-MAX_SHOWN) }))
+  await patchActivity($, a => (a.shown.includes(key) ? a : { ...a, shown: [...a.shown, key].slice(-MAX_SHOWN) }))
   $.ui.toast(text)
 }
 
@@ -762,7 +793,8 @@ async function loadConfig($: EngineInterface, force: boolean): Promise<boolean> 
     abs.push(c.path)
     stats.push({ path: rel, mtime: st ? st.mtimeMs : null })
   }
-  if (!force && mod.eff && prev && sameFiles(prev.files, stats)) return false
+  if (!force && !configReplayed && mod.eff && prev && sameFiles(prev.files, stats)) return false
+  configReplayed = false
 
   const files: FileLayer[] = []
   for (const [i, f] of stats.entries()) {
@@ -786,7 +818,7 @@ async function loadConfig($: EngineInterface, force: boolean): Promise<boolean> 
     files: stats,
     loadedAt: await $.clock.now(),
   }
-  await put($, 'config', state)
+  await change($, 'config', p => ({ ...state, lastGood: eff.fallback ? (p?.lastGood ?? null) : eff.config }))
   mod.eff = eff
   mod.gates = null
   mod.budgeted = Object.keys(eff.config.subagents).length > 0
@@ -1021,14 +1053,14 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
   const ev = evaluate(triggers, metrics, prev, role)
   // Written before acting, so a failed note never fires twice.
   if (JSON.stringify(ev.marks) !== JSON.stringify(prev)) {
-    await put($, 'marks', ev.marks)
+    await change($, 'marks', p => evaluate(triggers, metrics, p, role).marks)
     await quietly(() => dropRearmedCompact($, ev.marks))
   }
   const exempt = role === null ? new Set<string>() : await stepLifts($, triggers, metrics)
   // Counted before acting too: a fire counts toward its trigger's `times` whether or not its actions succeed.
   const fired = cacheState().fired
   const capped = applyTimes(ev.fire, fired, exempt)
-  if (JSON.stringify(capped.fired) !== JSON.stringify(fired)) await setCache($, c => ({ ...c, fired: capped.fired }))
+  if (JSON.stringify(capped.fired) !== JSON.stringify(fired)) await setCache($, c => ({ ...c, fired: applyTimes(ev.fire, c.fired, exempt).fired }))
   mod.gates = tokenGates(triggers, ev.marks, role, metrics.window)
   const isPaused = paused(now)
   const noted = await act($, planActions(capped.fire), isPaused, metrics)
@@ -1149,8 +1181,10 @@ function noteStep($: EngineInterface, id: string): void {
     if (last !== undefined && t - last < STEP_WRITE_MS) return
     mod.stepWrites.set(id, t)
     if (mod.ended.has(id)) return
-    const w = work()
-    await put($, 'work', { ...w, steps: { ...w.steps, [id]: t } })
+    await change($, 'work', v => {
+      const w = v ?? asWork(null)
+      return { ...w, steps: { ...w.steps, [id]: t } }
+    })
   })
 }
 
@@ -1158,11 +1192,13 @@ async function endStep($: EngineInterface, id: string): Promise<void> {
   mod.ended.add(id)
   mod.steps.delete(id)
   mod.stepWrites.delete(id)
-  const w = work()
-  if (!(id in w.steps)) return
-  const steps = { ...w.steps }
-  delete steps[id]
-  await put($, 'work', { ...w, steps })
+  if (!unread('work') && !(id in work().steps)) return
+  await change($, 'work', v => {
+    const w = v ?? asWork(null)
+    const steps = { ...w.steps }
+    delete steps[id]
+    return { ...w, steps }
+  })
 }
 
 // Ids seen stepping within STEP_SEEN_MS (this copy's and, across a reload, the stored ones).
@@ -1188,14 +1224,12 @@ function rejudgeAll(): void {
 
 async function patchMarks($: EngineInterface, fn: (m: Record<string, SubagentMark>) => Record<string, SubagentMark>): Promise<void> {
   const cur = mem.subagents ?? {}
-  const next = fn(cur)
-  if (JSON.stringify(next) !== JSON.stringify(cur)) await put($, 'subagents', next)
+  if (unread('subagents') || JSON.stringify(fn(cur)) !== JSON.stringify(cur)) await change($, 'subagents', m => fn(m ?? {}))
 }
 
 async function patchSpawned($: EngineInterface, fn: (m: Record<string, SpawnedAgent>) => Record<string, SpawnedAgent>): Promise<void> {
   const cur = mem.spawned ?? {}
-  const next = fn(cur)
-  if (JSON.stringify(next) !== JSON.stringify(cur)) await put($, 'spawned', next)
+  if (unread('spawned') || JSON.stringify(fn(cur)) !== JSON.stringify(cur)) await change($, 'spawned', m => fn(m ?? {}))
 }
 
 /** An agent.spawn that started an agent: its type and kind, kept so its steps know what budget it has. */
@@ -1208,7 +1242,7 @@ async function onSpawn($: EngineInterface, id: string, type: string, kind: Agent
     t.identity = { type, kind }
     t.gate = 0
   }
-  await patchSpawned($, m => (mod.spawned.get(id) === rec ? { ...m, [id]: rec } : m))
+  if (mod.spawned.get(id) === rec) await patchSpawned($, m => ({ ...m, [id]: rec }))
 }
 
 /**
@@ -1257,7 +1291,7 @@ async function judgeSubagent($: EngineInterface, id: string, t: Tracked): Promis
     t.warn = b.warn
     t.stop = b.stop
     const mark = markOf(t, now)
-    if (mark) await patchMarks($, m => (mod.agents.get(id) === t ? { ...m, [id]: mark } : m))
+    if (mark && mod.agents.get(id) === t) await patchMarks($, m => ({ ...m, [id]: mark }))
     const vars = { type: identityType(t.identity) ?? b.type, tokens: t.tokens, warn: b.warn, stop: b.stop }
     const text = d.step === 'stop' ? subagentStopText(vars, b.message) : subagentWarnText(vars)
     await quietly(() => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] }, agentId: id }))
@@ -1939,9 +1973,8 @@ const samePending = (cur: PendingCompact | null, p: PendingCompact, step: Pendin
 
 // Rewrites the pending compact only while it is still `p` at `step`; answers whether it did.
 async function movePending($: EngineInterface, p: PendingCompact, step: PendingCompact['step'], fn: (cur: PendingCompact) => PendingCompact | null): Promise<boolean> {
-  const cur = mem.pendingCompact
-  if (!samePending(cur, p, step)) return false
-  await put($, 'pendingCompact', fn(cur))
+  if (!samePending(mem.pendingCompact, p, step)) return false
+  await change($, 'pendingCompact', cur => (samePending(cur, p, step) ? fn(cur) : cur))
   return true
 }
 
@@ -2188,11 +2221,15 @@ async function compactRestart($: EngineInterface, role: string, spec: RoleSpec, 
 }
 
 async function clearMark($: EngineInterface, role: string, id: string): Promise<void> {
-  const v = mem.marks
-  if (v && v.role === role && typeof v.byId === 'object' && v.byId !== null && Object.hasOwn(v.byId, id)) {
-    const byId = { ...v.byId }
-    delete byId[id]
-    await put($, 'marks', { ...v, byId })
+  const has = (v: Stored['marks']): v is NonNullable<Stored['marks']> =>
+    !!v && v.role === role && typeof v.byId === 'object' && v.byId !== null && Object.hasOwn(v.byId, id)
+  if (unread('marks') || has(mem.marks)) {
+    await change($, 'marks', v => {
+      if (!has(v)) return v
+      const byId = { ...v.byId }
+      delete byId[id]
+      return { ...v, byId }
+    })
   }
   mod.gates = null
 }
@@ -3196,7 +3233,9 @@ async function reloadConfig($: EngineInterface, force: boolean): Promise<void> {
 
 async function onClear($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
-  await put($, 'marks', resetMarks(mod.role.role, mem.marks, roleTriggers()))
+  const role = mod.role.role
+  const triggers = roleTriggers()
+  await change($, 'marks', m => resetMarks(role, m, triggers))
   await put($, 'lastClearAt', now)
   mod.gates = null
   // The context starts over and is unknown until the next response; the usage windows go on.
@@ -3311,24 +3350,31 @@ async function onTurnStart($: EngineInterface, main: boolean): Promise<void> {
 // typed prompt's turn or a woken turn starts after it.
 async function onMainTurnEnd($: EngineInterface, token: boolean, answered: boolean): Promise<void> {
   const now = await $.clock.now()
-  const { ownTurn: own, wokenTurn: woken, typedTurn: typed, mainStartAt } = activity()
-  const closing = typed && answered && !token && mainStartAt !== null
-  const known = mainStartAt !== null
-  await patchActivity($, a => ({
-    ...a,
-    mainTurnAt: null,
-    mainStartAt: null,
-    ...(closing ? { lastClosingStartAt: mainStartAt } : {}),
-    ...(known && !answered ? { lastCutStartAt: mainStartAt } : {}),
-    ...(known && typed ? { lastTypedStartAt: mainStartAt } : {}),
-    ...(known && woken ? { lastWokenStartAt: mainStartAt } : {}),
-    ownTurn: false,
-    wokenTurn: false,
-    typedTurn: false,
-    lastTurnEndAt: now,
-    ...(own ? {} : { lastMainEndAt: now }),
-    ...(woken ? { lastWokenEndAt: now } : {}),
-  }))
+  // Flags from the argument: while activity is unread, it is replayed over the stored turn start.
+  const ended = (a: Activity): Activity => {
+    const { ownTurn: own, wokenTurn: woken, typedTurn: typed, mainStartAt } = a
+    const closing = typed && answered && !token && mainStartAt !== null
+    const startSeen = mainStartAt !== null
+    return {
+      ...a,
+      mainTurnAt: null,
+      mainStartAt: null,
+      ...(closing ? { lastClosingStartAt: mainStartAt } : {}),
+      ...(startSeen && !answered ? { lastCutStartAt: mainStartAt } : {}),
+      ...(startSeen && typed ? { lastTypedStartAt: mainStartAt } : {}),
+      ...(startSeen && woken ? { lastWokenStartAt: mainStartAt } : {}),
+      ownTurn: false,
+      wokenTurn: false,
+      typedTurn: false,
+      lastTurnEndAt: now,
+      ...(own ? {} : { lastMainEndAt: now }),
+      ...(woken ? { lastWokenEndAt: now } : {}),
+    }
+  }
+  // Memory's flag is the turn's own once activity is read or this copy saw the start; a start from
+  // before a reload, still unread, counts as the operator's turn.
+  const own = activity().ownTurn
+  await patchActivity($, ended)
   // The turn's requests moved the cache in memory only: written now, so a reload keeps the anchor.
   await setCache($, c => (own ? c : newPeriod(c)))
 }
@@ -3846,6 +3892,9 @@ export const register: Register = (on, options) => {
   mem = emptyMem()
   hydrated = false
   hydrating = null
+  known = new Set()
+  owed = new Map()
+  configReplayed = false
   flushOwed = false
   recoverOwed = false
   clearOwed = false
@@ -3996,7 +4045,9 @@ export const register: Register = (on, options) => {
       // A read still under way belongs to the old session: its answer is dropped.
       hydrations += 1
       hydrating = null
-      putSince = null
+      known = new Set()
+      owed = new Map()
+      configReplayed = false
       flushOwed = false
       recoverOwed = false
       clearOwed = false
