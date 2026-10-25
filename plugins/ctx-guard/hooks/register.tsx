@@ -2352,7 +2352,7 @@ async function runPrompt($: EngineInterface, fire: Fire, role: string, spec: Rol
   const text = promptText(fire, { role, handoffPath: handoffPathFor(spec, role), readyToken: mod.eff?.config.readyToken ?? '' })
   let went = false
   await quietly(async () => {
-    const r = await submitOwnPrompt($, text)
+    const r = await submitOwnPrompt($, text, false)
     went = r.drop === undefined
   })
   if (went) {
@@ -2790,13 +2790,11 @@ async function sendPending($: EngineInterface): Promise<void> {
   if (!p) return
   const tries = p.tries + 1
   await putLifts($, l => (l.pending ? { ...l, pending: { ...l.pending, tries } } : l))
-  mod.wakeNext = true
   let went = false
   await quietly(async () => {
-    went = (await submitOwnPrompt($, p.text)).drop === undefined
+    went = (await submitOwnPrompt($, p.text, true)).drop === undefined
   })
   if (went) return await putLifts($, l => ({ ...l, pending: null, holds: without(l.holds, [p.triggerId]) }))
-  mod.wakeNext = false
   if (tries < LIFT_TRIES) return
   const c = getPendingCompact()
   if (c && c.at === mod.compactAfterLift) await dropCompact($, c, `the wake prompt was refused ${LIFT_TRIES} times`, true)
@@ -3258,15 +3256,16 @@ async function undoHeldStamp($: EngineInterface): Promise<void> {
 }
 
 /**
- * Submits ctx-guard's own prompt; the turn it starts is flagged as ctx-guard's.
- * The flag is set here, before the call: ctx-guard's own `prompt.submit` hook
- * is not run for a prompt raised beneath its own call. A refused prompt (a
- * hook's `drop`, or a throw) clears it, so the next turn is not taken for
- * ctx-guard's.
+ * Submits ctx-guard's own prompt; the turn it starts is flagged as ctx-guard's,
+ * and as woken when `wake` marks a wake prompt. The flags are set here, before
+ * the call: ctx-guard's own `prompt.submit` hook is not run for a prompt
+ * raised beneath its own call. A refused prompt (a hook's `drop`, or a throw)
+ * clears them, so the next turn is not taken for ctx-guard's.
  */
-async function submitOwnPrompt($: EngineInterface, text: string): Promise<PromptSubmitResult> {
+async function submitOwnPrompt($: EngineInterface, text: string, wake: boolean): Promise<PromptSubmitResult> {
   mod.ownText = text
   mod.ownPrompt = true
+  mod.wakeNext = wake
   mod.typedPrompt = false
   try {
     const r = await $.prompt.submit({ text })

@@ -917,6 +917,34 @@ test('/ctx-guard:clear cut by the usage limit, then /ctx-guard wake 5h: the woke
   expect(w.ran.slice(1)).toEqual(['clear', RESUME])
 })
 
+// The fake engine starts no turn for a prompt: the wake prompt goes in and no turn answers it.
+test('/ctx-guard:clear cut, a wake prompt accepted with no turn for it: the turn on ctx-guard\'s next prompt is not woken and leaves the ask suspended', async ($, on) => {
+  const resetsAt = NOW + 10 * MIN
+  const five = (pct: number, at: number): Limit => ({ kind: 'five_hour', percentUsed: pct, resetsAt: new Date(at).toISOString() })
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000, limits: [five(100, resetsAt)] })
+  on('model.fork', async () => {
+    w.limits = [five(1, NOW + 6 * HOUR)]
+    return { value: { isAnswered: true, text: 'OK', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } } as never
+  })
+  const base = autoConfig({ minContext: '200k' })
+  const away = { id: 'away', when: { idle: '20m' }, do: ['prompt'], times: 1, message: 'Still there?' }
+  const config = { ...base, roles: { ...base.roles, lead: { ...base.roles.lead, triggers: [...base.roles.lead.triggers, away] } } }
+  const { clock, session } = await armed($, on, w, config)
+  await measure($, w, 100_000)
+  await typedClear($)
+  await turn($, 'start')
+  await cut($, clock, 'error')
+  expect(await ctxGuard($, 'wake 5h')).toContain('wake set')
+  await clock.advance(resetsAt - clock.now() + 2 * MIN)
+  expect(w.prompts.filter(p => p.includes('/ctx-guard wake')).length).toBe(1)
+  await clock.advance(20 * MIN)
+  expect(w.prompts.filter(p => p.includes('Still there?')).length).toBe(1)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(w.ran.slice(1)).toEqual([])
+})
+
 test('/ctx-guard:clear interrupted, then "go on" typed: its token, refused for now, counts again on a task notification\'s turn', async ($, on) => {
   const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
   const { clock, session } = await underMinimum($, on, w)

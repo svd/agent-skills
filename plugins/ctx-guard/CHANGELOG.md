@@ -68,6 +68,9 @@ All notable changes to the `ctx-guard` plugin are documented here.
   brake the model was told about still wakes the session once its window resets. Operator input
   in that time is applied once they are read: it counts as input after the brake, and input the
   person typed cancels a stored `/ctx-guard wake` with its toast.
+- Only a wake prompt's turn counts as woken. After a lift's wake prompt that went in with no turn
+  of its own (delivered into a running turn, say), the turn on ctx-guard's next prompt (an `idle`
+  trigger's, say) counted as woken too: idle stood still through it and counted from its end.
 
 ## [0.5.0] - 2026-10-21
 
