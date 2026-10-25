@@ -557,7 +557,8 @@ of these hold:
    typed `/ctx-guard:resume` or restart command that claims a role. A change is a role resolved
    other than the last role resolved, by any source (a reload that moves `defaultRole`, say); a
    spell with no role between is none, so `lead`, then no role, then `lead` again keeps the ask,
-   and `lead`, then `reviewer`, then `lead` ends it.
+   and `lead`, then `reviewer`, then `lead` ends it. While ctx-guard cannot read its stored state,
+   a role that no role claim set is compared only once a hook reads it.
 4. No closing turn came since the command. A closing turn is a main-loop turn that:
    - started on a prompt the person typed: in the prompt box or from a remote client of the
      session (origin `composer` or `bridge`), `/compact` aside;

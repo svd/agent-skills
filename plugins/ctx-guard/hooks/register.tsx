@@ -834,7 +834,10 @@ async function resolveNow($: EngineInterface): Promise<RoleResolution> {
 }
 
 // A resolved role other than the last one resolved is a role change; a spell with no role between is none.
+// While `$.state` is unread, a role set by no claim of this copy's may yet give way to a stored claim: it is not
+// noted, so the role resolved once a hook reads it is judged against the stored last role.
 async function noteRole($: EngineInterface, role: string): Promise<void> {
+  if (!hydrated && mem.roleClaim === null) return
   const now = await $.clock.now()
   await patchActivity($, a => ({ ...a, lastRole: role, ...(a.lastRole !== null && a.lastRole !== role ? { roleChangedAt: now } : {}) }))
 }

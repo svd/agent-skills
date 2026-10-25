@@ -36,6 +36,7 @@ import {
   mainTurnEnd,
   status,
   HOUR,
+  DENY_READS,
 } from './register.fixtures'
 import type { Limit, Task, World } from './register.fixtures'
 
@@ -1017,6 +1018,50 @@ test('/ctx-guard:clear: a role change with no claim ends the ask, though the rol
   await turn($, 'start')
   await ready($, clock)
   expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+})
+
+test('/ctx-guard:clear: a session start that cannot read $.state is no role change; once read, the ask still holds', { plugins: [DENY_READS] }, async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  writeConfig(w, autoConfig({ minContext: '200k' }))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'reviewer' })
+  await start($)
+  expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
+  expect(await ctxGuard($, 'trust')).toContain('approved for /repo')
+  await writeHandoff(w, clock)
+  await measure($, w, 100_000)
+  await typedClear($)
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  // The start reads no role claim, so it resolves the env's reviewer until a hook reads $.state.
+  await run($, 'deny-reads')
+  await start($)
+  await run($, 'allow-reads')
+  await clock.advance(1000)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+})
+
+test('/ctx-guard:clear: a role resolved while $.state is unread, after this copy wrote activity, is no role change once read', { plugins: [DENY_READS] }, async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  writeConfig(w, autoConfig({ minContext: '200k' }))
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'reviewer' })
+  await start($)
+  expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
+  expect(await ctxGuard($, 'trust')).toContain('approved for /repo')
+  await writeHandoff(w, clock)
+  await measure($, w, 100_000)
+  await typedClear($)
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  // A reading writes this copy's activity; a reload then resolves the env's reviewer again, still unread.
+  await measure($, w, 100_000)
+  await ctxGuard($, 'reload')
+  await run($, 'allow-reads')
+  await clock.advance(1000)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
 })
 
 test('/ctx-guard:clear: a turn whose start ctx-guard never saw is not the one after the ask', async ($, on) => {
