@@ -95,6 +95,13 @@ export type CacheConfig = {
   prompt: { maxUsage: number }
 }
 
+// The ledger: what each session's requests and boundaries cost, kept under `<stateDir>/ledger/`.
+export type LedgerConfig = {
+  enabled: boolean
+  // Files dated older than this many days are deleted at session start.
+  days: number
+}
+
 export type RoleSpec = {
   description: string | null
   triggers: Trigger[]
@@ -141,6 +148,7 @@ export type Config = {
   // Probes shared by every role; empty when none.
   band: { probes: BandProbeSpec[] }
   cache: CacheConfig
+  ledger: LedgerConfig
 }
 
 export type Display = 'band' | 'status' | 'off'

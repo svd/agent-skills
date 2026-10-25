@@ -4,6 +4,18 @@ All notable changes to the `ctx-guard` plugin are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- A ledger of context per request. In a repo with a ctx-guard config file, every interactive
+  session writes `<stateDir>/ledger/<YYYY-MM-DD>-<sessionId>.jsonl` (UTC date, a new part `-2`,
+  `-3` at 256 KiB): one record per main-loop request (context, cache write and read, output,
+  model, cache miss, time since the last request), and one per session start, context note,
+  accepted ready token, `/clear` and main-loop compact. It takes no action and needs no trust.
+  `ledger.enabled` (default `true`) turns it off; `ledger.days` (default 30, 1 to 3650) sets how
+  long files are kept. Older files are deleted once per session start by `rm -f --` with no
+  shell; where `rm` is missing, nothing is deleted. A new `session.compact` hook records
+  compacts and passes the event on unchanged.
+
 ### Fixed
 
 - A session that cannot read ctx-guard's stored state no longer writes its blank defaults over

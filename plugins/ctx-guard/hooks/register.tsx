@@ -200,6 +200,8 @@ import {
   track,
 } from './subagents'
 import type { Tracked } from './subagents'
+import { commitFlush, compactTrigger, expiredParts, newLedger, parsePartName, planFlush, pushRecord, reqRecord, thresholdTokens } from './ledger'
+import type { LedgerMem, LedgerRecord } from './ledger'
 import { LIFT_CHECK_TIMEOUT_MS, LIFT_TRIES, asLifts, checkTries, earliestReset, emptyLifts, gateWhy, keepsWake, liftsFor, operatorInput, wakeVerdict, wakesOnLift } from './lifts'
 import type { WakeGate } from './lifts'
 import { parseProbe, probeSegment, probeState, scriptEnv } from './scripts'
@@ -347,6 +349,10 @@ type Mod = {
   subscribed: boolean | null
   // Operator input while the lifts were unread: applied to them once a hook reads them.
   operatorOwed: OperatorInput | null
+  // The ledger's buffer and open part; null while the ledger is off.
+  ledger: LedgerMem | null
+  // Retention ran for this start.
+  ledgerSwept: boolean
 }
 
 const fresh = (): Mod => ({
@@ -402,6 +408,8 @@ const fresh = (): Mod => ({
   compactAfterLift: null,
   subscribed: null,
   operatorOwed: null,
+  ledger: null,
+  ledgerSwept: false,
 })
 
 let mod: Mod = fresh()
@@ -968,6 +976,16 @@ async function act($: EngineInterface, plan: ActionPlan, isPaused: boolean, metr
       })
     }
     if (sent) noted = plan.notes.map(f => f.trigger.id)
+    // Context notes go in the ledger, with the threshold they crossed.
+    if (sent && mod.ledger) {
+      await quietly(async () => {
+        const t = await $.clock.now()
+        for (const f of plan.notes) {
+          const q = f.trigger.when.context
+          if (q != null) ledgerPush({ t, k: 'note', role, id: f.trigger.id, level: f.trigger.level, ctx: f.vars.tokens, threshold: thresholdTokens(q, f.vars.window) })
+        }
+      })
+    }
     // The operator sees what the model was told: one toast for the note, in place of its fires' own.
     const toast = sent && eff.noteToasts ? noteToastText(plan.notes, opts) : null
     if (toast) {
@@ -1114,7 +1132,17 @@ async function onCacheRequest($: EngineInterface, usage: TurnUsage, sentAt: Prom
   // After /clear the record takes the new session's id from its first request.
   const sid = cacheState().sessionId ?? (await $.session.id().catch(() => null))
   const before = cacheState().miss
-  await setCache($, c => ({ ...onMainRequest(c, usage, ttl, at), sessionId: c.sessionId ?? sid }), false)
+  const l = mod.ledger
+  try {
+    await setCache($, c => ({ ...onMainRequest(c, usage, ttl, at), sessionId: c.sessionId ?? sid }), false)
+  } finally {
+    // The request is recorded even when the cache state could not be kept, in the ledger
+    // of the session that sent it.
+    if (l) {
+      pushRecord(l, reqRecord({ t: at, role: mod.role.role, usage, cacheMiss: cacheState().miss, lastReqAt: l.lastReqAt }))
+      l.lastReqAt = at
+    }
+  }
   if (cacheState().miss === 0 && before === 0) return
   await setCache($, c => c)
   await evaluateNow($, await currentReading($), 'changed')
@@ -1552,6 +1580,134 @@ async function ownerFile($: EngineInterface, role: string): Promise<{ abs: strin
   return { abs: leasePath(dir, role), realRoot }
 }
 
+// ---- ledger -------------------------------------------------------------------
+
+// Paths one `rm` takes at most.
+const SWEEP_BATCH = 500
+
+// Kept while ctx-guard is active, `ledger.enabled`, and the repo has a config file.
+const ledgerWanted = (): boolean =>
+  active() && mod.eff?.config.ledger.enabled === true && (mem.config?.files.some(f => f.mtime !== null) ?? false)
+
+// Adds a record while the ledger is kept.
+function ledgerPush(r: LedgerRecord): void {
+  if (mod.ledger) pushRecord(mod.ledger, r)
+}
+
+// `<stateDir>/ledger`, confined like the state folder.
+async function ledgerDir($: EngineInterface): Promise<string | null> {
+  const eff = mod.eff
+  if (!eff) return null
+  const root = await $.session.root()
+  const realRoot = await realRootOf($, root)
+  const dir = `${await stateDirOf($, root, realRoot, eff.config.stateDir)}/ledger`
+  if ((await place($, dir, realRoot)).kind === 'outside') throw new Error('the ledger folder resolves outside the project root')
+  return dir
+}
+
+// A session's first record: the window and, when known, the cache TTL.
+async function startRecord($: EngineInterface, t: number): Promise<LedgerRecord> {
+  const u = await $.session.usage().catch(() => null)
+  const window = windowFor(mod.engineModelWindow ?? num(u?.context.window) ?? Number.NaN).tokens
+  const ttl = cacheState().ttl ?? cacheConfig().ttl
+  return { t, k: 'start', role: mod.role.role, window, ...(typeof ttl === 'number' ? { ttl } : {}) }
+}
+
+// Starts the ledger when it is wanted; stops it, landing what it holds, when it is not.
+// Runs inside the chain too, so it never waits on it.
+async function syncLedger($: EngineInterface): Promise<void> {
+  if (!ledgerWanted()) {
+    const last = mod.ledger
+    mod.ledger = null
+    if (last) void serial(() => flushLedger($, last))
+    return
+  }
+  if (mod.ledger) return
+  const first = await startRecord($, await $.clock.now())
+  // The folder is the config's now: the ledger lists it and lands there until it stops.
+  const dir = await ledgerDir($).catch(() => null)
+  if (mod.ledger || !ledgerWanted()) return
+  const l = newLedger(null, [], dir)
+  mod.ledger = l
+  pushRecord(l, first)
+  // The folder is listed in the chain, after any earlier ledger's last flush and before this
+  // one's first, so a new part never takes the name of one still being written. The first
+  // flush reads the session id.
+  void serial(async () => {
+    const names = dir ? await $.fs.list(dir).then(es => es.map(f => f.name), () => []) : []
+    for (const n of names) if (!l.known.includes(n)) l.known.push(n)
+  })
+  // Retention once per start, off the hook's path.
+  if (!mod.ledgerSwept) {
+    mod.ledgerSwept = true
+    void serial(() => timed($, () => sweepLedger($)))
+  }
+}
+
+// Lands the buffer in the ledger's folder; a failed write keeps it all, and the retry
+// rewrites the same parts.
+async function flushLedger($: EngineInterface, l: LedgerMem): Promise<void> {
+  if (l.held) {
+    const held = l.held
+    if (await flushLedger($, held).then(() => true, () => false)) l.held = null
+  }
+  if (!l.buffer.length) return
+  const dir = l.dir
+  if (!dir) return
+  l.sessionId ??= await $.session.id()
+  const plan = planFlush(l, dir, l.sessionId)
+  for (const w of plan.writes) await $.fs.write(`${dir}/${w.name}`, w.text)
+  commitFlush(l, plan)
+}
+
+// Deletes parts past `ledger.days`. `$.fs` deletes nothing, so `rm` does, with no shell;
+// only plain files named as parts.
+async function sweepLedger($: EngineInterface): Promise<void> {
+  const eff = mod.eff
+  const dir = await ledgerDir($)
+  if (!eff || !dir) return
+  const names = (await $.fs.list(dir)).filter(f => f.kind === 'file' && !f.isLink && parsePartName(f.name) !== null).map(f => f.name)
+  const old = expiredParts(names, await $.clock.now(), eff.config.ledger.days)
+  if (!old.length) return
+  const root = await $.session.root()
+  for (let i = 0; i < old.length; i += SWEEP_BATCH) {
+    await $.process.run(['rm', '-f', '--', ...old.slice(i, i + SWEEP_BATCH).map(n => `${dir}/${n}`)], { cwd: root, timeoutMs: 10_000 })
+  }
+}
+
+// A /clear: its record, the old session's parts landed, and a start for the new one,
+// whose id the next flush reads.
+async function ledgerClear($: EngineInterface, oldId: string): Promise<void> {
+  const l = mod.ledger
+  if (!l) return
+  const t = await $.clock.now()
+  pushRecord(l, { t, k: 'clear', role: mod.role.role, by: mem.pendingResume ? 'ctx-guard' : 'operator' })
+  l.sessionId ??= oldId
+  await serial(() => flushLedger($, l))
+  // The new session gets its own ledger; what the old one could not land stays with it, one
+  // session back at most.
+  const next = newLedger(null, l.known, l.dir)
+  next.dropped = l.dropped
+  next.lastReqAt = l.lastReqAt
+  const left = l.buffer.length ? l : l.held
+  if (left === l && l.held) next.dropped += l.held.buffer.length
+  next.held = left && { ...left, held: null }
+  if (mod.ledger === l) mod.ledger = next
+  pushRecord(next, await startRecord($, t))
+}
+
+// A main-loop compact that ran; a subagent's, a precompute and a skip are not recorded.
+async function ledgerCompact(
+  $: EngineInterface,
+  e: { agentId?: string; trigger: string },
+  r: { skip?: unknown; tokensBefore?: number; tokensAfter?: number },
+): Promise<void> {
+  if (!mod.ledger || e.agentId !== undefined || r.skip !== undefined) return
+  const trigger = compactTrigger(e.trigger, mod.compacting)
+  if (trigger === null) return
+  ledgerPush({ t: await $.clock.now(), k: 'compact', role: mod.role.role, trigger, pre: r.tokensBefore ?? null, post: r.tokensAfter ?? null })
+}
+
 async function readLease($: EngineInterface, role: string, id: string, now: number): Promise<Lease> {
   const f = await ownerFile($, role)
   if (!f) return { kind: 'free' }
@@ -1885,6 +2041,7 @@ async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean):
     const g = await gather($, role, spec, busy, asked)
     const v = await judge($, g, spec)
     if (!v.ok) return await refuse($, v.code, v.text)
+    if (mod.ledger) await quietly(async () => ledgerPush({ t: await $.clock.now(), k: 'ready', role, ctx: mod.lastMain?.tokens ?? null }))
     if (gen !== mod) return
     if (spec.restart.via === 'compact') {
       if ((await compactRestart($, role, spec, tokenAt, gen)) === 'failed') retryCompact = false
@@ -3132,6 +3289,7 @@ function probeSegments(): BandProbe[] {
  * an `enabled` flipped in a config file takes effect without a restart.
  */
 async function syncActive($: EngineInterface): Promise<void> {
+  await quietly(() => syncLedger($))
   if (!active()) {
     disarm()
     if (mod.standIn || mod.interactive) $.ui.status(undefined)
@@ -3176,6 +3334,13 @@ async function syncActive($: EngineInterface): Promise<void> {
 
 async function start($: EngineInterface, isInteractive: boolean, surface: RenderSurface | null): Promise<void> {
   disarm()
+  // What the ledger holds lands under the session id it has now, as the chain may run the
+  // flush after the id changed.
+  const last = mod.ledger
+  if (last) {
+    last.sessionId ??= await $.session.id().catch(() => null)
+    void serial(() => flushLedger($, last))
+  }
   mod = fresh()
   // A start after a reload finds memory empty and `$.state` whole; one owing a flush still has the memory a /clear kept.
   if (flushOwed) flush($)
@@ -4038,6 +4203,8 @@ export const register: Register = (on, options) => {
         token = tokenAnswer(e)
       })
       await quietly(() => onMainTurnEnd($, token, e.reason === 'answer'))
+      // The turn's ledger records land off the hook's path.
+      $.clock.after(0, () => void serial(() => timed($, () => (mod.ledger ? flushLedger($, mod.ledger) : Promise.resolve()))))
       // Off the hook's path, as the transcript can be large; in the chain, so a /clear never lands mid-read.
       $.clock.after(0, () => void serial(() => timed($, () => detectTtl($))))
       let restarting = false
@@ -4071,6 +4238,7 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear') {
       // The wipe that follows may take a stored lease no hook has read: the lease id is this session's.
       if (leaseUnknown() && leaseWiped === null) leaseWiped = e.sessionId
+      if (mod.started && !mod.inert) await quietly(() => ledgerClear($, e.sessionId))
       // In memory: the wipe that follows empties `$.state`, so the next hook writes it all back.
       if (mod.started && !mod.inert) await quietly(() => serial(() => onClear($)))
       else if (starting) clearOwed = true
@@ -4080,6 +4248,8 @@ export const register: Register = (on, options) => {
       // A /clear keeps the session's role; any other end lets the role go.
       const lease = mem.lease
       if (lease && mod.started && !mod.inert) await quietly(() => releaseLease($, lease))
+      const l = mod.ledger
+      if (l) await quietly(() => serial(() => flushLedger($, l)))
       // The session is over: no timer of it runs on, and nothing it kept reaches the next one in
       // this process, which starts and hydrates afresh.
       disarm()
@@ -4100,6 +4270,13 @@ export const register: Register = (on, options) => {
       dropped = null
     }
     return next(e)
+  })
+
+  // Compacts go in the ledger once the engine reports how they went.
+  on('session.compact', async ($, e, next) => {
+    const r = await next(e)
+    await quietly(() => ledgerCompact($, e, r))
+    return r
   })
 
   // Who each agent is, from its own spawn: only agents named here or by `$.agent.list` get a budget.

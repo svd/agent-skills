@@ -149,8 +149,11 @@ it can start are model requests that Claude Code sends like any other: a keep-wa
   `.claude/ctx-guard.json` and `.claude/ctx-guard.local.json`. A role's handoff file when it
   resumes. The ready-check and probe scripts your config names, to hash them for trust.
 - **Writes.** Role leases (`<role>.owner`) and restart stamps in the project's state folder,
-  `.ctx-guard/` by default (`stateDir`). Its session state and your trust approvals go to Claude
-  Code's own plugin storage. Only `/ctx-guard init`, when you type it, writes a file outside
+  `.ctx-guard/` by default (`stateDir`). In a repo with a ctx-guard config file, the ledger in
+  that folder's `ledger/`: one JSON-lines file per session per day, holding figures only (each
+  main-loop request's context and token counts, its model, and when notes, ready tokens,
+  `/clear` and compacts came). `"ledger": { "enabled": false }` turns it off. Its session
+  state and your trust approvals go to Claude Code's own plugin storage. Only `/ctx-guard init`, when you type it, writes a file outside
   that folder: it creates `.claude/ctx-guard.json` from a preset if there is none and adds the
   local config and the state folder to `.gitignore`. Handoffs are written by the model, not by
   ctx-guard.
@@ -176,13 +179,14 @@ it can start are model requests that Claude Code sends like any other: a keep-wa
   It also adds the `/ctx-guard` command; its `role`, `check`, `trust`, `pause`, `wake` and `init`
   work only when you type them. `/ctx-guard wake` sends the same tool-less request, then the wake
   turn, once the usage window you name resets.
-- **Runs programs.** Only the commands you write in your project config: each ready check in a
+- **Runs programs.** The commands you write in your project config, and `rm` for ledger
+  retention (see Deletes): each ready check in a
   role's `restart.readyChecks` and each probe in `band.probes`, given as an argument list in its
   `run` field (`["sh", ".claude/ctx-guard/clean-worktree.sh"]`) and started as written, with no
   shell. Why: a ready check is your own test that the work is safe to restart (say, the worktree
   is committed), and a restart waits until every check exits 0; a probe adds a figure of your
   project (branch, worktrees, plan progress) to the band. They run from the project root, with a
-  timeout, and only after `/ctx-guard trust`; ctx-guard has no command of its own to start.
+  timeout, and only after `/ctx-guard trust`.
   ctx-guard hands them no file contents, only `CTX_GUARD_*` environment variables: the role, the
   project root, the state folder, the handoff path and its modification time, the restart mode,
   why the script runs and when the session started. It reads back the exit code and the output:
@@ -191,6 +195,11 @@ it can start are model requests that Claude Code sends like any other: a keep-wa
   scripts in `skills/guide/assets/` are examples to copy; none runs unless your config names it.
   The `superpowers-plan.py` probe reads plan files written by the
   [superpowers](https://github.com/obra/superpowers) plugin.
+- **Deletes.** Ledger files older than `ledger.days` (30 by default), once per session start.
+  ctx-guard's file API cannot delete, so it runs `rm -f --` with the exact paths as arguments,
+  with no shell, from the project root. It names only plain files in `<stateDir>/ledger/` whose
+  names match the ledger's. This is the one program ctx-guard starts of its own, and it needs no
+  trust. Where `rm` is missing, nothing is deleted.
 - **Shows.** The band above the prompt (or status-line text), toasts, and OS notifications
   through `$.ui.notify`, Claude Code's own notification call; no other plugin is involved.
 
@@ -201,6 +210,7 @@ What each hook does, and what it may change:
 | `session.start`, `session.measure`, `session.end`, `turn.start`, `turn.step`, `turn.complete`, `classic.Stop` | Read the figures and evaluate the triggers. A main-loop `turn.step` also records, for lifts, that the model read a brake's note: a touch. Each passes the event on unchanged. |
 | `prompt.submit` | Notes whether the prompt is ctx-guard's own `prompt` action, to tell its turn from yours, and whether it is your own input (by its origin), which stops a lift from waking the session. Passes the prompt on unchanged. |
 | `tool.call` | Denies a main-loop tool call while a `deny` trigger holds, and a subagent's call once it is past its budget. For lifts, it records a refused call as a touch of the brakes on that tool, and a call of a freed tool drops that lift's wake prompt. Every other call passes unchanged. |
+| `session.compact` | Records a main-loop compact in the ledger once it ran: its trigger and the tokens before and after. Passes the event on unchanged. |
 | `agent.spawn` | Records each new agent's id and type, for its budget. Passes the spawn on unchanged. |
 | `command.run` | Runs `/ctx-guard`. For `/ctx-guard:resume` typed by you, checks its `role=` claim against the role lease, refuses it if another session holds the role, and fills in the role, handoff path and prompt it already knows. For a role's restart command typed by you, refuses it if another session holds the role. For `/ctx-guard:clear` typed by you, hands the model your role's restart note as the command's text; from anyone else, refuses it. Notes that a command you typed is your own input, for lifts. Every other command passes unchanged. |
 | `ui.render` (`AbovePrompt`) | Draws the band. |

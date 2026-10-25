@@ -85,6 +85,12 @@ export type World = {
   dropPrompt: string | null
   // Each `$.ui.log` line, `to: text`.
   logs: string[]
+  // A write to a matching path throws; null lets every write land.
+  failWrites: RegExp | null
+  // A write to a matching path waits `ms` before it lands; null lets every write land at once.
+  writeHang: { path: RegExp; ms: number } | null
+  // The path of each `$.fs.list`, in order.
+  listed: string[]
   clock?: MockClock
 }
 
@@ -127,6 +133,9 @@ export function newWorld(over: Partial<World> = {}): World {
     prompts: [],
     dropPrompt: null,
     logs: [],
+    failWrites: null,
+    writeHang: null,
+    listed: [],
     ...over,
   }
 }
@@ -209,6 +218,7 @@ export function world(on: On, w: World, env: Record<string, string> = {}): { clo
     return { value: { kind, size: f?.text.length ?? 0, mtimeMs: f?.mtimeMs ?? 0, isLink: link !== undefined, ...(e.resolve ? { realPath: link ?? e.path } : {}) } }
   })
   on('fs.list', ($, e) => {
+    w.listed.push(e.path)
     const dirs = dirsOf(w)
     if (!dirs.has(e.path)) throw new Error(`ENOENT: ${e.path}`)
     const names = new Set<string>()
@@ -262,7 +272,9 @@ export function world(on: On, w: World, env: Record<string, string> = {}): { clo
     if (!f) throw new Error(`ENOENT: ${e.path}`)
     return { value: f.text as never }
   })
-  on('fs.write', ($, e) => {
+  on('fs.write', async ($, e) => {
+    if (w.failWrites?.test(e.path)) throw new Error(`EACCES: ${e.path}`)
+    if (w.writeHang?.path.test(e.path)) await clock.sleep(w.writeHang.ms)
     w.files[e.path] = { text: e.text, mtimeMs: clock.now() }
     w.onWrite?.(e.path)
     return { value: undefined }
@@ -613,3 +625,20 @@ export async function trustedKeepWarm($: Engine, on: On, w: World, o: KeepWarm =
 export const ownPrompts = (w: World): string[] => w.prompts.filter(p => p.startsWith('[ctx-guard]'))
 
 export const compacts = (w: World): string[] => w.ran.filter(r => r.startsWith('compact'))
+
+const SUMMARY = { role: 'user' as const, text: 'summary', toolUses: [] }
+
+// The compact bottom answers what the test sets: a compacted session, or a skip.
+export type CompactAnswer = { tokensBefore?: number; tokensAfter?: number } | { skip: string }
+
+export function compactBottom(on: On, answer: () => CompactAnswer): void {
+  on('session.compact', () => {
+    const a = answer()
+    return 'skip' in a ? { skip: a.skip } : { messages: [SUMMARY], ...a }
+  })
+}
+
+// A compact as the engine raises it; `agentId` makes it a subagent's.
+export async function compactSession($: Engine, trigger: 'auto' | 'manual' | 'plugin' | 'precompute', agentId?: string): Promise<void> {
+  await $.session.compact({ trigger, messages: [SUMMARY, SUMMARY], ...(agentId ? { agentId } : {}) })
+}

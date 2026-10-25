@@ -10,6 +10,7 @@ import type {
   ConfigSource,
   ConfigState,
   Display,
+  LedgerConfig,
   Level,
   LiftAction,
   Quantity,
@@ -350,7 +351,7 @@ function pathAt(ctx: Ctx, path: string, v: unknown, fallback: string, template =
 
 // ---- schema v1 ---------------------------------------------------------------
 
-const TOP_KEYS = ['$schema', 'version', 'enabled', 'stateDir', 'readyToken', 'defaultRole', 'contextWindow', 'defaults', 'roles', 'subagents', 'band', 'cache']
+const TOP_KEYS = ['$schema', 'version', 'enabled', 'stateDir', 'readyToken', 'defaultRole', 'contextWindow', 'defaults', 'roles', 'subagents', 'band', 'cache', 'ledger']
 const ROLE_KEYS = ['description', 'triggers', 'notes', 'handoff', 'restart', 'compact']
 const TRIGGER_KEYS = ['id', 'when', 'do', 'level', 'message', 'times', 'lift']
 const LIMIT_METRICS = ['limit.five_hour', 'limit.seven_day', 'limit.any'] as const
@@ -671,6 +672,20 @@ function normalizeCache(ctx: Ctx, path: string, v: unknown): CacheConfig {
   return { ttl, band: { show, warn }, ping: { maxUsage: maxUsage('ping') }, prompt: { maxUsage: maxUsage('prompt') } }
 }
 
+export const DEFAULT_LEDGER: LedgerConfig = { enabled: true, days: 30 }
+const MAX_LEDGER_DAYS = 3650
+
+function normalizeLedger(ctx: Ctx, path: string, v: unknown): LedgerConfig {
+  const o = objAt(ctx, path, v)
+  checkKeys(ctx, path, o, ['enabled', 'days'])
+  let days = DEFAULT_LEDGER.days
+  if (o.days !== undefined) {
+    if (WHOLE(o.days) && o.days <= MAX_LEDGER_DAYS) days = o.days
+    else err(ctx, join(path, 'days'), `expected a whole number of days (1-${MAX_LEDGER_DAYS}), got ${shown(o.days)}`)
+  }
+  return { enabled: boolAt(ctx, join(path, 'enabled'), o.enabled, DEFAULT_LEDGER.enabled), days }
+}
+
 /** A trigger with a cache metric in its `when`: its prompt keeps the cache warm, and stops at cache.prompt.maxUsage. */
 export const onCacheMetric = (t: Trigger): boolean => CACHE_METRICS.some(m => t.when[m] != null)
 
@@ -854,6 +869,7 @@ function normalizeConfig(ctx: Ctx, raw: unknown): Config {
     subagents: normalizeSubagents(ctx, 'subagents', o.subagents),
     band: normalizeBand(ctx, 'band', o.band),
     cache: normalizeCache(ctx, 'cache', o.cache),
+    ledger: normalizeLedger(ctx, 'ledger', o.ledger),
   }
 }
 
@@ -1095,6 +1111,10 @@ const isProbeShape = (p: unknown): boolean =>
 
 const isStoredQuantity = (q: unknown): boolean => isObj(q) && typeof q.kind === 'string' && typeof q.value === 'number' && q.value > 0
 
+function isLedgerShape(l: unknown): boolean {
+  return isObj(l) && typeof l.enabled === 'boolean' && WHOLE(l.days) && l.days <= MAX_LEDGER_DAYS
+}
+
 function isCacheShape(c: unknown): boolean {
   if (!isObj(c) || !isObj(c.band) || !isObj(c.ping) || !isObj(c.prompt)) return false
   const { ttl } = c
@@ -1155,12 +1175,13 @@ export function asConfig(v: unknown): Config | null {
   if (!(v.defaultRole === null || typeof v.defaultRole === 'string')) return null
   if (!(v.contextWindow === 'auto' || (typeof v.contextWindow === 'number' && v.contextWindow > 0))) return null
   if (!isSpecShape(v.defaults) || !isObj(v.roles) || !Object.values(v.roles).every(isSpecShape) || !isObj(v.subagents)) return null
-  // A config stored before cache existed reads with the defaults; before band, with no probes.
+  // A config stored before cache or ledger existed reads with their defaults; before band, with no probes.
   const cache = isCacheShape(v.cache) ? v.cache : DEFAULT_CACHE
+  const ledger = isLedgerShape(v.ledger) ? v.ledger : DEFAULT_LEDGER
   const defaults = storedSpec(v.defaults)
   const roles = storedRoles(v.roles)
-  const same = cache === v.cache && defaults === v.defaults && roles === v.roles
-  const stored = same ? v : { ...v, cache, defaults, roles }
+  const same = cache === v.cache && ledger === v.ledger && defaults === v.defaults && roles === v.roles
+  const stored = same ? v : { ...v, cache, ledger, defaults, roles }
   if (v.band === undefined) return { ...stored, band: { probes: [] } } as unknown as Config
   if (!isObj(v.band) || !Array.isArray(v.band.probes) || !v.band.probes.every(isProbeShape)) return null
   return stored as unknown as Config

@@ -290,6 +290,44 @@
           }
         }
       }
+    },
+    "ledger": {
+      "description": "A record of each session's requests, notes, clears and compactions in <stateDir>/ledger/, one file per session per day. Shared by every role.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "description": "Default true. false keeps no ledger: no records, no files, no retention sweep.",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "days": {
+              "description": "Ledger files older than this many days are deleted at session start. Default 30.",
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3650
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "$defs": {

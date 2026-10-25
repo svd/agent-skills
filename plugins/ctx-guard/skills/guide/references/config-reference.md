@@ -18,6 +18,7 @@ Every key, default and rule of config schema v1, then recipes. The JSON Schema i
 - [Band probes](#band-probes)
 - [Compact](#compact)
 - [Prompt cache](#prompt-cache)
+- [Ledger](#ledger)
 - [Subagent budgets](#subagent-budgets)
 - [Trust](#trust)
 - [Path confinement](#path-confinement)
@@ -89,7 +90,7 @@ Every quantity must be above zero.
 | `$schema` | string | — | Ignored by ctx-guard; lets an editor find the schema. |
 | `version` | `1` | `1` | Any other value is an error. |
 | `enabled` | boolean | `true` | `false` turns ctx-guard off in this project. |
-| `stateDir` | path | `".ctx-guard"` | Folder for restart stamps (`<role>.restart`), role leases (`<role>.owner`) and default handoffs. |
+| `stateDir` | path | `".ctx-guard"` | Folder for restart stamps (`<role>.restart`), role leases (`<role>.owner`), default handoffs and the [ledger](#ledger) (`ledger/`). |
 | `readyToken` | string matching `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` | `"CTX-READY"` | The line that asks for a restart. |
 | `defaultRole` | role name, `""` or `null` | none | Role for an interactive session that no command or `CTX_GUARD_ROLE` sets. |
 | `contextWindow` | `"auto"` or tokens | `"auto"` | What context percents count against. `auto` uses the engine's own compaction window when it reports one (never above the model window), else the model window lowered to the `autoCompactWindow` setting. |
@@ -98,6 +99,7 @@ Every quantity must be above zero.
 | `subagents` | object of subagent type (or `*`, `fork`, `teammate`) → budget | `{}` | [Subagent budgets](#subagent-budgets). |
 | `band` | object | `{ "probes": [] }` | [Band probes](#band-probes): project scripts whose output is a band segment. Shared by every role. |
 | `cache` | object | see [Prompt cache](#prompt-cache) | The cache TTL, the band countdown and the ping limit. Shared by every role. |
+| `ledger` | object | `{ "enabled": true, "days": 30 }` | [Ledger](#ledger): a record of each session's context per request and its boundaries. Shared by every role. |
 
 ## Role keys
 
@@ -996,6 +998,70 @@ for the default one): `prompt trigger away: times 1, prompt default`.
 **Cost.** A ping reads the whole prefix at the cache-read rate, one tenth of the input rate. A
 cache that expired costs a re-write at the cache-write rate: 1.25 times the input rate for the
 5-minute tier, twice for the 1-hour tier.
+
+## Ledger
+
+The ledger records what each main-loop request carried in context and where the session's
+boundaries fell: notes, ready tokens, `/clear` and compacts. It takes no action. A later version
+reads it to suggest thresholds.
+
+```json
+{
+  "version": 1,
+  "ledger": { "enabled": true, "days": 30 }
+}
+```
+
+| Key | Values | Default | Meaning |
+|---|---|---|---|
+| `ledger.enabled` | boolean | `true` | `false` turns the ledger off. |
+| `ledger.days` | whole number, 1 to 3650 | `30` | Files dated more than this many days back are deleted at session start. |
+
+Unknown keys in `ledger` are errors. `ledger` is a top-level key, shared by every role; a role
+cannot set it. The usual layering applies, so one operator can turn it off in
+`.claude/ctx-guard.local.json`.
+
+**When it writes.** Only in a repo with a ctx-guard config file (`.claude/ctx-guard.json` or
+`.claude/ctx-guard.local.json`), so a user-scope install leaves no files in other repos. There it
+records every interactive session; a session with no role records under role `none`. It needs no
+`/ctx-guard trust`.
+
+**Where.** `<stateDir>/ledger/<YYYY-MM-DD>-<sessionId>.jsonl`, one file per session per day. The
+date is the record's UTC date. Once a file reaches 256 KiB the next record opens a new part:
+`<YYYY-MM-DD>-<sessionId>-2.jsonl`, then `-3` and so on. No record is dropped for size.
+
+**When records land.** Records collect in memory and are written at each main-loop turn end, at
+session end (a `/clear` included) and before a reload turns the ledger off. A failed write keeps
+the records for the next one; past 1,000 held records the oldest are dropped. Records a `/clear`
+could not write stay with the old session's id and land in its file on a later write.
+
+**Records.** One JSON object per line. Every record has `t` (epoch ms), `k` (kind) and `role`
+(the role name, or `null`).
+
+| `k` | When | Fields |
+|---|---|---|
+| `start` | the ledger starts in a session, and after each `/clear` | `window` (the context window in tokens), `ttl` (the cache TTL in ms, when known) |
+| `req` | each main-loop request that reports usage | `ctx` (input + cache read + cache write), `cw` (cache write), `cr` (cache read), `out` (output), `model`, `miss`, `gap` (ms since the previous main-loop request, `null` for the first) |
+| `note` | a note is sent for a trigger with a `context` metric | `id`, `level`, `ctx`, `threshold` (the trigger's context threshold in tokens) |
+| `ready` | the ready token passes the verdict | `ctx` |
+| `clear` | `/clear` ends the session | `by`: `ctx-guard` when ctx-guard ran it for a restart, else `operator` |
+| `compact` | a main-loop compact ran | `trigger` (`auto`, `manual`, or `ctx-guard` for ctx-guard's own and another plugin's), `pre` and `post` (tokens before and after) |
+
+`miss` is the tokens re-written that should have come from the cache (see
+[Cache misses](#cache-misses)). A request whose cache write is above 40,000 tokens and above half
+its `ctx` also counts that write as `miss`: the first request after an idle past the TTL, say.
+Otherwise it is `0`. Subagent requests, subagent compacts and the engine's `precompute`
+compacts are not recorded.
+
+**Retention.** Once per session start, ctx-guard deletes the files in `<stateDir>/ledger/` whose
+date is more than `ledger.days` days back (UTC), every part of them. It touches only plain files
+named as ledger parts. `$.fs` cannot delete, so ctx-guard runs `rm -f -- <paths>` with no shell,
+from the project root; this needs no trust. Where `rm` is missing, nothing is deleted.
+
+**Off.** With `ledger.enabled: false`, ctx-guard builds no records, holds no ledger data in
+memory, opens no ledger file and runs no retention. A reload that turns it off writes the held
+records first. Files already in `<stateDir>/ledger/` are kept, so turning it back on carries on
+with that history. Deleting the folder is yours to do.
 
 ## Subagent budgets
 

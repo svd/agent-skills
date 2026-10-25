@@ -159,6 +159,9 @@ refuses them unless typed in the prompt box (`wake`: or from a remote client of 
    `/ctx-guard trust` and reads what it prints.
 6. `/ctx-guard check` dry-runs the restart guard.
 
+In a repo with a config file, the ledger records the context of each main-loop request and the
+session's boundaries in `<stateDir>/ledger/`. `"ledger": { "enabled": false }` turns it off.
+
 | Command | Does |
 |---|---|
 | `/ctx-guard` | Report. |

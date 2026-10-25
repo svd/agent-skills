@@ -959,6 +959,48 @@ describe('stored config state', () => {
   })
 })
 
+describe('ledger config', () => {
+  test('on, 30 days, when the block is absent', () => {
+    expect(ok({ version: 1 }).ledger).toEqual({ enabled: true, days: 30 })
+    expect(builtInConfig().ledger).toEqual({ enabled: true, days: 30 })
+    expect(ok({ version: 1, ledger: { enabled: false } }).ledger).toEqual({ enabled: false, days: 30 })
+    expect(ok({ version: 1, ledger: { days: 3650 } }).ledger).toEqual({ enabled: true, days: 3650 })
+  })
+
+  test('bad values and unknown keys are errors', () => {
+    expect(errorsOf({ version: 1, ledger: { enabled: 'yes' } }).join()).toContain('ledger.enabled')
+    for (const days of [0, 1.5, 3651, '30', -1]) {
+      expect(errorsOf({ version: 1, ledger: { days } }).join()).toContain('ledger.days: expected a whole number of days (1-3650)')
+    }
+    expect(errorsOf({ version: 1, ledger: { nope: 1 } }).join()).toContain('ledger.nope: unknown key')
+    expect(errorsOf({ version: 1, ledger: true }).join()).toContain('ledger')
+  })
+
+  test('a role cannot set it', () => {
+    expect(errorsOf(role({ ledger: { enabled: false } })).join()).toContain('roles.lead.ledger: unknown key')
+    expect(errorsOf({ version: 1, defaults: { ledger: { enabled: false } } }).join()).toContain('defaults.ledger: unknown key')
+  })
+
+  test('the local file overrides the team file; null brings the default back', () => {
+    const team = file(TEAM, { version: 1, ledger: { enabled: false, days: 7 } })
+    const on = effectiveConfig({ switches: DEFAULT_SWITCHES, files: [team, file(LOCAL, { ledger: { enabled: true } })], lastGood: null })
+    expect(on.errors).toEqual([])
+    expect(on.config.ledger).toEqual({ enabled: true, days: 7 })
+    const reset = effectiveConfig({ switches: DEFAULT_SWITCHES, files: [team, file(LOCAL, { ledger: null })], lastGood: null })
+    expect(reset.config.ledger).toEqual({ enabled: true, days: 30 })
+  })
+
+  test('a stored config without a ledger block, or with a bad one, reads the default', () => {
+    const c = ok({ version: 1, ledger: { enabled: false, days: 5 } })
+    expect(asConfig(c)?.ledger).toEqual({ enabled: false, days: 5 })
+    const { ledger: _drop, ...old } = c
+    expect(asConfig(old)?.ledger).toEqual({ enabled: true, days: 30 })
+    for (const bad of [{}, { enabled: 'no', days: 5 }, { enabled: true, days: 0 }, 'x']) {
+      expect(asConfig({ ...c, ledger: bad })?.ledger).toEqual({ enabled: true, days: 30 })
+    }
+  })
+})
+
 describe('band probes', () => {
   const band = (probes: unknown) => ({ version: 1, band: { probes } })
 
