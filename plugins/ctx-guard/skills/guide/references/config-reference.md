@@ -562,7 +562,7 @@ of these hold:
 4. No closing turn came since the command. A closing turn is a main-loop turn that:
    - started on a prompt the person typed: in the prompt box or from a remote client of the
      session (origin `composer` or `bridge`), `/compact` aside;
-   - started after the command, not in the same millisecond;
+   - started strictly after the command;
    - ended on an answer: a turn the operator interrupted, or one an error or a refusal ended, is
      not one;
    - and did not end on the ready token.
