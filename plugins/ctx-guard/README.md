@@ -9,7 +9,7 @@ only when 11 checks say your work is safe. One JSON file, no code.
 
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Claude Code 2.1.293+](https://img.shields.io/badge/Claude%20Code-2.1.293%2B-d97757)
-![version 0.5.0](https://img.shields.io/badge/version-0.5.0-informational)
+![version 0.6.0](https://img.shields.io/badge/version-0.6.0-informational)
 ![500+ tests](https://img.shields.io/badge/tests-500%2B-brightgreen)
 
 ```text
