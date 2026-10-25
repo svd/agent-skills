@@ -37,6 +37,8 @@ import {
   status,
   HOUR,
   DENY_READS,
+  WIPE,
+  wipeState,
 } from './register.fixtures'
 import type { Limit, Task, World } from './register.fixtures'
 
@@ -342,6 +344,160 @@ test('the lease: written on start, beaten by the band timer and on measure, rele
   expect(await ctxGuard($, '')).toContain('lease: held by this session')
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 's2', resume: {} as never })
   expect(owner().heartbeat).toBe(0)
+})
+
+// A reload with no session end: memory is gone, and the owner file still holds the stored lease's live beat.
+async function reloadUnread($: Engine, w: World, clock: MockClock): Promise<void> {
+  const owner = w.files[`${STATE}/lead.owner`]
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  if (owner) w.files[`${STATE}/lead.owner`] = { ...owner, text: JSON.stringify({ sessionId: JSON.parse(owner.text).sessionId, heartbeat: clock.now() }) }
+  await run($, 'deny-reads')
+  await start($)
+}
+
+test('the lease: a session id changed by an in-process /clear, then a reload that cannot read $.state, is not another live session', { plugins: [DENY_READS] }, async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await measure($, w, 310_000)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  w.sessionId = 's2'
+  await reloadUnread($, w, clock)
+  await measure($, w, 310_000)
+  await clock.advance(6 * MIN)
+  expect(w.toasts.filter(t => t.includes('another live session'))).toEqual([])
+  expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('s1')
+  await run($, 'allow-reads')
+  await measure($, w, 310_000)
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(refusals(session)).toEqual([])
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('the lease: a session id that cannot be read, after a reload that cannot read $.state, is not another live session', { plugins: [DENY_READS] }, async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await measure($, w, 310_000)
+  w.sessionId = null
+  await reloadUnread($, w, clock)
+  await measure($, w, 310_000)
+  await clock.advance(6 * MIN)
+  expect(w.toasts.filter(t => t.includes('another live session'))).toEqual([])
+  await run($, 'allow-reads')
+  await measure($, w, 310_000)
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(refusals(session)).toEqual([])
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('the lease: a /clear while $.state is unread, once the next start reads the wiped state, keeps the lease the owner file holds for the cleared session', { plugins: [DENY_READS, WIPE] }, async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await measure($, w, 310_000)
+  await reloadUnread($, w, clock)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  w.sessionId = 's2'
+  await run($, 'allow-reads')
+  await start($)
+  await measure($, w, 310_000)
+  await clock.advance(6 * MIN)
+  expect(w.toasts.filter(t => t.includes('another live session'))).toEqual([])
+  expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('s1')
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(refusals(session)).toEqual([])
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('the lease: a /clear while a start\'s read of $.state is under way and then fails keeps the lease the owner file holds for the cleared session', { plugins: [DENY_READS, WIPE] }, async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await measure($, w, 310_000)
+  const owner = w.files[`${STATE}/lead.owner`]
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  if (owner) w.files[`${STATE}/lead.owner`] = { ...owner, text: JSON.stringify({ sessionId: 's1', heartbeat: clock.now() }) }
+  await run($, 'deny-reads')
+  const starting = start($)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  await starting
+  w.sessionId = 's2'
+  await run($, 'allow-reads')
+  await start($)
+  await measure($, w, 310_000)
+  await clock.advance(6 * MIN)
+  expect(w.toasts.filter(t => t.includes('another live session'))).toEqual([])
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(refusals(session)).toEqual([])
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('the lease: a /clear while $.state is unread, with an owner file of an id this session cannot tell for its own, refuses as error until that beat is stale', { plugins: [DENY_READS, WIPE] }, async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await measure($, w, 310_000)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  w.sessionId = 's2'
+  await reloadUnread($, w, clock)
+  await $.session.end({ reason: 'clear', sessionId: 's2', resume: {} as never })
+  await wipeState($)
+  w.sessionId = 's3'
+  await run($, 'allow-reads')
+  await start($)
+  await measure($, w, 310_000)
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(w.toasts.filter(t => t.includes('another live session'))).toEqual([])
+  expect(refusals(session).at(-1)).toContain('(error): a /clear emptied the stored state before it was read')
+  expect(await ctxGuard($, '')).toContain('lease: unknown (a /clear emptied the stored state before it was read')
+  // Nothing beats s1 any more: once its beat is 15 minutes old, the role is free and the cleared session's id takes it.
+  await clock.advance(21 * MIN)
+  expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('s2')
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(w.ran).toEqual(['clear', RESUME])
+})
+
+test('the lease: a /clear while $.state is unread, under another role until the claim is made again, keeps the cleared session\'s id', { plugins: [DENY_READS, WIPE] }, async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig())
+  const { clock } = world(on, w, { CTX_GUARD_ROLE: 'reviewer' })
+  await start($)
+  expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
+  expect(await ctxGuard($, 'trust')).toContain('approved for /repo')
+  await measure($, w, 310_000)
+  // The env's reviewer, whose owner file is free: the start reads no role claim.
+  delete w.files[`${STATE}/reviewer.owner`]
+  await reloadUnread($, w, clock)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  await wipeState($)
+  w.sessionId = 's2'
+  await run($, 'allow-reads')
+  await start($)
+  await measure($, w, 310_000)
+  expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
+  await measure($, w, 310_000)
+  expect(w.toasts.filter(t => t.includes('another live session'))).toEqual([])
+  expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('s1')
+  expect(await ctxGuard($, '')).toContain('lease: held by this session')
+})
+
+test('the lease: a ready token while $.state is unread is refused as error, and the report shows the lease as unknown', { plugins: [DENY_READS] }, async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await measure($, w, 310_000)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
+  w.sessionId = 's2'
+  await reloadUnread($, w, clock)
+  await measure($, w, 310_000)
+  await writeHandoff(w, clock)
+  await ready($, clock)
+  expect(refusals(session).at(-1)).toContain("(error): the stored state could not be read, so this session's role lease is unknown; try again")
+  expect(await ctxGuard($, '')).toContain('lease: unknown (the stored state could not be read)')
+  expect(w.ran).toEqual([])
 })
 
 test('no-handoff', async ($, on) => {

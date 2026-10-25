@@ -39,7 +39,8 @@ export type World = {
   version: string
   notifies: string[]
   failUsage: boolean
-  sessionId: string
+  // null: $.session.id() throws.
+  sessionId: string | null
   agents: { id: string; status: string; description: string; type: string }[]
   failAgentList: boolean
   agentListCalls: number
@@ -220,7 +221,10 @@ export function world(on: On, w: World, env: Record<string, string> = {}): { clo
       }),
     }
   })
-  on('session.id', () => ({ value: w.sessionId }))
+  on('session.id', () => {
+    if (w.sessionId === null) throw new Error('no session id')
+    return { value: w.sessionId }
+  })
   on('agent.list', async () => {
     w.agentListCalls += 1
     if (w.listHang > 0) await clock.sleep(w.listHang)

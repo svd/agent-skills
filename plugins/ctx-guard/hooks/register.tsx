@@ -1510,14 +1510,37 @@ async function setLease($: EngineInterface, lease: LeaseState): Promise<void> {
   await put($, 'lease', lease)
 }
 
+const LEASE_UNREAD = "the stored state could not be read, so this session's role lease is unknown; try again"
+// No lease in memory and `$.state` unread: the stored lease, if any, is not known yet.
+const leaseUnknown = (): boolean => !mem.lease && unread('lease')
+
+const LEASE_WIPED = "a /clear emptied the stored state before it was read, so this session's role lease is unknown until the role's owner file has a heartbeat 15 minutes old"
+// The session a /clear ended while the lease was unknown: its wipe may have taken the stored lease with it.
+let leaseWiped: string | null = null
+
 // The id this session writes into owner files and stamps; minted once, kept across /clear and reloads.
+// While it is unknown it throws: an id minted then could differ from the stored one and win over it.
 async function leaseOf($: EngineInterface): Promise<LeaseState> {
   const held = mem.lease
   if (held) return held
-  const sid = await $.session.id().catch(() => '')
+  if (leaseUnknown()) throw new Error(LEASE_UNREAD)
+  const kept = leaseWiped === null ? null : await wipedLease($, leaseWiped)
+  const sid = kept ?? (await $.session.id().catch(() => ''))
   const lease: LeaseState = { id: sid || `session-${await $.clock.now()}`, role: null, beatAt: null, sharedWith: null }
+  leaseWiped = null
   await setLease($, lease)
   return lease
+}
+
+// After a wipe of an unknown lease: the cleared session's id, this session's own, which may still be live in
+// another role's owner file; another live id in this role's may be this session's from before an earlier /clear.
+async function wipedLease($: EngineInterface, cleared: string): Promise<string> {
+  const role = mod.role.role
+  const f = role === null ? null : await ownerFile($, role)
+  if (!f) return cleared
+  const held = leaseState(parseOwner(await readText($, f.abs, f.realRoot)), cleared, await $.clock.now())
+  if (held.kind === 'shared') throw new Error(LEASE_WIPED)
+  return cleared
 }
 
 async function ownerFile($: EngineInterface, role: string): Promise<{ abs: string; realRoot: string } | null> {
@@ -1550,7 +1573,8 @@ async function releaseLease($: EngineInterface, lease: LeaseState): Promise<void
  * it. A role change releases the old role first.
  */
 async function leaseBeat($: EngineInterface, force: boolean): Promise<void> {
-  if (!active()) return
+  // Unknown: the stored lease's beat is still fresh, and a later hook beats once it is read.
+  if (!active() || leaseUnknown()) return
   const role = mod.role.role
   let lease = await leaseOf($)
   if (lease.role !== role) {
@@ -3511,7 +3535,8 @@ async function restartReport($: EngineInterface, role: string | null, spec: Role
   } catch (e) {
     out.handoff = { path: `${handoffPathFor(spec, role)} (${errorText(e)})`, mtime: null }
   }
-  try {
+  if (leaseUnknown()) out.lease = 'unknown (the stored state could not be read)'
+  else try {
     const lease = await leaseOf($)
     const f = await ownerFile($, role)
     const owner = f ? parseOwner(await readText($, f.abs, f.realRoot)) : null
@@ -3898,6 +3923,7 @@ export const register: Register = (on, options) => {
   flushOwed = false
   recoverOwed = false
   clearOwed = false
+  leaseWiped = null
 
   on('session.start', async ($, e, next) => {
     await begin($, e.isInteractive, e.surface)
@@ -4026,6 +4052,8 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
+      // The wipe that follows may take a stored lease no hook has read: the lease id is this session's.
+      if (leaseUnknown() && leaseWiped === null) leaseWiped = e.sessionId
       // In memory: the wipe that follows empties `$.state`, so the next hook writes it all back.
       if (mod.started && !mod.inert) await quietly(() => serial(() => onClear($)))
       else if (starting) clearOwed = true
@@ -4049,6 +4077,7 @@ export const register: Register = (on, options) => {
       owed = new Map()
       configReplayed = false
       flushOwed = false
+      leaseWiped = null
       recoverOwed = false
       clearOwed = false
       dropped = null

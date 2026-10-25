@@ -11,6 +11,15 @@ All notable changes to the `ctx-guard` plugin are documented here.
   trigger marks, notices shown, subagent work, the cache record, the last good config) is applied
   on top of the stored values once read. A /ctx-guard:clear ask, the last good config and work
   still running carry on as they were.
+- While ctx-guard cannot read its stored state, a session that holds no role lease in memory
+  leaves the owner file alone and refuses the ready token as `error`, saying the stored state
+  could not be read; `/ctx-guard` reports the lease as unknown. A read brings the stored lease
+  back. After a /clear in that time, the session keeps the id of the session the /clear ended
+  as its lease, and stays unknown while the role's owner file holds another live id, until its
+  heartbeat is 15 minutes old. Before, it minted a lease id that
+  could differ from its own stored one (after an in-process /clear, or when the session id could
+  not be read), took its own lease for another live session's, toasted "another live session
+  holds role", and refused restarts as `role-shared` for up to 15 minutes.
 
 ## [0.6.0] - 2026-10-25
 

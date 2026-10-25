@@ -631,7 +631,7 @@ With `via: compact` it ends "Nothing was compacted."
 | `peer-restarting` | A peer restarted less than `peerGap` ago. | Wait out the gap, then send the token again. |
 | `ready-check-failed` | A ready check exited non-zero, timed out or could not start. The reason holds the end of its output. | Fix what the check flags (for example, commit the work), then send the token again. |
 | `race-lost` | A peer that also passed every check started its restart first. | Wait out `peerGap`, then send the token again. |
-| `error` | Anything else: a path outside the root, the config not loaded, `/clear` refused, a failed read. | Read the reason; `/ctx-guard check` shows each check. |
+| `error` | Anything else: a path outside the root, the config not loaded, `/clear` refused, a failed read, the stored state unreadable so the role lease is unknown. | Read the reason; `/ctx-guard check` shows each check. |
 
 `via: compact` skips the lease, handoff, stamp, peer and race checks (`role-shared`, `no-handoff`,
 `handoff-stale`, `stamp-unreadable`, `peer-restarting`, `race-lost`).
@@ -1108,7 +1108,12 @@ Only interactive sessions get a role; `claude -p` sessions run with none. A name
 **Lease.** The session holding a role writes `<stateDir>/<role>.owner` (`{sessionId,
 heartbeat}`) every 5 minutes; a heartbeat older than 15 minutes is a dead session's. A second
 live session with the same role gets a warning toast, and its restarts refuse with
-`role-shared`. The lease is released when the session ends, and kept across `/clear`.
+`role-shared`. The lease is released when the session ends, and kept across `/clear`. While
+ctx-guard cannot read its stored state, a session that holds no lease in memory leaves the owner
+file alone, refuses the ready token as `error` and reports the lease as unknown; a read brings
+the stored lease back. A `/clear` in that time may wipe the stored lease: the session then keeps
+the id of the session the `/clear` ended as its lease, and, while the role's owner file holds
+another live id, stays unknown until that heartbeat is 15 minutes old.
 
 ## userConfig switches
 
