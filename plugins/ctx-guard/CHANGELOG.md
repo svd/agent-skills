@@ -20,6 +20,10 @@ All notable changes to the `ctx-guard` plugin are documented here.
   could differ from its own stored one (after an in-process /clear, or when the session id could
   not be read), took its own lease for another live session's, toasted "another live session
   holds role", and refused restarts as `role-shared` for up to 15 minutes.
+- A refused tool call, a note and a /clear that come while ctx-guard cannot read its stored lifts
+  now stamp the stored holds once a hook reads them, so a brake's touch and note stamps match what
+  the model last saw. Before, they were dropped: a brake touched in that time did not wake at its
+  reset, and a /clear while a read was under way left the holds' earlier touches counting.
 
 ## [0.6.0] - 2026-10-25
 

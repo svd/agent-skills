@@ -273,6 +273,53 @@ async function peekLifts($: Engine): Promise<PeekedLifts> {
   return JSON.parse(r.text ?? 'null')
 }
 
+test('lift: a refusal while $.state cannot be read touches the stored hold once read, and the brake wakes at the reset', { plugins: [DENY_READS, PEEK_LIFTS] }, async ($, on) => {
+  const w = brakeWorld()
+  const { clock, forks } = await braked($, on, w)
+  // A new session in this process: memory is empty and $.state cannot be read when the brake refuses Agent.
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  await clock.advance(MIN)
+  const at = clock.now()
+  await touch($, clock)
+  await run($, 'allow-reads')
+  await turn($, 'start')
+  expect((await peekLifts($)).lifts?.holds.stop?.touchedAt).toBe(at)
+  await mainTurnEnd($, clock)
+  await clock.advance(PAST_RESET)
+  expect(forks).toEqual(['Reply with OK.'])
+  expect(wakePrompts(w).length).toBe(1)
+})
+
+test('lift: a /clear while the read of $.state is under way clears the stored hold\'s touch', { plugins: [DENY_READS, PEEK_LIFTS] }, async ($, on) => {
+  const w = brakeWorld()
+  let release = (): void => {}
+  const gate = new Promise<void>(r => (release = r))
+  let hang = false
+  on('state.get', { plugin: 'ctx-guard', key: 'lifts' }, async ($, e, next) => {
+    if (hang) await gate
+    return next(e)
+  })
+  const { clock } = await braked($, on, w)
+  await touch($, clock)
+  expect((await peekLifts($)).lifts?.holds.stop?.touchedAt).not.toBeNull()
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  await run($, 'allow-reads')
+  // The next hook's read of $.state hangs until released; the /clear comes meanwhile.
+  hang = true
+  const hook = turn($, 'start')
+  await clock.settle()
+  await $.session.end({ reason: 'clear', sessionId: 's2', resume: {} as never })
+  hang = false
+  release()
+  await hook
+  await turn($, 'start')
+  expect((await peekLifts($)).lifts?.holds.stop?.touchedAt ?? null).toBeNull()
+})
+
 test('a typed /ctx-guard:clear in a copy that could not register /ctx-guard is operator input', { plugins: [PEEK_LIFTS] }, async ($, on) => {
   const w = brakeWorld({ failRegister: '"/ctx-guard" refused: it is taken' })
   const { clock } = await braked($, on, w, { trust: false })
@@ -1269,6 +1316,34 @@ test('an operator /clear while the wake prompt waits → no prompt; the toast an
   expect(liftNotes(session).length).toBe(1)
   await clock.advance(5 * MIN)
   expect([wakePrompts(w).length, liftNotes(session).length]).toEqual([0, 1])
+})
+
+test('an operator /clear while $.state cannot be read and the wake prompt waits → once read, the toast and the note as for a steered hold', { plugins: [DENY_READS, PEEK_LIFTS] }, async ($, on) => {
+  const w = brakeWorld()
+  const { clock, session } = await braked($, on, w, { forks: [{ limits: [fiveAt(10, NOW + 7 * HOUR)], hang: 30_000 }] })
+  await touch($, clock)
+  await advanceTo(clock, NOW + 2 * HOUR)
+  // A non-operator turn runs while the check answers: the wake prompt waits for the next idle tick.
+  await $.prompt.submit({ text: 'done', origin: { kind: 'task-notification' } } as never)
+  await turn($, 'start')
+  await clock.advance(MIN)
+  await mainTurnEnd($, clock)
+  expect((await peekLifts($)).lifts?.pending).not.toBeNull()
+  // A new session in this process cannot read $.state; the operator clears before any hook reads it.
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} as never })
+  await run($, 'deny-reads')
+  await start($)
+  await $.command.run({ command: 'clear', args: '', origin: { kind: 'composer' } as never, presentation: { isFullscreen: false, columns: 120 } })
+  await $.session.end({ reason: 'clear', sessionId: 's2', resume: {} as never })
+  await run($, 'allow-reads')
+  await $.prompt.submit({ text: 'next task', origin: { kind: 'composer' } } as never)
+  await clock.settle()
+  expect(wakePrompts(w)).toEqual([])
+  expect(w.toasts).toContain('ctx-guard: "stop" lifted (the 5-hour usage window reset); Agent allowed again.')
+  expect(liftNotes(session).length).toBe(1)
+  // The steered hold kept its stamps through the /clear: it lifted as the operator's, its prompt dropped.
+  const after = (await peekLifts($)).lifts
+  expect([after?.holds, after?.pending]).toEqual([{}, null])
 })
 
 test('a restart\'s own /clear while the wake prompt waits → no prompt into the new context; the lift note goes there', { plugins: [PEEK_LIFTS] }, async ($, on) => {

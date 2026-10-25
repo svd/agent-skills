@@ -348,7 +348,8 @@ it waits. The first rule that stops it decides.
    count, so it cannot wake from that note. A refused call to one of its tools touches it; a note
    that brake appends later, from an `every` step or a new rising edge, touches it once read. A `/clear` other than the operator's (ctx-guard's restart) starts a
    context the brake never touched: a hold's earlier touch no longer counts, and a wake prompt
-   waiting to go is dropped.
+   waiting to go is dropped. While ctx-guard cannot read its stored state, a refused call, a note
+   and a `/clear` still stamp the stored holds: each is applied to them once a hook reads them.
 2. **No operator input since the last touch.** Operator input is a prompt or command with origin
    `composer`, `bridge`, `sdk`, `peer`, `coordinator`, `channel` or `slack-ping`, whether it
    starts a turn or arrives in a running one; an operator's `/clear` and a typed

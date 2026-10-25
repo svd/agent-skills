@@ -1065,7 +1065,7 @@ async function evaluateNow($: EngineInterface, reading: Reading, write: BandWrit
   const isPaused = paused(now)
   const noted = await act($, planActions(capped.fire), isPaused, metrics)
   if (role !== null) {
-    if (noted.length) await putLifts($, l => ({ ...l, holds: stamp(l.holds, noted, hold => ({ ...hold, notedAt: now })) }))
+    if (noted.length) await stampLifts($, l => ({ ...l, holds: stamp(l.holds, noted, hold => ({ ...hold, notedAt: now })) }))
     await quietly(() => judgeLifts($, metrics, isPaused, check))
   }
   // A pause that ran out frees a blocked compact here.
@@ -2479,8 +2479,9 @@ type LiftCheck = 'fresh' | 'failed'
 
 const liftsNow = (): Lifts => liftsFor(mem.lifts, mod.role.role)
 
-// `$.state` could not be read and this copy holds no lifts of its own: the stored ones are unknown, so none are written over them.
-const liftsUnread = (): boolean => !hydrated && mem.lifts === null
+// `$.state` could not be read and this copy has not put lifts of its own: the stored ones are unknown,
+// so no hold is judged on them. A change owed to them leaves them unknown.
+const liftsUnread = (): boolean => unread('lifts')
 
 // Read-modify-write on memory; nothing is written when nothing changed, or while the lifts are unread.
 async function putLifts($: EngineInterface, fn: (l: Lifts) => Lifts): Promise<void> {
@@ -2488,6 +2489,18 @@ async function putLifts($: EngineInterface, fn: (l: Lifts) => Lifts): Promise<vo
   const cur = liftsNow()
   const next = fn(cur)
   if (JSON.stringify(next) !== JSON.stringify(cur)) await put($, 'lifts', next)
+}
+
+// A stamp on what the model saw (a note, a touch, a /clear): while the lifts are unread it is owed,
+// and applied to the stored lifts once read. `fn` reads only its argument; the role is this call's.
+async function stampLifts($: EngineInterface, fn: (l: Lifts) => Lifts): Promise<void> {
+  if (!liftsUnread()) return putLifts($, fn)
+  const role = mod.role.role
+  await change($, 'lifts', v => {
+    const cur = liftsFor(v, role)
+    const next = fn(cur)
+    return JSON.stringify(next) === JSON.stringify(cur) ? v : next
+  })
 }
 
 // `holds` with `fn` applied to each of `ids` it has.
@@ -2896,8 +2909,12 @@ async function onOperator($: EngineInterface, command: string | null, origin: st
   const restart = command !== null && mod.eff !== null && roleForCommand(mod.eff.config, command) !== null
   const keeps = keepsWake(command, origin !== undefined && isTypedPrompt({ origin: { kind: origin } }), restart)
   const input: OperatorInput = { at: await $.clock.now(), keeps, clear: command === 'clear' }
-  // The stored lifts are unknown: the input waits for a hook that reads them, and one that cancels the wake still does.
+  // The stored lifts are unknown: the input's stamp is owed to them, in order with a /clear's that may
+  // follow, and the rest waits for a hook that reads them; one that cancels the wake still does. Whether
+  // lifts are in play is decided on the stored lifts, since the wake in memory is unknown too.
   if (liftsUnread()) {
+    const triggers = liftTriggers().length > 0
+    await stampLifts($, l => triggers || Object.hasOwn(l.holds, WAKE_ID) ? { ...l, operatorAt: input.at, attempts: {} } : l)
     const prev = mod.operatorOwed
     mod.operatorOwed = { ...input, keeps: keeps && (prev?.keeps ?? true) }
     return
@@ -2934,7 +2951,7 @@ async function dropWake($: EngineInterface): Promise<void> {
  * is the operator's own: it keeps its stamps and its prompt.
  */
 async function liftsOnClear($: EngineInterface): Promise<void> {
-  await putLifts($, l => {
+  await stampLifts($, l => {
     const unseen = Object.entries(l.holds)
       .filter(([, hold]) => !hold.manual)
       .filter(([, hold]) => l.operatorAt === null || hold.touchedAt === null || l.operatorAt <= hold.touchedAt)
@@ -2946,7 +2963,7 @@ async function liftsOnClear($: EngineInterface): Promise<void> {
 
 // A refused call of one of a hold's tools touches it, whichever trigger refused the call.
 async function touchHolds($: EngineInterface, tool: string, now: number): Promise<void> {
-  await putLifts($, l => ({ ...l, holds: stamp(l.holds, Object.keys(l.holds).filter(id => l.holds[id]?.tools.includes(tool)), hold => ({ ...hold, touchedAt: now })) }))
+  await stampLifts($, l => ({ ...l, holds: stamp(l.holds, Object.keys(l.holds).filter(id => l.holds[id]?.tools.includes(tool)), hold => ({ ...hold, touchedAt: now })) }))
 }
 
 // A main step's work for the lifts: a hold's note read, a lift note read mid-turn, a usage report for a stall.
