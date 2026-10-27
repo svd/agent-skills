@@ -100,6 +100,16 @@ The checklist also says: "raise `version` with every release" (see P1).
 | O20 | Component keys (`commands`, `agents`, `skills`, `hooks`, `mcpServers`, `lspServers`, `outputStyles`) spelled exactly, and not inside `experimental`. | block |
 | O21 | Every component path in `plugin.json` points inside the plugin folder. (Same section: *Repository and folder layout*.) | block |
 
+Fields the portal reports on `plugin.json` (source: portal-finding, ctx-guard 0.6.0, c53a5dc):
+
+| Code | Rule | Level |
+| --- | --- | --- |
+| `UNKNOWN_KEY` | A top-level field not in the [plugins reference](https://code.claude.com/docs/en/plugins-reference) (read 2026-10-27), one finding per field. | warn |
+| `UNKNOWN_KEY` | `documentationUrl`, `supportUrl` and `types`: the reference lists them, yet the portal raised "Unrecognized field in plugin.json" on each. `types` is the mod's `PluginState` contract. | note |
+| `MANIFEST_FOREIGN_FIELD` (**provisional** code) | `icon`: "Field from another tool's manifest"; the directory reads it for the listing, Claude Code ignores it. | note |
+| `BINARY_PASSED` (**provisional** code) | Each complete image or font: "Images and fonts passed without a code check" (their printable text is still screened). | note |
+| `USES_HOOKS` (**provisional** code) | `hooks/hooks.json` exists: "Uses hooks", information only. | note |
+
 The checker counts a name as generic-only when every hyphen-separated word is one of the reserved
 words (inferred). Name collisions with other listings, brands and forks need the directory's
 data and are not checked.
@@ -194,7 +204,6 @@ section "What it runs, reads, writes and sends" answers each one.
 | `MOD_SESSION_DATA_LEAVES` | `$.process.run`, `$.model.fork`, `$.prompt.submit` |
 | `MOD_PROCESS_COMMAND_COMPUTED` | `$.process.run` with a command built at run time |
 | `MOD_RUNS_PROCESS` | `$.process.run` |
-| `UNKNOWN_KEY` (warning) | `types` in `plugin.json`, the mod's `PluginState` contract |
 
 ## Release rules
 

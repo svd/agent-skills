@@ -271,6 +271,15 @@ def main():
         plugin_case("flags generic-only name", {}, "O17", "hold", {"name": "test-plugin"})
         plugin_case("warns without version", {}, "O18", "warn", {"version": None})
         plugin_case("flags mixed writing systems in author.name", {}, "O19", "block", {"author": {"name": "Dеmo"}})
+        plugin_case("warns on a field the plugins reference doesn't list", {}, "UNKNOWN_KEY", "warn", {"documentatonUrl": "https://e.com"})
+        plugin_case("notes `icon`", {"assets/i.png": png(200)}, "MANIFEST_FOREIGN_FIELD", "note", {"icon": "./assets/i.png"})
+        plugin_case("notes an image let through without a code check", {"assets/i.png": png(200)}, "BINARY_PASSED", "note")
+        plugin_case("notes hooks.json", {}, "USES_HOOKS", "note")
+        repo, plugin = make_plugin(tmp, "infonotes", {"assets/i.png": png(200)},
+                                   {"icon": "./assets/i.png", "documentationUrl": "https://e.com", "types": "./types/index.d.ts"})
+        rc, f = run(["plugin", str(plugin)], repo)
+        bad = [x for x in f if x["level"] != "note"]
+        check("manifest clean: icon, listing fields, image and hooks give notes only", not bad and rc == 0, show(bad))
         plugin_case("flags component key in experimental", {}, "O20", "block", {"experimental": {"hooks": "./h.json"}})
         plugin_case("flags path outside the plugin", {}, "O21", "block", {"commands": "../other"})
         plugin_case("flags short README", {"README.md": "# demo\n\nToo short.\n\n```\n" + "word " * 50 + "\n```\n"}, "O24", "block")

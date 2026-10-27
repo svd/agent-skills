@@ -40,6 +40,16 @@ COMPONENT_KEYS = ["commands", "agents", "skills", "hooks", "mcpServers", "lspSer
 REWRITING_ATTRS = {"filter", "ident", "working-tree-encoding", "eol", "text", "crlf"}
 PACKAGE_SOURCE_FILES = {".npmrc", "bunfig.toml", "uv.toml", "pip.conf", ".yarnrc", ".yarnrc.yml", ".pypirc"}
 DISCLOSURE_HEADING = "What it runs, reads, writes and sends"
+# Top-level plugin.json fields in https://code.claude.com/docs/en/plugins-reference (2026-10-27).
+MANIFEST_FIELDS = {
+    "$schema", "name", "displayName", "version", "description", "author", "homepage", "repository",
+    "license", "keywords", "metadata", "icon", "documentationUrl", "supportUrl", "privacyPolicyUrl",
+    "termsOfServiceUrl", "defaultEnabled", "dependencies", "settings", "userConfig", "types",
+    "channels", "skills", "commands", "agents", "hooks", "mcpServers", "lspServers", "outputStyles",
+    "workflows", "experimental",
+}
+# Listed in the reference, yet the portal raised "Unrecognized field" on each (ctx-guard 0.6.0).
+PORTAL_UNKNOWN_FIELDS = {"documentationUrl", "supportUrl", "types"}
 
 KIB = 1024
 MIB = 1024 * KIB
@@ -825,6 +835,9 @@ def check_plugin_files(plugin_dir, out):
         if text is None:
             if not (image_magic(data) or (is_font and font_magic(data))):
                 out.append(Finding("O9", "hold", label(rel), 1, "binary file other than a complete PNG/JPEG/GIF/WebP image or a font"))
+            else:
+                out.append(Finding("BINARY_PASSED", "note", label(f"{sub}/.claude-plugin/plugin.json" if sub else ".claude-plugin/plugin.json"), 0,
+                                   f"image or font `{in_plugin}` is let through without a code check (its printable text is still screened)"))
             if is_image:
                 images.append(rel)
             continue
@@ -922,6 +935,14 @@ def check_manifest(plugin_dir, root, texts, out):
         for key in exp:
             if key in COMPONENT_KEYS:
                 out.append(Finding("O20", "block", rel, 1, f"component key `{key}` inside `experimental`"))
+    for key in manifest:
+        if key == "icon":
+            out.append(Finding("MANIFEST_FOREIGN_FIELD", "note", rel, 1, "`icon` is read by the directory for the listing and ignored by Claude Code"))
+        elif key not in MANIFEST_FIELDS:
+            out.append(Finding("UNKNOWN_KEY", "warn", rel, 1, f"`{key}` is not a plugin.json field in the plugins reference; check its spelling"))
+        elif key in PORTAL_UNKNOWN_FIELDS:
+            why = "the mod's PluginState contract" if key == "types" else "a directory listing field"
+            out.append(Finding("UNKNOWN_KEY", "note", rel, 1, f"expected warning on `{key}`, {why}: the portal reads it as unknown although the plugins reference lists it"))
     for key in COMPONENT_KEYS + ["icon"]:
         values = manifest.get(key)
         values = [values] if isinstance(values, str) else values if isinstance(values, list) else []
@@ -981,6 +1002,8 @@ def check_hooks_json(plugin_dir, out):
                     check_command_paths(h.get("command"), rel, f"{event} hook", out)
                 if h.get("type") == "http" and not str(h.get("url", "")).startswith("https://"):
                     out.append(Finding("O26", "block", rel, 1, f"{event} HTTP hook needs an https:// URL"))
+    if isinstance(data, dict):
+        out.append(Finding("USES_HOOKS", "note", rel, 0, "the plugin ships hooks, which Claude Code runs on events; information only"))
     entries = []
     for m in modules or []:
         if isinstance(m, str):
@@ -1004,8 +1027,6 @@ def expected_holds(sources, readme, readme_rel, manifest, manifest_rel, out):
         out.append(Finding("O27", "warn", readme_rel, 1, f"expected Policy holds ({', '.join(holds)}) need a README section \"{DISCLOSURE_HEADING}\""))
     for code in holds:
         out.append(Finding(code, "note", readme_rel, 1, f"expected Policy hold, answered by \"{DISCLOSURE_HEADING}\""))
-    if "types" in manifest:
-        out.append(Finding("UNKNOWN_KEY", "note", manifest_rel, 1, "expected warning on `types`, the mod's PluginState contract"))
 
 
 def run_plugin(plugin_dir):
