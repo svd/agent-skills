@@ -187,8 +187,8 @@ comments, string and regex literals, and template-literal text (the code inside 
 | R3 | `ui.render` is registered in the entry module named in `hooks/hooks.json` (`register.tsx`), not in a module it imports. | block | portal-finding on ctx-guard 0.1.0, fixed in 0.2.0 (82c2c23, 2026-10-15) |
 | R4 | No `__proto__` literal in non-test `.ts`/`.tsx`. | block | portal-finding on ctx-guard 0.1.0, fixed in 0.2.0 (61b9589, 2026-10-15). That tests and the JSON schema are exempt is **inferred**: the portal passed them |
 | R5 | No pipe-to-shell (`curl … \| sh`, `wget … \| bash`) anywhere in the plugin folder, docs and test fixtures included. | block | portal-finding on ctx-guard 0.1.0, fixed in 0.2.0 (10dab1f, 2026-10-15) |
-| R6 | An `agent.spawn` hook passes its own event to `next` unchanged and names its parameters with names used nowhere else in the file. | warn | **inferred**, from the `agent.spawn` fix in ctx-guard 0.2.0 (0bb0909, 2026-10-15) |
-| R7 | A hook on `config.set`, `agent.register`, `command.run`, `fs.write`, `tool.check`, `classic.PreToolUse` or `classic.PermissionRequest` passes its own event to `next` unchanged (not rebuilt or destructured; no assignment, `++`, `delete` or `Object.assign` on it), does not hand `next` on as a value, and names its event and `next` parameters with names used nowhere else in the file. A `.catch(...)` handler chained on the registration counts as part of the hook. `permissionMode` in `$.agent.register` or `$.agent.spawn` options is the literal `'default'`. | warn | **inferred**, from the portal's permission hold on ctx-guard 0.2.0, 0.3.1, 0.5.0 and 0.6.0 |
+| R6 | An `agent.spawn` hook passes its own event to `next` unchanged and names its parameters with names used nowhere else in the file. The hook is an inline function with `$`, event and `next` parameters; a hook given by name, or with fewer parameters, can't be read and warns. | warn | **inferred**, from the `agent.spawn` fix in ctx-guard 0.2.0 (0bb0909, 2026-10-15) |
+| R7 | A hook on `config.set`, `agent.register`, `command.run`, `fs.write`, `tool.check`, `classic.PreToolUse` or `classic.PermissionRequest` passes its own event to `next` unchanged (not rebuilt or destructured; no assignment, `++`, `delete` or `Object.assign` on it), does not hand `next` on as a value, and names its event and `next` parameters with names used nowhere else in the file. The hook is an inline function with `$`, event and `next` parameters; a hook given by name, or with fewer parameters, can't be read and warns. A `.catch(...)` handler chained on the registration counts as part of the hook. `permissionMode` in `$.agent.register` or `$.agent.spawn` options is the literal `'default'`. | warn | **inferred**, from the portal's permission hold on ctx-guard 0.2.0, 0.3.1, 0.5.0 and 0.6.0 |
 
 Which events count is **inferred** from the types: these are the calls whose hook can change
 what is permitted. The portal names one line per version, the first such hook in the file: the
@@ -238,6 +238,30 @@ calls made through it raise no note.
 | `MOD_SUBMITS_PROMPT` (**provisional** code) | `$.prompt.submit` | first call |
 | `MOD_INCLUDES_MOD` (**provisional** code) | each entry module in `hooks/hooks.json` `modules` | the module, line 0 |
 | `MOD_CHANGES_PERMISSIONS` (**provisional** code) | an R6 or R7 finding in those files | the first one |
+
+### Portal notes on a mod
+
+Information, nothing blocks. The portal reports one finding per code, at the first occurrence in
+the file; the checker reports each as a `note` there, in the same files and order as the holds
+above, with the portal's title and advice as its message. These are the lines the portal named on
+ctx-guard 0.2.0, 0.3.1, 0.5.0 and 0.6.0. The portal's export shows titles only, so every code is
+**provisional**.
+
+| Code | Title | Raised by | At |
+| --- | --- | --- | --- |
+| `MOD_UNRECOGNIZED_CALL` | Mod makes a call the directory doesn’t recognize | `$.ui.notify` (**inferred**: the one call the portal named; other calls may count too) | first call |
+| `MOD_WRITES_FILES` | Mod writes files | `$.fs.write`, any path | first call |
+| `MOD_ADDS_TOOLS` | Mod adds tools, commands, or agents | `$.command.register`, `$.tool.register`, `$.agent.register` | first of these calls |
+| `MOD_HOOKS_CALL_EVENT` | Mod hooks an event that is also the name of a call, so it may see or change that call when other code makes it | `on('<event>', …)` where the event is an `EngineEventOf` event that is also a method of `$` (**inferred**: the hookable calls in `OpEventOf`, such as `fs.write`, are left out; ctx-guard hooks none, so this is unverified) (`tool.call`, `tool.check`, `agent.spawn`, `prompt.submit`, `prompt.fill`, `prompt.suggest`, `prompt.compose`, `command.run`, `config.set`, `telemetry.log`, `telemetry.mark`, `session.compact`, `session.send`, `session.append`, `ui.scroll`, `ui.focus`, `ui.resolve`), unless the hook passes R6/R7's tests: an inline `($, event, next)` function that passes its own event on unchanged, under names used nowhere else in the file (**inferred**: the portal passed over such an `agent.spawn` hook on 0.2.0) | first such hook |
+| `MOD_HOOKS_PASS_THROUGH_EVENT` | Mod hooks an event that settings, instructions, other hooks, or tool descriptions pass through | `on('classic.<event>', …)` (**inferred**) | first such hook |
+
+The events that are also calls are the `EngineEventOf` keys that are methods of
+`CoreEngineInterface` in the `claude-code` types.
+
+Limits: a call is found by its tokens, so `$.ui.notify(` written as JSX text counts as a call.
+Hooks are found only as `on(...)` under the name `register` gives its first parameter; a hook
+registered through a helper that receives `on` (`wire(on)`) is missed here, as it is by R6, R7
+and P2.
 
 ## Release rules
 

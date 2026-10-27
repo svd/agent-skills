@@ -411,6 +411,62 @@ def main():
         hold_case("clean: a call in a comment or string", stamp_with("'$.process.run(cmd)' // $.process.run(cmd)"), "MOD_RUNS_PROCESS", None)
         unimported = {"hooks/register.fixtures.ts": "export function wire(on: any) {\n  on('command.run', async ($: any, runEvent: any, passRun: any) => passRun({ ...runEvent }))\n}\n"}
         hold_case("clean: an R7 finding in a module the entry does not import", unimported, "MOD_CHANGES_PERMISSIONS", None)
+
+        # ---- portal notes, each at the first call or hook that raises it ---------------------------
+        hold_case("at $.ui.notify", stamp_with("$.ui.notify('x')"), "MOD_UNRECOGNIZED_CALL", (reg, 4))
+        hold_case("clean: no $.ui.notify", stamp_with("$.ui.toast('x')"), "MOD_UNRECOGNIZED_CALL", None)
+        hold_case("at $.fs.write to a plain literal path", stamp_with("$.fs.write('notes.txt', '')"), "MOD_WRITES_FILES", (reg, 4))
+        hold_case("clean: no $.fs.write", stamp_with("$.fs.read('notes.txt')"), "MOD_WRITES_FILES", None)
+        for call in ("$.command.register({ name: 'x' })", "$.tool.register({ name: 'x' })", "$.agent.register({ name: 'x' })"):
+            hold_case(f"at {call.split('(')[0]}", stamp_with(call), "MOD_ADDS_TOOLS", (reg, 4))
+        hold_case("clean: no registration", stamp_with("$.command.list()"), "MOD_ADDS_TOOLS", None)
+        def hooked(*lines):
+            return {reg: REGISTER.replace("  })\n}\n", "  })\n\n" + "".join(f"  {x}\n" for x in lines) + "}\n")}
+        shared_call = "on('tool.call', async ($, e, next) => next(e))"
+        unique_call = "on('agent.spawn', async ($, spawnEvent, passSpawn) => passSpawn(spawnEvent))"
+        hold_case("at a call-named hook with shared names", hooked(shared_call), "MOD_HOOKS_CALL_EVENT", (reg, 13))
+        hold_case("at a call-named hook that changes the event", hooked("on('command.run', async ($, runEvent, passRun) => passRun({ ...runEvent }))"),
+                  "MOD_HOOKS_CALL_EVENT", (reg, 13))
+        hold_case("clean: a call-named hook that passes R6", hooked(unique_call), "MOD_HOOKS_CALL_EVENT", None)
+        hold_case("past a call-named hook that passes R6", hooked(unique_call, shared_call), "MOD_HOOKS_CALL_EVENT", (reg, 14))
+        hold_case("clean: hooks on events that are not calls", {}, "MOD_HOOKS_CALL_EVENT", None)
+        hold_case("at a call-named hook with no next parameter", hooked("on('tool.call', async ($, callEvent) => { return })"),
+                  "MOD_HOOKS_CALL_EVENT", (reg, 13))
+        hold_case("at a call-named hook given by name", hooked("on('tool.call', passOn)"), "MOD_HOOKS_CALL_EVENT", (reg, 13))
+        plugin_case("R7 warns on a permission hook given by name", hooked("on('command.run', passOn)"), "R7", "warn")
+        top = "function helper($: E): void {}\n"
+        for i, code in enumerate(("const x = ok ? obj.m($) : () => 0\n", "const x = ok ? obj.m($) : (a: number) => a\n",
+                                  "const x = ok ? obj.m($) : { a: 1 }\nconst y = () => 2\n",
+                                  "const x = ok ? obj.m($) : (y)\nconst g = () => 1\n",
+                                  "const x = ok ? obj.m($) : g(a)\nconst k = () => 1\n")):
+            plugin_case(f"R2 flags $ in a call before a ternary's arrow {i}", {reg: REGISTER + top + code}, "R2", "block")
+        for code in ("const x = ok ? await obj.m($) : () => 0\n", "const x = ok ? new X($) : () => 0\n",
+                     "const x = ok ? obj.m?.($) : () => 0\n", "const x = ok ? a[0]($) : () => 0\n",
+                     "const x = ok ? f<T>($) : () => 0\n", "switch (a) { case obj.m($): () => 1 }\n",
+                     "switch (a) { case obj.m($): x => 1 }\n", "const x = ok ? ($) : () => 0\n",
+                     "const x = ok ? (a, $) : () => 0\n", "const x = ok ? (void $) : () => 0\n"):
+            plugin_case(f"R2 flags $ in `{code.strip()}`", {reg: REGISTER + top + code}, "R2", "block")
+        for code in ("const x = ok ? ($): R => 0 : null\n", "function f() {\n  return ($, e): R => 0\n}\n",
+                     "const g = <T,>($: T, e): R => 0\n", "const o = ($, e): { a: string; b: number } => 0\n"):
+            plugin_case(f"clean: an arrow with a return type `{code.strip()}`", {reg: REGISTER + top + code}, "R2", None)
+        plugin_case("R2 flags on in a call before a ternary's arrow",
+                    {reg: REGISTER.replace("  on('session.start'", "  const w = options ? wire.x(on) : () => 0\n  on('session.start'")}, "R2", "block")
+        plugin_case("R7 flags next in a call before a ternary's arrow",
+                    hooked("on('fs.write', async ($, wEv, passW) => { const r = wEv ? keep(passW) : () => 0; return passW(wEv) })"), "R7", "warn")
+        plugin_case("clean: a hook with < in a default value", hooked("on('fs.write', async ($, wEv = n < 1 ? d : d, passW) => passW(wEv))"), "R7", None)
+        plugin_case("R6 warns on an agent.spawn hook given by name", hooked("on('agent.spawn', spawnHook)"), "R6", "warn")
+        for label, hook in (("a return type with a comma", "async ($, runEv, passRun): Promise<Map<string, number>> => passRun(runEv)"),
+                            ("a $-led next name", "async ($, runEv, $next) => $next(runEv)"),
+                            ("a $-led event name", "async ($, $ev, passRun) => passRun($ev)"),
+                            ("generics in a parameter type", "async ($: Api<A, B>, runEv, passRun) => passRun(runEv)"),
+                            ("a matcher before the hook", "{ command: 'x' }, async ($, runEv, passRun) => passRun(runEv)"),
+                            ("a wrapped hook", "wrap(async ($, runEv, passRun) => passRun(runEv))")):
+            plugin_case(f"clean: a hook with {label}", hooked(f"on('command.run', {hook})"), "R7", None)
+            hold_case(f"clean: a hook with {label}", hooked(f"on('command.run', {hook})"), "MOD_HOOKS_CALL_EVENT", None)
+        hold_case("at a classic hook", hooked("on('classic.Stop', async ($, e, next) => next(e))"), "MOD_HOOKS_PASS_THROUGH_EVENT", (reg, 13))
+        hold_case("clean: no classic hook", hooked(shared_call), "MOD_HOOKS_PASS_THROUGH_EVENT", None)
+        hold_case("clean: a call in a module the entry does not import", helper | {"hooks/helper.ts": helper["hooks/helper.ts"].replace("process.run(cmd)", "fs.write(p, '')")},
+                  "MOD_WRITES_FILES", None)
         no_section = README.replace("## What it runs, reads, writes and sends", "## Notes")
         plugin_case("O27 warns on holds with no disclosure section", {**stamp_with("$.process.run(cmd)"), "README.md": no_section}, "O27", "warn")
         plugin_case("O27 clean: disclosure section present", stamp_with("$.process.run(cmd)"), "O27", None)

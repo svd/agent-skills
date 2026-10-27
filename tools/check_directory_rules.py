@@ -186,6 +186,8 @@ def strip_code(src):
     return "".join(out)
 
 
+ARROW_LEADERS = {"async", "return", "yield", "await", "throw", "in", "of", "case", "default", "else", "do", "typeof", "void", "delete", "extends"}
+STATEMENT_KEYWORDS = {"const", "let", "var", "return", "if", "for", "while", "throw", "export", "function"}
 TOKEN_RE = re.compile(r"[A-Za-z_$][\w$]*|\d[\w.]*|=>|\.\.\.|\?\.|[^\s\w]")
 OPEN, CLOSE = "([{", ")]}"
 
@@ -267,12 +269,27 @@ class Source:
         if after == "=>":
             return True
         if after == ":":
-            # `(...): Type =>` or a method `(...): Type {`
+            # `(...): Type =>` or a method `(...): Type {`; a `,` inside `<...>` or brackets is the type's.
+            # A call in a ternary's branch (`a ? f(x) : ...`) is not a parameter list.
+            callee = self.tok(self.before_generics(open_k))
+            if callee in (")", "]", "?.", "!") or (re.match(r"[A-Za-z_$]", callee) and callee not in ARROW_LEADERS):
+                return False  # a callee before `(`: call arguments, whatever follows the `:`
+            depth = 0
             for k in range(close + 2, min(close + 60, len(self.toks))):
                 t = self.tok(k)
-                if t == "=>":
+                if t == "=>" and depth == 0:
                     return True
-                if t in (";", ")", ","):
+                if depth == 0 and (t in ("=", ";") or t in STATEMENT_KEYWORDS):
+                    return False
+                if t == "(" and depth == 0:
+                    return False  # `a ? (...) : (...) =>`: an arrow after the `:` is the other branch
+                if t in ("<", "(", "[", "{"):
+                    depth += 1
+                elif t in (">", ")", "]", "}"):
+                    if depth == 0:
+                        return False
+                    depth -= 1
+                elif t == "," and depth == 0:
                     return False
             return False
         # A method or function body: `name(...) {` with no `.` before the name.
@@ -524,11 +541,22 @@ def hook_params(src, open_k, close):
     p_open = next((j for j in range(open_k + 1, close) if src.tok(j) == "(" and src.is_params(j)), None)
     if p_open is None:
         return None
-    names = [src.tok(j) for j in range(p_open + 1, src.match[p_open])
-             if src.encl[j] == p_open and src.tok(j - 1) in ("(", ",")]
-    if len(names) < 3 or not re.match(r"[A-Za-z_]", names[2]):
+    names, angle, default = [], 0, False  # `<` in a default value is a comparison, not a type's
+    for j in range(p_open + 1, src.match[p_open]):
+        if src.encl[j] != p_open:
+            continue
+        t = src.tok(j)
+        if angle == 0 and t == ",":
+            default = False
+        elif angle == 0 and t == "=":
+            default = True
+        elif not default:
+            angle += (t == "<") - (t == ">")
+        if angle == 0 and src.tok(j - 1) in ("(", ","):
+            names.append(t)
+    if len(names) < 3 or not re.match(r"[A-Za-z_$]", names[2]):
         return None
-    return (names[1] if re.match(r"[A-Za-z_]", names[1]) else None), names[2], src.match[p_open] + 1
+    return (names[1] if re.match(r"[A-Za-z_$]", names[1]) else None), names[2], src.match[p_open] + 1
 
 
 def adjacent(src, j):
@@ -564,8 +592,13 @@ def mutated(src, name, lo, hi):
 
 
 def permission_hooks(src):
-    """Each hook on a permission event, with how it passes the event on:
-    [{event, line, changed: [lines of next(...) calls that pass something else], shared: [names]}].
+    return event_hooks(src, PERMISSION_EVENTS.__contains__)
+
+
+def event_hooks(src, wanted):
+    """Each hook on an event that wanted(event) accepts, with how it passes the event on:
+    [{event, line, changed: [lines of next(...) calls that pass something else], shared: [names],
+    opaque: no inline `($, event, next)` function to read}].
     A `.catch(...)` handler chained on the registration counts as part of the same hook."""
     on_name = src.register_param()
     if not on_name:
@@ -573,15 +606,16 @@ def permission_hooks(src):
     hooks = []
     for k, event, _opts, open_k in src.registrations(on_name):
         close = src.match.get(open_k)
-        if event not in PERMISSION_EVENTS or close is None:
+        if not wanted(event) or close is None:
             continue
         spans = [(open_k, close)]
         if src.tok(close + 1) == "." and src.tok(close + 2) == "catch" and src.tok(close + 3) == "(":
             spans.append((close + 3, src.match.get(close + 3, close + 3)))
-        changed, shared = [], set()
+        changed, shared, opaque = [], set(), False
         for lo, hi in spans:
             names = hook_params(src, lo, hi)
             if names is None:
+                opaque |= lo == open_k  # no inline ($, event, next) function: how it passes on can't be read
                 continue
             ev, nx, body = names
             is_mutated = ev is not None and mutated(src, ev, body, hi)
@@ -602,7 +636,7 @@ def permission_hooks(src):
                 if any(t == name and not (open_k <= j <= spans[-1][1]) and not src.is_member(j) and not src.is_key(j)
                        for j, (t, _) in enumerate(src.toks)):
                     shared.add(name)
-        hooks.append({"event": event, "line": src.line(src.toks[k][1]), "changed": changed, "shared": sorted(shared)})
+        hooks.append({"event": event, "line": src.line(src.toks[k][1]), "changed": changed, "shared": sorted(shared), "opaque": opaque})
     return hooks
 
 
@@ -615,6 +649,9 @@ def check_r7(src, rel, out):
             for line in h["changed"]:
                 out.append(Finding(rule, "warn", rel, line,
                                    f"{h['event']} hook passes on something other than its own event; the directory holds a hook that can change what is permitted"))
+        elif h["opaque"]:
+            out.append(Finding(rule, "warn", rel, h["line"],
+                               f"{h['event']} hook is not an inline ($, event, next) function; write it inline so the directory can see the event pass on unchanged"))
         elif h["shared"]:
             names = ", ".join(f"`{n}`" for n in h["shared"])
             out.append(Finding(rule, "warn", rel, h["line"],
@@ -1257,6 +1294,48 @@ def expected_holds(sources, entries, readme, readme_rel, out):
         out.append(Finding(code, "note", rel, line, f"expected Policy hold ({what}); answer it in the README section \"{DISCLOSURE_HEADING}\""))
 
 
+# Events that are also the name of a call on `$` (EngineEventOf keys that are methods of
+# CoreEngineInterface in the claude-code types): a hook on one sees the call when other code makes it.
+CALL_EVENTS = {"tool.call", "tool.check", "agent.spawn", "prompt.submit", "prompt.fill", "prompt.suggest",
+               "prompt.compose", "command.run", "config.set", "telemetry.log", "telemetry.mark",
+               "session.compact", "session.send", "session.append", "ui.scroll", "ui.focus", "ui.resolve"}
+# The calls the portal named "a call the directory doesn't recognize" (inferred: it raised the note
+# at the first $.ui.notify on ctx-guard 0.2.0, 0.3.1, 0.5.0 and 0.6.0).
+UNRECOGNIZED_CALLS = {"$.ui.notify"}
+
+
+def first_hook(sources, pred):
+    """(file, line) of the first hook that pred(event, hook) accepts, taking files in name order, or None."""
+    for rel in sorted(sources):
+        for h in event_hooks(sources[rel], lambda event: True):
+            if pred(h["event"], h):
+                return rel, h["line"]
+    return None
+
+
+def expected_notes(sources, entries, out):
+    """The notes the portal raises on a mod, each at the first call or hook that raises it."""
+    sources = reachable(sources, entries)
+    notes = [
+        ("MOD_UNRECOGNIZED_CALL", first_call(sources, UNRECOGNIZED_CALLS),
+         "Mod makes a call the directory doesn’t recognize. If the call comes from another plugin, name that plugin in this plugin's README."),
+        ("MOD_WRITES_FILES", first_call(sources, {"$.fs.write"}),
+         "Mod writes files. Say in the plugin's README what the mod writes."),
+        ("MOD_ADDS_TOOLS", first_call(sources, {"$.command.register", "$.tool.register", "$.agent.register"}),
+         "Mod adds tools, commands, or agents. Nothing to change: the directory records that the mod adds tools, commands or agents."),
+        # A hook that passes R6/R7's tests (an inline function passing its own event on unchanged, under
+        # unique names) is left out:
+        # the portal skipped such an agent.spawn hook on ctx-guard 0.2.0 and named the command.run after it.
+        ("MOD_HOOKS_CALL_EVENT", first_hook(sources, lambda e, h: e in CALL_EVENTS and (h["changed"] or h["shared"] or h["opaque"])),
+         "Mod hooks an event that is also the name of a call, so it may see or change that call when other code makes it. Say in the plugin's README what the hook does."),
+        ("MOD_HOOKS_PASS_THROUGH_EVENT", first_hook(sources, lambda e, h: e.startswith("classic.")),
+         "Mod hooks an event that settings, instructions, other hooks, or tool descriptions pass through. Say in the plugin's README what the hook changes."),
+    ]
+    for code, at, text in notes:
+        if at:
+            out.append(Finding(code, "note", at[0], at[1], text))
+
+
 def run_plugin(plugin_dir):
     plugin_dir = Path(plugin_dir).resolve()
     out = []
@@ -1275,6 +1354,7 @@ def run_plugin(plugin_dir):
     if mod_entries:
         readme = plugin_dir / "README.md"
         expected_holds(sources, mod_entries, readme.read_text() if readme.exists() else None, os.path.relpath(readme), out)
+        expected_notes(sources, mod_entries, out)
     return out, manifest, root, sub, mod_entries
 
 
