@@ -128,7 +128,7 @@ the mod rules (`h` and `Fragment` in `.tsx`, how `$` and `on` are passed, `ui.re
 
 ```bash
 python3 tools/check_directory_rules.py plugin plugins/<plugin>    # official rules + mod rules
-python3 tools/check_directory_rules.py release plugins/<plugin>   # plus version bump and README vs the last tag
+python3 tools/check_directory_rules.py release plugins/<plugin>   # plus version bump, README and permission hooks vs the last tag
 ```
 
 Keep every file in a plugin folder, images aside, under 256 KiB: a bigger one holds the version

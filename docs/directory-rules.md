@@ -7,7 +7,7 @@ The rules a plugin in this repo has to meet before it goes to the claude.ai plug
 ```bash
 python3 tools/check_directory_rules.py files <path>...          # R1-R7 on these files (editor hook)
 python3 tools/check_directory_rules.py plugin plugins/<name>     # official rules + R1-R7
-python3 tools/check_directory_rules.py release plugins/<name>    # plugin + P1-P2 since the last <name>-v* tag
+python3 tools/check_directory_rules.py release plugins/<name>    # plugin + P1-P3 since the last <name>-v* tag
 python3 tools/smoke_test_directory_rules.py                      # the checker's own tests
 ```
 
@@ -262,8 +262,8 @@ The events that are also calls are the `EngineEventOf` keys that are methods of
 
 Limits: a call is found by its tokens, so `$.ui.notify(` written as JSX text counts as a call.
 Hooks are found only as `on(...)` under the name `register` gives its first parameter; a hook
-registered through a helper that receives `on` (`wire(on)`) is missed here, as it is by R6, R7
-and P2.
+registered through a helper that receives `on` (`wire(on)`) is missed here, as it is by R6, R7,
+P2 and P3.
 
 ## Release rules
 
@@ -279,3 +279,8 @@ changes a plugin is a release to it.
 | --- | --- | --- |
 | P1 | A change to the plugin folder since the tag raises `version` in `plugin.json` above the tag's. | block |
 | P2 | When the set of `$.noun.method` calls or `on(...)` hooks differs from the tag's, `README.md` changes in the same range (section "What it runs, reads, writes and sends" and the hook table), and each new hook's event appears in the README. The finding lists the calls and hooks added (`+`) and removed (`-`). | block |
+| P3 | A hook on an R6/R7 event with an R6 or R7 finding now changes its event's row in the README hook table in the same range when, at the tag, it passed its event on unchanged (no R6 or R7 finding on it) or it had no counterpart there. A deleted row is not a change. Hooks on one event are paired with the tag's in passes, each giving every unpaired hook (files by path, hooks in source order) the first unpaired tag hook that matches: same options and identical hook text; same options, parameter names and shape; same options and parameter names; same options and shape; same options, which pairs by order; then across options by parameter names and shape, parameter names, and shape. Options compare by their tokens with string literals by value, so quotes and spacing drop out; a hook's shape is its text with the options dropped and its event and next names blanked; texts compare with whitespace collapsed. In the passes on options, parameter names or shape alone, a hook with a finding now takes a tag hook with none first. The pairing is a guess where these do not tell hooks apart: a regressed hook that keeps the parameter names, or the shape, of a tag hook that already had a finding pairs with it and passes, and a hook with a finding whose parameter names and body both changed can pair with a tag hook that had none and be held. The hook table is a README table outside code fences whose header's first cell is `Hook` (any case, `*` or `_` emphasis, outer pipes optional); the event's row is each of its rows whose first cell names the event in backticks, compared cell by cell with whitespace collapsed. A row whose first cell names several events is each of those events' row, so changing it clears P3 for all of them. The finding is at the hook. | hold |
+
+P3 is this repo's gate on R6 and R7, so it is as **inferred** as they are: the portal holds a
+hook that can change what is permitted (`MOD_CHANGES_PERMISSIONS`), and a hook that starts doing
+so ships only with a README change that says how.

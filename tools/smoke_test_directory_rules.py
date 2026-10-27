@@ -495,6 +495,66 @@ def main():
         rc, f = run(["release", str(plugin), "--since", "demo-v0.1.0"], repo)
         check("P2 flags a new hook missing from the README table", any(x["rule"] == "P2" and "tool.call" in x["message"] for x in f), show(f))
 
+        # ---- P3 release: a permission hook that starts changing what is permitted ----------------
+        reg = "hooks/register.tsx"
+        row = "| `command.run` | Passes the event on unchanged. |\n"
+        clean_a = "on('command.run', async ($, runA, passA) => passA(runA))"
+        clean_b = "on('command.run', async ($, runB, passB) => passB(runB))"
+        def p3_case(label, before, after, readme=None, at=(), says="", readme_before=None):
+            repo, plugin = make_plugin(tmp, f"p3_{len(results)}", {**hooked(*before), "README.md": readme_before or README + row})
+            (plugin / reg).write_text(hooked(*after)[reg])
+            if readme:
+                (plugin / "README.md").write_text(readme)
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", "feat: hooks")
+            rc, f = run(["release", str(plugin)], repo)
+            got = [x["line"] for x in f if x["rule"] == "P3" and x["level"] == "hold"]
+            check(f"P3 {label}", got == list(at) and all(says in x["message"] for x in f if x["rule"] == "P3"), show(f))
+        regressed_a = clean_a.replace("passA(runA)", "passA({ ...runA })")
+        regressed_b = clean_b.replace("passB(runB)", "passB({ ...runB })")
+        rewrites = README + "| `command.run` | Runs `/demo` and rewrites its arguments. |\n"
+        opts = lambda hook, o: hook.replace("async", o + ", async")
+        unchanged = "passed its event on unchanged"
+        p3_case("holds a hook that changes its event since the tag", [clean_a], [regressed_a], at=[13])
+        p3_case("holds when only other README lines changed", [clean_a], [regressed_a],
+                readme=README + row + "\nMore words.\n", at=[13])
+        p3_case("clean: the README row for the event changed", [clean_a], [regressed_a], readme=rewrites)
+        p3_case("holds when the README row for the event was deleted", [clean_a], [regressed_a], readme=README, at=[13])
+        p3_case("clean: the hook had a finding at the tag", [regressed_a],
+                [clean_a.replace("passA(runA)", "passA({ ...runA, x: 1 })")])
+        p3_case("holds a new hook on an event whose row did not change", [], [regressed_a], at=[13], says="new `command.run` hook")
+        p3_case("clean: a new hook on an event whose row changed", [], [regressed_a], readme=rewrites)
+        p3_case("holds a hook whose options changed", [opts(clean_a, "{ command: 'a' }")],
+                [opts(regressed_a, "{ command: 'b' }")], readme=README + row + "\nMore words.\n", at=[13], says=unchanged)
+        p3_case("clean: a hook whose options and row changed", [opts(clean_a, "{ command: 'a' }")],
+                [opts(regressed_a, "{ command: 'b' }")], readme=rewrites)
+        p3_case("holds a hook whose options changed only in quotes", [opts(clean_a, "{ command: 'a' }")],
+                [opts(regressed_a, '{ command: "a" }')], readme=README + row + "\nMore words.\n", at=[13], says=unchanged)
+        p3_case("holds a regressed hook behind a new clean one", [clean_a], [clean_b, regressed_a], at=[14], says=unchanged)
+        p3_case("holds a new flagged hook beside an unchanged one", [clean_a], [regressed_b, clean_a],
+                at=[13], says="new `command.run` hook")
+        p3_case("holds a regressed hook whose flagged neighbour went", [regressed_b, clean_a], [regressed_a], at=[13], says=unchanged)
+        p3_case("clean: hooks reordered and renamed", [regressed_b, clean_a],
+                [clean_a.replace("runA", "ra").replace("passA", "pa"), regressed_b.replace("runB", "rb").replace("passB", "pb")])
+        p3_case("holds when the row changed only in whitespace", [clean_a], [regressed_a],
+                readme=README + "|  `command.run`  |  Passes the event   on unchanged.  |\n", at=[13])
+        p3_case("holds when the event changed only in another table", [clean_a], [regressed_a],
+                readme=README + row + "\n| Event | Note |\n| --- | --- |\n| `command.run` | Rewrites its arguments. |\n", at=[13])
+        p3_case("holds when the event changed only in a code fence", [clean_a], [regressed_a],
+                readme=README + row + "\n```\n| `command.run` | Rewrites its arguments. |\n```\n", at=[13])
+        for label, header in (("lower-case", "| hook |"), ("bold", "| **Hook** |")):
+            p3_case(f"clean: the row changed in a table with a {label} header", [clean_a], [regressed_a],
+                    readme_before=README.replace("| Hook |", header) + row, readme=rewrites.replace("| Hook |", header))
+        nopipe = README.replace("| Hook | What it does |\n| --- | --- |\n| `session.start` | Passes the event on unchanged. |\n",
+                                "Hook | What it does\n--- | ---\n`session.start` | Passes.\n`command.run` | {}\n")
+        p3_case("clean: the row changed in a table without outer pipes", [clean_a], [regressed_a],
+                readme_before=nopipe.format("Passes."), readme=nopipe.format("Rewrites its arguments."))
+        c1 = "on('command.run', async ($, r1, p1) => { log(); return p1(r1) })"
+        h2 = "on('command.run', async ($, r2, p2) => p2({ ...r2, y: 2 }))"
+        p3_case("matches hooks on one event by order", [regressed_a, clean_b], [c1, h2], at=[14], says=unchanged)
+        p3_case("holds a renamed regressed hook whose flagged neighbour went", [regressed_b, clean_a],
+                ["on('command.run', async ($, ra, pa) => pa({ ...ra, a: 2 }))"], at=[13], says=unchanged)
+
     failed = [name for name, ok, _ in results if not ok]
     print()
     print(f"{len(results) - len(failed)}/{len(results)} checks passed.")

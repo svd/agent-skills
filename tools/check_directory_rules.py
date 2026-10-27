@@ -6,7 +6,7 @@ Pure stdlib; reads TypeScript and JavaScript with its own small lexer, not tsc.
 Usage:
   python3 tools/check_directory_rules.py files <path>...            # R1-R7 on these files
   python3 tools/check_directory_rules.py plugin <plugin-dir>        # official rules + R1-R7
-  python3 tools/check_directory_rules.py release <plugin-dir> [--since <tag>]   # plugin + P1-P2
+  python3 tools/check_directory_rules.py release <plugin-dir> [--since <tag>]   # plugin + P1-P3
 
 Options: --json, --fail-on block|hold|warn (default block).
 Prints one finding per line, `file:line LEVEL RULE message`, and exits 1 when a finding is at
@@ -597,26 +597,28 @@ def permission_hooks(src):
 
 def event_hooks(src, wanted):
     """Each hook on an event that wanted(event) accepts, with how it passes the event on:
-    [{event, line, changed: [lines of next(...) calls that pass something else], shared: [names],
-    opaque: no inline `($, event, next)` function to read}].
+    [{event, opts, text, line, changed: [lines of next(...) calls that pass something else], shared: [names],
+    opaque: no inline `($, event, next)` function to read, params: [its event and next names]}].
     A `.catch(...)` handler chained on the registration counts as part of the same hook."""
     on_name = src.register_param()
     if not on_name:
         return []
     hooks = []
-    for k, event, _opts, open_k in src.registrations(on_name):
+    for k, event, opts, open_k in src.registrations(on_name):
         close = src.match.get(open_k)
         if not wanted(event) or close is None:
             continue
         spans = [(open_k, close)]
         if src.tok(close + 1) == "." and src.tok(close + 2) == "catch" and src.tok(close + 3) == "(":
             spans.append((close + 3, src.match.get(close + 3, close + 3)))
-        changed, shared, opaque = [], set(), False
+        changed, shared, opaque, params = [], set(), False, []
         for lo, hi in spans:
             names = hook_params(src, lo, hi)
             if names is None:
                 opaque |= lo == open_k  # no inline ($, event, next) function: how it passes on can't be read
                 continue
+            if lo == open_k:
+                params = [n for n in names[:2] if n]
             ev, nx, body = names
             is_mutated = ev is not None and mutated(src, ev, body, hi)
             for j in range(body, hi):
@@ -636,7 +638,8 @@ def event_hooks(src, wanted):
                 if any(t == name and not (open_k <= j <= spans[-1][1]) and not src.is_member(j) and not src.is_key(j)
                        for j, (t, _) in enumerate(src.toks)):
                     shared.add(name)
-        hooks.append({"event": event, "line": src.line(src.toks[k][1]), "changed": changed, "shared": sorted(shared), "opaque": opaque})
+        text = re.sub(r"\s+", " ", src.text[src.toks[k][1]:src.toks[spans[-1][1]][1] + 1])
+        hooks.append({"event": event, "opts": opts, "text": text, "line": src.line(src.toks[k][1]), "changed": changed, "shared": sorted(shared), "opaque": opaque, "params": params})
     return hooks
 
 
@@ -1366,7 +1369,7 @@ def run_plugin(plugin_dir):
     return out, manifest, root, sub, mod_entries
 
 
-# ---- P1-P2 ---------------------------------------------------------------------------------
+# ---- P1-P3 ---------------------------------------------------------------------------------
 
 def version_tuple(v):
     return tuple(int(x) for x in re.findall(r"\d+", str(v).split("-")[0])[:3])
@@ -1384,6 +1387,82 @@ def surface(texts):
         if on_name:
             hooks |= {f"{e} {o}".strip() for _, e, o, _ in src.registrations(on_name)}
     return calls, hooks
+
+
+def hook_rows(readme):
+    """{event: [rows]}: the rows of the README hook table (a table outside code fences whose header's
+    first cell is `Hook`, in any case and emphasis) whose first cell names the event in backticks, each
+    row as its cells with whitespace collapsed. Outer pipes are optional, as in GitHub tables."""
+    rows, in_table = {}, False
+    for line in strip_fences(readme or "").splitlines():
+        line = line.strip()
+        if "|" not in line:
+            in_table = False
+            continue
+        cells = [" ".join(c.split()) for c in line.strip("|").split("|")]
+        if not in_table:
+            in_table = cells[0].strip("*_ ").lower() == "hook"  # the header row; a table's later rows follow it
+            continue
+        for event in re.findall(r"`([^`]+)`", cells[0]):
+            rows.setdefault(event, []).append(cells)
+    return rows
+
+
+def opts_key(opts):
+    """Options text as its tokens, string literals by value, so quotes and spacing drop out."""
+    src, out, end = Source("", opts), [], -1
+    for k, (t, pos) in enumerate(src.toks):
+        if pos <= end:
+            continue  # inside a string literal, or its closing quote
+        raw = src.string_at(k)
+        if raw is not None:
+            out.append(json.dumps(src.value_at(k)))
+            end = pos + len(raw) + 1
+        else:
+            out.append(t)
+    return " ".join(out)
+
+
+def flagged_hooks(texts):
+    """{event: [{rel, line, text, flagged, opts, params, shape}]} of permission hooks in file and source
+    order; flagged when R6/R7 has a finding on the hook. opts is opts_key of the options; shape is the
+    hook text with its options dropped and its parameter names blanked."""
+    out = {}
+    for rel in sorted(texts):
+        if not is_source(rel) or is_test(rel):
+            continue
+        for h in permission_hooks(Source(rel, texts[rel])):
+            shape = h["text"].replace(h["opts"], "", 1) if h["opts"] else h["text"]
+            for i, name in enumerate(h["params"]):
+                shape = re.sub(rf"(?<![\w$.]){re.escape(name)}(?![\w$])", f"#{i}", shape)
+            out.setdefault(h["event"], []).append({
+                "rel": rel, "line": h["line"], "text": h["text"], "flagged": bool(h["changed"] or h["opaque"] or h["shared"]),
+                "opts": opts_key(h["opts"]), "params": h["params"], "shape": shape})
+    return out
+
+
+# Passes that pair a hook with the tag's on the same event, by the fields that must match. Each pass
+# gives every unpaired hook, in order, the first unpaired tag hook that matches; the pass on options
+# alone pairs by order. In the passes on one field, a flagged hook takes a tag hook with no finding
+# first, so a weak match can't pass a regression off as a hook that was already flagged.
+PAIR_PASSES = (("opts", "text"), ("opts", "params", "shape"), ("opts", "params"), ("opts", "shape"), ("opts",),
+               ("params", "shape"), ("params",), ("shape",))
+
+
+def pair_hooks(old, new):
+    """[(new hook, old hook or None)] for the hooks on one event."""
+    left, pairs = list(old), {}
+    for fields in PAIR_PASSES:
+        for i, h in enumerate(new):
+            if i in pairs or ("params" in fields and not h["params"]):
+                continue
+            match = [o for o in left if all(o[f] == h[f] for f in fields)]
+            if h["flagged"] and len(fields) == 1:
+                match.sort(key=lambda o: o["flagged"])
+            if match:
+                left.remove(match[0])
+                pairs[i] = match[0]
+    return [(h, pairs.get(i)) for i, h in enumerate(new)]
 
 
 def run_release(plugin_dir, since):
@@ -1438,6 +1517,24 @@ def run_release(plugin_dir, since):
         event = h.split()[0]
         if f"`{event}`" not in readme:
             out.append(Finding("P2", "block", readme_path, 1, f"new hook `{event}` is not in the README hook table"))
+
+    # P3: a permission hook with an R6/R7 finding now that had none at the tag, or no counterpart there,
+    # while its event's row in the README hook table is the same or gone
+    old_rows = hook_rows(git(["show", f"{tag}:{readme_rel}"], root))
+    new_rows = hook_rows(readme)
+    old_flags = flagged_hooks(old_texts)
+    for event, now in flagged_hooks(new_texts).items():
+        if new_rows.get(event) and new_rows.get(event) != old_rows.get(event):
+            continue
+        rule = "R6" if event == "agent.spawn" else "R7"
+        clear = f"describe the change in the `{event}` row of the README hook table, or pass the event on unchanged"
+        for h, was in pair_hooks(old_flags.get(event, []), now):
+            if not h["flagged"] or (was and was["flagged"]):
+                continue
+            what = (f"`{event}` hook passed its event on unchanged at {tag} and now has an {rule} finding" if was else
+                    f"new `{event}` hook with no counterpart at {tag} has an {rule} finding")
+            out.append(Finding("P3", "hold", os.path.relpath(root / h["rel"]), h["line"],
+                               f"{what}, so the directory holds it as a change to what is permitted; {clear}"))
     return out
 
 
@@ -1475,7 +1572,7 @@ def main(argv=None):
     f.add_argument("paths", nargs="+")
     p = sub.add_parser("plugin", help="official rules and R1-R7 on a plugin folder")
     p.add_argument("plugin_dir")
-    r = sub.add_parser("release", help="plugin, plus P1-P2 against the last <plugin>-v* tag")
+    r = sub.add_parser("release", help="plugin, plus P1-P3 against the last <plugin>-v* tag")
     r.add_argument("plugin_dir")
     r.add_argument("--since", help="tag to compare with (default: the last <plugin>-v* tag)")
     for s in (f, p, r):
