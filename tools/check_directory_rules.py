@@ -4,8 +4,8 @@ Check a plugin against the claude.ai plugin directory rules in docs/directory-ru
 Pure stdlib; reads TypeScript and JavaScript with its own small lexer, not tsc.
 
 Usage:
-  python3 tools/check_directory_rules.py files <path>...            # R1-R6 on these files
-  python3 tools/check_directory_rules.py plugin <plugin-dir>        # official rules + R1-R6
+  python3 tools/check_directory_rules.py files <path>...            # R1-R7 on these files
+  python3 tools/check_directory_rules.py plugin <plugin-dir>        # official rules + R1-R7
   python3 tools/check_directory_rules.py release <plugin-dir> [--since <tag>]   # plugin + P1-P2
 
 Options: --json, --fail-on block|hold|warn (default block).
@@ -367,7 +367,7 @@ def is_source(path):
     return Path(path).suffix in SOURCE_EXT and not str(path).endswith(".d.ts")
 
 
-# ---- R1-R6 -------------------------------------------------------------------------------
+# ---- R1-R7 -------------------------------------------------------------------------------
 
 def check_r1(src, rel, out):
     """h and Fragment: never declared or used as a value in .tsx/.jsx; h may only be called."""
@@ -501,36 +501,133 @@ def check_r5(text, rel, out):
                            "pipe-to-shell (curl/wget ... | sh); link the installer page instead"))
 
 
-R6_EVENTS = {"agent.spawn"}
+# Events whose hook can change what is permitted: the portal holds a hook on one of them unless it
+# can see the hook pass the event on unchanged (inferred from its findings on ctx-guard).
+PERMISSION_EVENTS = {"config.set", "agent.register", "agent.spawn", "command.run", "fs.write",
+                     "tool.check", "classic.PreToolUse", "classic.PermissionRequest"}
+OP_CHARS = set("+-*/%&|^?")
 
 
-def check_r6(src, rel, out):
-    """An agent.spawn hook names its parameters with names used nowhere else in the file."""
+def hook_params(src, open_k, close):
+    """(event, next, first body token) of the first function in the call at open_k, or None. The
+    event is None when its parameter is destructured, so the hook cannot pass the event itself on."""
+    p_open = next((j for j in range(open_k + 1, close) if src.tok(j) == "(" and src.is_params(j)), None)
+    if p_open is None:
+        return None
+    names = [src.tok(j) for j in range(p_open + 1, src.match[p_open])
+             if src.encl[j] == p_open and src.tok(j - 1) in ("(", ",")]
+    if len(names) < 3 or not re.match(r"[A-Za-z_]", names[2]):
+        return None
+    return (names[1] if re.match(r"[A-Za-z_]", names[1]) else None), names[2], src.match[p_open] + 1
+
+
+def adjacent(src, j):
+    return src.toks[j + 1][1] == src.toks[j][1] + 1 if j + 1 < len(src.toks) else False
+
+
+def assigns(src, m):
+    """Whether an assignment or update operator starts at token m (the lexer splits `+=`, `===`)."""
+    t = src.tok(m)
+    if t in ("+", "-") and src.tok(m + 1) == t and adjacent(src, m):
+        return True
+    n = m
+    while src.tok(n) in OP_CHARS and n < m + 3 and adjacent(src, n):
+        n += 1
+    return src.tok(n) == "=" and src.tok(n + 1) != "=" and (n == m or adjacent(src, n - 1))
+
+
+def mutated(src, name, lo, hi):
+    """Whether `name`, or a member of it, is assigned, updated or deleted between tokens lo and hi."""
+    for j in range(lo, hi):
+        if src.tok(j) != name or src.is_member(j) or src.is_key(j):
+            continue
+        if src.tok(j - 1) == "delete" or (src.tok(j - 1) in ("+", "-") and src.tok(j - 2) == src.tok(j - 1) and adjacent(src, j - 2)):
+            return True
+        if src.tok(j - 1) == "(" and src.tok(j - 2) == "assign" and src.tok(j - 4) == "Object":
+            return True
+        m = j + 1
+        while src.tok(m) in (".", "?.") or src.tok(m) == "[":
+            m = src.match.get(m, m) + 1 if src.tok(m) == "[" else m + 2
+        if assigns(src, m):
+            return True
+    return False
+
+
+def permission_hooks(src):
+    """Each hook on a permission event, with how it passes the event on:
+    [{event, line, changed: [lines of next(...) calls that pass something else], shared: [names]}].
+    A `.catch(...)` handler chained on the registration counts as part of the same hook."""
     on_name = src.register_param()
     if not on_name:
-        return
+        return []
+    hooks = []
     for k, event, _opts, open_k in src.registrations(on_name):
-        if event not in R6_EVENTS:
-            continue
         close = src.match.get(open_k)
-        params_open = next((j for j in range(open_k + 1, close or open_k) if src.tok(j) == "(" and src.is_params(j)), None)
-        if params_open is None or close is None:
+        if event not in PERMISSION_EVENTS or close is None:
             continue
-        p_close = src.match[params_open]
-        params = [src.tok(j) for j in range(params_open + 1, p_close)
-                  if re.match(r"[A-Za-z_]", src.tok(j)) and src.tok(j - 1) in ("(", ",")]
-        for name in params:
-            if name == "$":
+        spans = [(open_k, close)]
+        if src.tok(close + 1) == "." and src.tok(close + 2) == "catch" and src.tok(close + 3) == "(":
+            spans.append((close + 3, src.match.get(close + 3, close + 3)))
+        changed, shared = [], set()
+        for lo, hi in spans:
+            names = hook_params(src, lo, hi)
+            if names is None:
                 continue
-            outside = [j for j, (t, _) in enumerate(src.toks)
-                       if t == name and not (open_k <= j <= close) and not src.is_member(j) and not src.is_key(j)]
-            if outside:
-                out.append(Finding("R6", "warn", rel, src.line(src.toks[k][1]),
-                                   f"{event} hook parameter `{name}` is also used at line {src.line(src.toks[outside[0]][1])}; name it uniquely in this file"))
+            ev, nx, body = names
+            is_mutated = ev is not None and mutated(src, ev, body, hi)
+            for j in range(body, hi):
+                if src.tok(j) != nx or src.is_member(j) or src.is_key(j) or src.tok(j + 1) == "=>":
+                    continue
+                call = j + 2 if src.tok(j + 1) == "?." and src.tok(j + 2) == "(" else j + 1
+                if src.tok(j + 1) in (".", "?.") and src.tok(j + 2) not in ("(", "call", "apply", "bind"):
+                    continue  # a property of next, such as next.called
+                if src.tok(call) != "(":
+                    if not (src.bracket(j) == "(" and src.is_params(src.encl[j])):
+                        changed.append(src.line(src.toks[j][1]))  # next handed on as a value
+                    continue
+                bare = ev is not None and src.match.get(call) == call + 2 and src.tok(call + 1) == ev
+                if not bare or is_mutated:
+                    changed.append(src.line(src.toks[j][1]))
+            for name in filter(None, names[:2]):
+                if any(t == name and not (open_k <= j <= spans[-1][1]) and not src.is_member(j) and not src.is_key(j)
+                       for j, (t, _) in enumerate(src.toks)):
+                    shared.add(name)
+        hooks.append({"event": event, "line": src.line(src.toks[k][1]), "changed": changed, "shared": sorted(shared)})
+    return hooks
+
+
+def check_r7(src, rel, out):
+    """A hook on a permission event passes the event on unchanged, under names used nowhere else in
+    the file, so the directory can see it does; an agent may not set its own permission mode."""
+    for h in permission_hooks(src):
+        rule = "R6" if h["event"] == "agent.spawn" else "R7"
+        if h["changed"]:
+            for line in h["changed"]:
+                out.append(Finding(rule, "warn", rel, line,
+                                   f"{h['event']} hook passes on something other than its own event; the directory holds a hook that can change what is permitted"))
+        elif h["shared"]:
+            names = ", ".join(f"`{n}`" for n in h["shared"])
+            out.append(Finding(rule, "warn", rel, h["line"],
+                               f"{h['event']} hook parameter {names} is also used elsewhere in the file; name it uniquely so the directory can see the event pass on unchanged"))
+    for k, (t, pos) in enumerate(src.toks):
+        quoted = src.string_at(k) == "permissionMode" and src.tok(k + 2) == ":" and src.bracket(k) == "{" and src.tok(k - 1) in ("{", ",")
+        if t != "permissionMode" and not quoted:
+            continue
+        shorthand = not quoted and src.bracket(k) == "{" and src.tok(k - 1) in ("{", ",") and src.tok(k + 1) in (",", "}")
+        if not (quoted or src.is_key(k) or shorthand):
+            continue
+        call = src.encl[src.encl[k]] if src.encl[k] >= 0 else -1
+        if src.tok(call) != "(" or src.tok(call - 1) not in ("register", "spawn") or src.tok(call - 3) != "agent" or src.tok(call - 5) != "$":
+            continue
+        v = k + 3 if quoted or src.tok(k + 1) != ":" else k + 2
+        if not shorthand and src.string_at(v) == "default" and src.tok(v + 2) in (",", "}", "as", "satisfies"):
+            continue
+        out.append(Finding("R7", "warn", rel, src.line(pos),
+                           f"$.agent.{src.tok(call - 1)} sets permissionMode; an agent with a mode other than 'default' changes what is permitted"))
 
 
 def check_sources(paths_rel, read, entries=frozenset()):
-    """R1-R6 on the given files. paths_rel: [(path, rel)]; read: path -> text."""
+    """R1-R7 on the given files. paths_rel: [(path, rel)]; read: path -> text."""
     out, sources = [], {}
     for path, rel in paths_rel:
         text = read(path)
@@ -549,7 +646,7 @@ def check_sources(paths_rel, read, entries=frozenset()):
         if Path(path).suffix in JSX_EXT:
             check_r1(src, rel, out)
         check_r2(src, rel, out)
-        check_r6(src, rel, out)
+        check_r7(src, rel, out)
     check_r3(sources, entries, out)
     return out, sources
 
@@ -1156,9 +1253,9 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true", help="print findings as JSON")
     ap.add_argument("--fail-on", choices=["block", "hold", "warn"], default="block")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    f = sub.add_parser("files", help="R1-R6 on the given files")
+    f = sub.add_parser("files", help="R1-R7 on the given files")
     f.add_argument("paths", nargs="+")
-    p = sub.add_parser("plugin", help="official rules and R1-R6 on a plugin folder")
+    p = sub.add_parser("plugin", help="official rules and R1-R7 on a plugin folder")
     p.add_argument("plugin_dir")
     r = sub.add_parser("release", help="plugin, plus P1-P2 against the last <plugin>-v* tag")
     r.add_argument("plugin_dir")

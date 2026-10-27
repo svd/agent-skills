@@ -5,8 +5,8 @@ The rules a plugin in this repo has to meet before it goes to the claude.ai plug
 [`tools/check_directory_rules.py`](../tools/check_directory_rules.py).
 
 ```bash
-python3 tools/check_directory_rules.py files <path>...          # R1-R6 on these files (editor hook)
-python3 tools/check_directory_rules.py plugin plugins/<name>     # official rules + R1-R6
+python3 tools/check_directory_rules.py files <path>...          # R1-R7 on these files (editor hook)
+python3 tools/check_directory_rules.py plugin plugins/<name>     # official rules + R1-R7
 python3 tools/check_directory_rules.py release plugins/<name>    # plugin + P1-P2 since the last <name>-v* tag
 python3 tools/smoke_test_directory_rules.py                      # the checker's own tests
 ```
@@ -174,7 +174,7 @@ when it is over 4 KiB with lines averaging over 200 characters (inferred).
 
 ## Mod rules (portal findings)
 
-For mods: plugins whose `hooks/hooks.json` has `modules`. The checker applies R1, R2 and R6 to
+For mods: plugins whose `hooks/hooks.json` has `modules`. The checker applies R1, R2, R6 and R7 to
 the plugin's `.ts`/`.tsx`/`.js`/`.jsx` sources; it skips test files (`*.test.*`, `*.spec.*`),
 which no module imports (inferred: the portal has not flagged ours). Before searching, it blanks
 comments, string and regex literals, and template-literal text (the code inside `${…}` stays).
@@ -187,10 +187,24 @@ comments, string and regex literals, and template-literal text (the code inside 
 | R3 | `ui.render` is registered in the entry module named in `hooks/hooks.json` (`register.tsx`), not in a module it imports. | block | portal-finding on ctx-guard 0.1.0, fixed in 0.2.0 (82c2c23, 2026-10-15) |
 | R4 | No `__proto__` literal in non-test `.ts`/`.tsx`. | block | portal-finding on ctx-guard 0.1.0, fixed in 0.2.0 (61b9589, 2026-10-15). That tests and the JSON schema are exempt is **inferred**: the portal passed them |
 | R5 | No pipe-to-shell (`curl … \| sh`, `wget … \| bash`) anywhere in the plugin folder, docs and test fixtures included. | block | portal-finding on ctx-guard 0.1.0, fixed in 0.2.0 (10dab1f, 2026-10-15) |
-| R6 | A hook that passes its event on unchanged names its parameters with names used nowhere else in the file. | warn | **inferred**, from the `agent.spawn` fix in ctx-guard 0.2.0 (0bb0909, 2026-10-15); the exact rule is unknown |
+| R6 | An `agent.spawn` hook passes its own event to `next` unchanged and names its parameters with names used nowhere else in the file. | warn | **inferred**, from the `agent.spawn` fix in ctx-guard 0.2.0 (0bb0909, 2026-10-15) |
+| R7 | A hook on `config.set`, `agent.register`, `command.run`, `fs.write`, `tool.check`, `classic.PreToolUse` or `classic.PermissionRequest` passes its own event to `next` unchanged (not rebuilt or destructured; no assignment, `++`, `delete` or `Object.assign` on it), does not hand `next` on as a value, and names its event and `next` parameters with names used nowhere else in the file. A `.catch(...)` handler chained on the registration counts as part of the hook. `permissionMode` in `$.agent.register` or `$.agent.spawn` options is the literal `'default'`. | warn | **inferred**, from the portal's permission hold on ctx-guard 0.2.0, 0.3.1, 0.5.0 and 0.6.0 |
 
-R6 is checked for `agent.spawn` only: the other ctx-guard hooks share `e` and `next` and passed
-the portal at 0.4.0.
+Which events count is **inferred** from the types: these are the calls whose hook can change
+what is permitted. The portal names one line per version, the first such hook in the file: the
+changed `next({ ...e, args })` in the `ctx-guard:resume` hook up to 0.5.0, the registration of a
+`command.run` hook that passes `e` on unchanged but shares the names `e` and `next` in 0.6.0. So
+the checker reports a hook that passes something changed at each such `next(...)` call and no
+name finding for it; a hook that only shares names is reported at its registration. Whether the
+portal exempts `return next(e)` with shared names is unknown. R6 is the same check for
+`agent.spawn`, under its own id.
+
+Limits: a nested function inside the hook that reuses the `next` name counts as handing `next`
+on; options built in a variable and passed as `$.agent.register(spec)` are not checked for
+`permissionMode`.
+
+No call or setting changes Remote Control: the types only report it, as `origin.kind: 'bridge'`.
+The checker has nothing to look for there.
 
 ### Expected Policy holds
 

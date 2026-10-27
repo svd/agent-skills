@@ -228,12 +228,51 @@ def main():
         rc, f = files_case(plugin, "docs/ok.md", "Download with `curl -o x.tgz https://example.com/x.tgz`.\n")
         check("R5 clean: curl without a pipe to a shell", "R5" not in rules(f), show(f))
 
-        # ---- R6 agent.spawn parameter names ---------------------------------------------------
-        spawn = "export const register: Register = (on, options) => {\n  on('turn.start', async ($, e, next) => next(e))\n\n  on('agent.spawn', async ($, {e}, {n}) => {n}({e}))\n}\n"
-        rc, f = files_case(plugin, "hooks/r6bad.tsx", spawn.replace("{e}", "e").replace("{n}", "next"))
+        # ---- R6/R7 hooks on permission events -------------------------------------------------
+        def hook_mod(event, body, params="$, e, next"):
+            return ("export const register: Register = (on, options) => {\n  on('turn.start', async ($, e, next) => next(e))\n\n"
+                    f"  on('{event}', async ({params}) => {{\n{body}\n  }})\n}}\n")
+        indirect = "    const r = await {n}({e})\n    return r"
+        rc, f = files_case(plugin, "hooks/r6bad.tsx", hook_mod("agent.spawn", indirect.format(e="e", n="next")))
         check("R6 warns on agent.spawn sharing e/next", "R6" in rules(f, "warn"), show(f))
-        rc, f = files_case(plugin, "hooks/r6ok.tsx", spawn.replace("{e}", "spawnEvent").replace("{n}", "passSpawn"))
+        rc, f = files_case(plugin, "hooks/r6ok.tsx", hook_mod("agent.spawn", indirect.format(e="spawnEvent", n="passSpawn"), "$, spawnEvent, passSpawn"))
         check("R6 clean: unique agent.spawn names", "R6" not in rules(f), show(f))
+        rc, f = files_case(plugin, "hooks/r7changed.tsx", hook_mod("command.run", "    return passRun({ ...runEvent, args: '' })", "$, runEvent, passRun"))
+        check("R7 warns on command.run passing a changed event", "R7" in rules(f, "warn") and any(x["line"] == 5 for x in f), show(f))
+        rc, f = files_case(plugin, "hooks/r7mutated.tsx", hook_mod("fs.write", "    writeEvent.path = 'x'\n    return passWrite(writeEvent)", "$, writeEvent, passWrite"))
+        check("R7 warns on fs.write mutating its event", "R7" in rules(f, "warn"), show(f))
+        for label, body in [("+=", "    runEvent.n += 1"), ("++", "    runEvent.n++"), ("prefix ++", "    ++runEvent.n"),
+                            ("delete", "    delete runEvent.args"), ("Object.assign", "    Object.assign(runEvent, { args: '' })")]:
+            rc, f = files_case(plugin, "hooks/r7update.tsx", hook_mod("command.run", body + "\n    return passRun(runEvent)", "$, runEvent, passRun"))
+            check(f"R7 warns on command.run event changed by {label}", "R7" in rules(f, "warn"), show(f))
+        rc, f = files_case(plugin, "hooks/r7compare.tsx", hook_mod("command.run", "    if (runEvent.n === 1 || runEvent.n == 2 || runEvent.n >= 3) return { text: 'no' }\n    return passRun(runEvent)", "$, runEvent, passRun"))
+        check("R7 clean: comparisons on the event", "R7" not in rules(f), show(f))
+        rc, f = files_case(plugin, "hooks/r7destructured.tsx", hook_mod("command.run", "    return passRun({ args })", "$, { args }, passRun"))
+        check("R7 warns on a destructured event rebuilt for next", "R7" in rules(f, "warn"), show(f))
+        rc, f = files_case(plugin, "hooks/r7value.tsx", hook_mod("command.run", "    return later(passRun, runEvent)", "$, runEvent, passRun"))
+        check("R7 warns on next handed on as a value", "R7" in rules(f, "warn"), show(f))
+        for label, body in [("next?.()", "    return passRun?.({ ...runEvent })"), ("next.call", "    return passRun.call(null, runEvent)")]:
+            rc, f = files_case(plugin, "hooks/r7call.tsx", hook_mod("command.run", body, "$, runEvent, passRun"))
+            check(f"R7 warns on {label}", "R7" in rules(f, "warn"), show(f))
+        rc, f = files_case(plugin, "hooks/r7defaults.tsx", hook_mod("command.run", "    return passRun.called ? passRun(runEvent) : passRun(runEvent)", "$, runEvent = {}, passRun"))
+        check("R7 clean: a parameter default and next.called", "R7" not in rules(f), show(f))
+        rc, f = files_case(plugin, "hooks/r7shared.tsx", hook_mod("tool.check", indirect.format(e="e", n="next")))
+        check("R7 warns on tool.check sharing e/next", "R7" in rules(f, "warn") and any(x["line"] == 4 for x in f), show(f))
+        rc, f = files_case(plugin, "hooks/r7refuse.tsx", hook_mod("command.run", "    if (runEvent.args) return { text: 'no' }\n    return passRun(runEvent)", "$, runEvent, passRun"))
+        check("R7 clean: refusal or unchanged pass, unique names", "R7" not in rules(f), show(f))
+        rc, f = files_case(plugin, "hooks/r7other.tsx", hook_mod("turn.end", "    return next({ ...e })"))
+        check("R7 clean: changed event on a non-permission hook", "R7" not in rules(f), show(f))
+        spec = "export async function setup($: Api) {\n  await $.agent.register({ name: 'x', permissionMode: {m} })\n}\n"
+        rc, f = files_case(plugin, "hooks/r7mode.ts", spec.replace("{m}", "'bypassPermissions'"))
+        check("R7 warns on $.agent.register permissionMode 'bypassPermissions'", "R7" in rules(f, "warn"), show(f))
+        rc, f = files_case(plugin, "hooks/r7shorthand.ts", spec.replace("permissionMode: {m}", "permissionMode"))
+        check("R7 warns on shorthand permissionMode", "R7" in rules(f, "warn"), show(f))
+        rc, f = files_case(plugin, "hooks/r7quoted.ts", spec.replace("permissionMode: {m}", "'permissionMode': 'plan'"))
+        check("R7 warns on quoted permissionMode key", "R7" in rules(f, "warn"), show(f))
+        rc, f = files_case(plugin, "hooks/r7asconst.ts", spec.replace("{m}", "'default' as const"))
+        check("R7 clean: permissionMode 'default' as const", "R7" not in rules(f), show(f))
+        rc, f = files_case(plugin, "hooks/r7default.ts", spec.replace("{m}", "'default'"))
+        check("R7 clean: permissionMode 'default'", "R7" not in rules(f), show(f))
 
         # ---- official: files in the plugin folder -------------------------------------------------
         def plugin_case(label, files, rule, level, manifest=None, setup=None):
