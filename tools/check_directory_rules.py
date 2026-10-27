@@ -1261,8 +1261,8 @@ def reachable(sources, entries):
     return {rel: sources[rel] for rel in seen}
 
 
-def expected_holds(sources, entries, readme, readme_rel, out):
-    """The Policy holds the portal raises on a mod for a reviewer, each at the call that raises it."""
+def expected_holds(sources, entries, readme, readme_rel, manifest_rel, out):
+    """The Policy holds the portal raises on a mod for a reviewer, each where the portal raises it."""
     sources = reachable(sources, entries)
 
     def computed(src, k):
@@ -1283,6 +1283,13 @@ def expected_holds(sources, entries, readme, readme_rel, out):
         ("MOD_SUBMITS_PROMPT", first_call(sources, {"$.prompt.submit"}), "submits a prompt"),
     ]
     holds += [("MOD_INCLUDES_MOD", (rel, 0), "includes a mod") for rel in sorted(entries)]
+    # Inferred: the portal holds ctx-guard 0.2.0, 0.3.1, 0.5.0 and 0.6.0 on plugin.json, no line, and
+    # each calls $.settings.read, which hands the mod every settings key, `env` and the helper commands included.
+    settings = first_call(sources, {"$.settings.read"})
+    if settings:
+        holds.append(("MOD_READS_CREDENTIAL", (manifest_rel, 0),
+                      f"uses a credential from the user's machine: `$.settings.read` at {settings[0]}:{settings[1]} "
+                      "returns the settings' `env` and helper commands"))
     perm = sorted((f.file, f.line) for f in out if f.rule in ("R6", "R7") and f.file in sources)
     if perm:
         holds.append(("MOD_CHANGES_PERMISSIONS", perm[0], "a hook can change what is permitted, see R6/R7"))
@@ -1353,7 +1360,8 @@ def run_plugin(plugin_dir):
     out += src_out
     if mod_entries:
         readme = plugin_dir / "README.md"
-        expected_holds(sources, mod_entries, readme.read_text() if readme.exists() else None, os.path.relpath(readme), out)
+        expected_holds(sources, mod_entries, readme.read_text() if readme.exists() else None, os.path.relpath(readme),
+                       os.path.relpath(plugin_dir / ".claude-plugin" / "plugin.json"), out)
         expected_notes(sources, mod_entries, out)
     return out, manifest, root, sub, mod_entries
 

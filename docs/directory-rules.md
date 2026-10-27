@@ -210,9 +210,10 @@ The checker has nothing to look for there.
 
 Not blockers. The portal holds a mod for a reviewer, once per capability it uses; the README
 section "What it runs, reads, writes and sends" answers each one. The checker reports each as a
-`note` at the first call that raises it, in the files the entry modules import at run time
-(directly or in turn), taken in name order; that is the line the portal named on ctx-guard 0.2.0,
-0.3.1, 0.5.0 and 0.6.0. Which call raises which hold is inferred.
+`note` where the At column says. A hold raised by a call is at the first such call in the files
+the entry modules import at run time (directly or in turn), taken in name order; that is the line
+the portal named on ctx-guard 0.2.0, 0.3.1, 0.5.0 and 0.6.0. Which call raises which hold is
+inferred.
 
 An import counts when it is `import … from`, `export … from`, `import '…'`, `import('…')` or
 `require('…')` with a relative path (`.`, `..`, `./…`, `../…`, quoted or a template literal with
@@ -238,6 +239,7 @@ calls made through it raise no note.
 | `MOD_SUBMITS_PROMPT` (**provisional** code) | `$.prompt.submit` | first call |
 | `MOD_INCLUDES_MOD` (**provisional** code) | each entry module in `hooks/hooks.json` `modules` | the module, line 0 |
 | `MOD_CHANGES_PERMISSIONS` (**provisional** code) | an R6 or R7 finding in those files | the first one |
+| `MOD_READS_CREDENTIAL` (**provisional** code) | `$.settings.read` (**inferred**: the portal held ctx-guard 0.2.0, 0.3.1, 0.5.0 and 0.6.0 as "Uses a credential from the user's machine", on `.claude-plugin/plugin.json` with no line; each calls `$.settings.read`, which the types say returns every settings key, `env` and the helper commands included; the only `$.env.get` on 0.2.0 reads `CTX_GUARD_ROLE`) | `.claude-plugin/plugin.json`, line 0; the message names the first call |
 
 ### Portal notes on a mod
 

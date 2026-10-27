@@ -365,6 +365,9 @@ def main():
         hold_case("clean: no capability call", {}, "MOD_RUNS_PROCESS", None)
         hold_case("at the entry module", {}, "MOD_INCLUDES_MOD", (reg, 0))
         hold_case("clean: hooks.json without modules", {"hooks/hooks.json": '{ "hooks": {} }\n'}, "MOD_INCLUDES_MOD", None)
+        manifest = ".claude-plugin/plugin.json"
+        hold_case("at plugin.json for $.settings.read", stamp_with("$.settings.read()"), "MOD_READS_CREDENTIAL", (manifest, 0))
+        hold_case("clean: $.env.get and no $.settings.read", stamp_with("$.env.get('HOME')"), "MOD_READS_CREDENTIAL", None)
         rebuilt = REGISTER.replace("  })\n}\n", "  })\n\n  on('command.run', async ($, runEvent, passRun) => passRun({ ...runEvent }))\n}\n")
         hold_case("at the first R7 finding", {reg: rebuilt}, "MOD_CHANGES_PERMISSIONS", (reg, 13))
         hold_case("clean: hooks pass their events on", {}, "MOD_CHANGES_PERMISSIONS", None)
