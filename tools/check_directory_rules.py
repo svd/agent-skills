@@ -280,11 +280,21 @@ class Source:
 
     def string_at(self, k):
         """The original text of a string literal whose opening quote is token k."""
-        t, pos = self.toks[k]
-        if t not in ("'", '"', "`"):
+        if not 0 <= k < len(self.toks):
             return None
-        end = self.text.find(t, pos + 1)
-        return self.text[pos + 1:end] if end > 0 else None
+        t, pos = self.toks[k]
+        return self.string_from(pos) if t in ("'", '"', "`") else None
+
+    def string_from(self, pos):
+        """The original text of the string literal whose opening quote is at pos."""
+        q = self.text[pos]
+        m = re.compile(rf"(?:\\.|[^\\{q}])*{q}", re.S).match(self.text, pos + 1)
+        return self.text[pos + 1:m.end() - 1] if m else None
+
+    def value_at(self, k):
+        """The value of a string literal whose opening quote is token k, escapes decoded."""
+        raw = self.string_at(k)
+        return None if raw is None else js_unescape(raw)
 
     def top_level_functions(self):
         """{name: takes_dollar} for functions declared at the top of the file."""
@@ -340,7 +350,7 @@ class Source:
         out = []
         for k, (t, _) in enumerate(self.toks):
             if t == on_name and self.tok(k + 1) == "(" and not self.is_member(k) and not self.is_params(k + 1):
-                event = self.string_at(k + 2)
+                event = self.value_at(k + 2)
                 if event is None:
                     continue
                 opts = ""
@@ -474,7 +484,7 @@ def check_r3(sources, entries, out):
         on_name = src.register_param() or "on"
         regs = [r for r in src.registrations(on_name) if r[1] == "ui.render"]
         others = [k for k, (t, _) in enumerate(src.toks)
-                  if t not in (on_name,) and src.tok(k + 1) == "(" and src.string_at(k + 2) == "ui.render"
+                  if t not in (on_name,) and src.tok(k + 1) == "(" and src.value_at(k + 2) == "ui.render"
                   and not (src.is_member(k) and src.tok(k - 2) == "ui")]
         if rel in entries:
             uses_ui = "$.ui.resolve" in src.code or re.search(r"\$\.ui\.invalidate\(\s*'\s*'", src.code) and "ui.render" in src.text
@@ -610,7 +620,7 @@ def check_r7(src, rel, out):
             out.append(Finding(rule, "warn", rel, h["line"],
                                f"{h['event']} hook parameter {names} is also used elsewhere in the file; name it uniquely so the directory can see the event pass on unchanged"))
     for k, (t, pos) in enumerate(src.toks):
-        quoted = src.string_at(k) == "permissionMode" and src.tok(k + 2) == ":" and src.bracket(k) == "{" and src.tok(k - 1) in ("{", ",")
+        quoted = src.value_at(k) == "permissionMode" and src.tok(k + 2) == ":" and src.bracket(k) == "{" and src.tok(k - 1) in ("{", ",")
         if t != "permissionMode" and not quoted:
             continue
         shorthand = not quoted and src.bracket(k) == "{" and src.tok(k - 1) in ("{", ",") and src.tok(k + 1) in (",", "}")
@@ -620,7 +630,7 @@ def check_r7(src, rel, out):
         if src.tok(call) != "(" or src.tok(call - 1) not in ("register", "spawn") or src.tok(call - 3) != "agent" or src.tok(call - 5) != "$":
             continue
         v = k + 3 if quoted or src.tok(k + 1) != ":" else k + 2
-        if not shorthand and src.string_at(v) == "default" and src.tok(v + 2) in (",", "}", "as", "satisfies"):
+        if not shorthand and src.value_at(v) == "default" and src.tok(v + 2) in (",", "}", "as", "satisfies"):
             continue
         out.append(Finding("R7", "warn", rel, src.line(pos),
                            f"$.agent.{src.tok(call - 1)} sets permissionMode; an agent with a mode other than 'default' changes what is permitted"))
@@ -1108,22 +1118,143 @@ def check_hooks_json(plugin_dir, out):
     return entries
 
 
-def expected_holds(sources, readme, readme_rel, manifest, manifest_rel, out):
-    calls = set()
-    for src in sources.values():
-        calls |= src.capability_calls()
+# A file whose change alters how the project builds, what Claude Code permits, or what the model
+# reads as instructions (inferred: the portal raised MOD_WRITES_BUILD_FILE on a computed path).
+BUILD_FILE_RE = re.compile(r"(^|/)(package\.json|package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml|tsconfig[\w.-]*\.json"
+                           r"|Makefile|Dockerfile|pyproject\.toml|setup\.py|Cargo\.toml|go\.mod|settings(\.local)?\.json"
+                           r"|hooks\.json|plugin\.json|marketplace\.json|\.mcp\.json|CLAUDE(\.local)?\.md|AGENTS\.md"
+                           r"|\.gitattributes|\.gitmodules|\.github/.*|\.githooks/.*|\.husky/.*)$")
+
+
+JS_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
+
+
+def js_unescape(raw):
+    """The value of a string literal's raw text."""
+    def one(m):
+        e = m.group(1)
+        if len(e) > 1 and e[0] in "xu":
+            code = int(e[1:].strip("{}"), 16)
+            return chr(code) if code <= 0x10FFFF else m.group()
+        return JS_ESCAPES.get(e, "" if e in "\r\n" else e)
+    return re.sub(r"\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|\r\n|.)", one, raw, flags=re.S)
+
+
+def literal_arg(src, open_k):
+    """The first argument of the call opening at open_k when it is a string literal or an array of
+    string literals: [values], else None."""
+    def ends(j):  # the argument ends after token j, or after a type suffix on it
+        j += 1
+        while src.tok(j) == "!":
+            j += 1
+        if src.tok(j) in ("as", "satisfies"):
+            return src.bracket(j) == "(" and src.encl[j] == open_k
+        return src.tok(j) in (",", ")")
+
+    k = open_k + 1
+    if src.string_at(k) is not None and ends(k + 1):
+        return [src.value_at(k)]
+    if src.tok(k) == "[" and src.match.get(k) and ends(src.match[k]):
+        out, j, end = [], k + 1, src.match[k]
+        while j < end:
+            if src.string_at(j) is None or src.tok(j + 2) not in (",", "]"):
+                return None
+            out.append(src.value_at(j))
+            j += 3 if src.tok(j + 2) == "," else 2
+        return out
+    return None
+
+
+def first_call(sources, calls, pred=lambda src, k: True):
+    """(file, line, src, open-paren index) of the first `$.noun.method(` in `calls` that pred accepts,
+    taking files in name order, or None."""
+    for rel in sorted(sources):
+        src = sources[rel]
+        for k, (t, pos) in enumerate(src.toks):
+            if t == "$" and not src.is_member(k) and src.tok(k + 1) == "." and src.tok(k + 3) == "." and src.tok(k + 5) == "(" \
+                    and f"$.{src.tok(k + 2)}.{src.tok(k + 4)}" in calls and pred(src, k + 5):
+                return rel, src.line(pos)
+    return None
+
+
+IMPORT_RE = re.compile(r"""\b(?:from\s*|import\s*\(?\s*|require\s*\(\s*)(['"`])""")
+
+
+def type_only(code, at):
+    """Whether the import or export statement that ends in `from` at `at` brings in types only."""
+    start = at
+    while True:  # back to the statement's own `import` or `export` keyword
+        start = max(code.rfind("import", 0, start), code.rfind("export", 0, start))
+        if start < 0:
+            return False
+        if re.match(r"(?<![\w$])(?:import|export)(?![\w$])", code[start:start + 7]) and (start == 0 or not re.match(r"[\w$]", code[start - 1])):
+            break
+    head = code[start:at]
+    names = re.fullmatch(r"(?:import|export)\s*\{([^{}]*)\}\s*", head)
+    return bool(re.match(r"(?:import|export)\s+type\b(?!\s*$)", head)) or bool(
+        names and names.group(1).strip() and all(re.match(r"\s*type\s", n) for n in names.group(1).split(",") if n.strip()))
+
+
+def reachable(sources, entries):
+    """The sources the entry modules import at run time, directly or through each other (test-only
+    helpers and type-only imports drop out)."""
+    seen, todo = set(), [e for e in entries if e in sources]
+    while todo:
+        rel = todo.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        src = sources[rel]
+        for m in IMPORT_RE.finditer(src.code):
+            spec = js_unescape(src.string_from(m.start(1)) or "")
+            before = src.code[max(0, m.start() - 200):m.start()]
+            line = before[before.rfind("\n") + 1:]
+            if spec not in (".", "..") and not spec.startswith(("./", "../")) or "${" in spec \
+                    or m.group().startswith("from") and type_only(src.code, m.start()) \
+                    or m.group().startswith("require") and re.search(r"\bimport\s+type\s+\w+\s*=\s*$", line) \
+                    or m.group().startswith("import") and (re.search(r"\btypeof\s*$", before)
+                                                           or re.search(r"\btype\s+\w+\s*(<[^=;]*>)?\s*=[\w\s|&<>,.\[\]'\"]*$", before)):
+                continue
+            base = os.path.normpath(os.path.join(os.path.dirname(rel), spec))
+            stem, ext = os.path.splitext(base)
+            cands = [base] + [base + e for e in SOURCE_EXT] + [os.path.join(base, "index" + e) for e in SOURCE_EXT]
+            if ext in SOURCE_EXT:  # `./x.js` names `x.ts` once compiled
+                cands += [stem + e for e in SOURCE_EXT]
+            todo += [c for c in cands if c in sources]
+    return {rel: sources[rel] for rel in seen}
+
+
+def expected_holds(sources, entries, readme, readme_rel, out):
+    """The Policy holds the portal raises on a mod for a reviewer, each at the call that raises it."""
+    sources = reachable(sources, entries)
+
+    def computed(src, k):
+        return literal_arg(src, k) is None
+
+    def build_path(src, k):
+        lit = literal_arg(src, k)
+        return lit is None or any(BUILD_FILE_RE.search(x.replace("\\", "/")) for x in lit)
+
+    data = {"$.process.run", "$.model.fork", "$.prompt.submit"}
+    holds = [
+        ("MOD_RUNS_PROCESS", first_call(sources, {"$.process.run"}), "runs a process"),
+        ("MOD_PROCESS_COMMAND_COMPUTED", first_call(sources, {"$.process.run"}, computed), "runs a command built at run time"),
+        ("MOD_WRITES_BUILD_FILE", first_call(sources, {"$.fs.write"}, build_path), "writes a file at a computed path or a build, settings or instructions file"),
+        ("MOD_LOCAL_DATA_LEAVES", first_call(sources, data), "local data can leave the machine"),
+        ("MOD_SESSION_DATA_LEAVES", first_call(sources, data), "session data can leave the machine"),
+        ("MOD_RUNS_SLASH_COMMAND", first_call(sources, {"$.command.run"}), "runs slash commands"),
+        ("MOD_SUBMITS_PROMPT", first_call(sources, {"$.prompt.submit"}), "submits a prompt"),
+    ]
+    holds += [("MOD_INCLUDES_MOD", (rel, 0), "includes a mod") for rel in sorted(entries)]
+    perm = sorted((f.file, f.line) for f in out if f.rule in ("R6", "R7") and f.file in sources)
+    if perm:
+        holds.append(("MOD_CHANGES_PERMISSIONS", perm[0], "a hook can change what is permitted, see R6/R7"))
+    holds = [(code, at, what) for code, at, what in holds if at]
     has_section = readme is not None and re.search(rf"^#+\s*{re.escape(DISCLOSURE_HEADING)}\s*$", readme, re.M | re.I)
-    holds = []
-    if "$.process.run" in calls:
-        holds += ["MOD_RUNS_PROCESS", "MOD_PROCESS_COMMAND_COMPUTED"]
-    if "$.fs.write" in calls:
-        holds.append("MOD_WRITES_BUILD_FILE")
-    if calls & {"$.process.run", "$.model.fork", "$.prompt.submit"}:
-        holds += ["MOD_LOCAL_DATA_LEAVES", "MOD_SESSION_DATA_LEAVES"]
     if holds and not has_section:
-        out.append(Finding("O27", "warn", readme_rel, 1, f"expected Policy holds ({', '.join(holds)}) need a README section \"{DISCLOSURE_HEADING}\""))
-    for code in holds:
-        out.append(Finding(code, "note", readme_rel, 1, f"expected Policy hold, answered by \"{DISCLOSURE_HEADING}\""))
+        out.append(Finding("O27", "warn", readme_rel, 1, f"expected Policy holds ({', '.join(c for c, _, _ in holds)}) need a README section \"{DISCLOSURE_HEADING}\""))
+    for code, (rel, line), what in holds:
+        out.append(Finding(code, "note", rel, line, f"expected Policy hold ({what}); answer it in the README section \"{DISCLOSURE_HEADING}\""))
 
 
 def run_plugin(plugin_dir):
@@ -1143,8 +1274,7 @@ def run_plugin(plugin_dir):
     out += src_out
     if mod_entries:
         readme = plugin_dir / "README.md"
-        expected_holds(sources, readme.read_text() if readme.exists() else None, os.path.relpath(readme), manifest,
-                       os.path.relpath(plugin_dir / ".claude-plugin" / "plugin.json"), out)
+        expected_holds(sources, mod_entries, readme.read_text() if readme.exists() else None, os.path.relpath(readme), out)
     return out, manifest, root, sub, mod_entries
 
 

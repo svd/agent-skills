@@ -269,6 +269,8 @@ def main():
         check("R7 warns on shorthand permissionMode", "R7" in rules(f, "warn"), show(f))
         rc, f = files_case(plugin, "hooks/r7quoted.ts", spec.replace("permissionMode: {m}", "'permissionMode': 'plan'"))
         check("R7 warns on quoted permissionMode key", "R7" in rules(f, "warn"), show(f))
+        rc, f = files_case(plugin, "hooks/r7escaped.ts", spec.replace("permissionMode: {m}", "'permission\\x4dode': 'plan'"))
+        check("R7 warns on an escaped permissionMode key", "R7" in rules(f, "warn"), show(f))
         rc, f = files_case(plugin, "hooks/r7asconst.ts", spec.replace("{m}", "'default' as const"))
         check("R7 clean: permissionMode 'default' as const", "R7" not in rules(f), show(f))
         rc, f = files_case(plugin, "hooks/r7default.ts", spec.replace("{m}", "'default'"))
@@ -339,6 +341,80 @@ def main():
         plugin_case("clean: ${CLAUDE_PLUGIN_ROOT} hook command", {"hooks/hooks.json": json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/x.sh"}]}]}})}, "O14", None)
         plugin_case("flags .npmrc with a launcher", {"scripts/run.sh": "npx a@1.0.0\n", ".npmrc": "registry=https://r.example\n"}, "O15", "block")
         plugin_case("flags minified source", {"hooks/min.js": ("var a=1;" * 700 + "\n") * 2}, "O16", "hold")
+
+        # ---- expected Policy holds, each at the call that raises it --------------------------------
+        def hold_case(label, files, code, at):
+            repo, plugin = make_plugin(tmp, f"hold_{len(results)}", files)
+            rc, f = run(["plugin", str(plugin)], repo)
+            got = [(x["file"].split("plugins/demo/")[-1], x["line"]) for x in f if x["rule"] == code]
+            check(f"{code} {label}", got == [at] if at else not got, show(f))
+
+        def stamp_with(call):
+            return {"hooks/register.tsx": REGISTER.replace("  return $.clock.now()", f"  await {call}\n  return $.clock.now()")}
+        reg = "hooks/register.tsx"
+        for code in ("MOD_RUNS_PROCESS", "MOD_PROCESS_COMMAND_COMPUTED", "MOD_LOCAL_DATA_LEAVES", "MOD_SESSION_DATA_LEAVES"):
+            hold_case("at a computed $.process.run", stamp_with("$.process.run(cmd)"), code, (reg, 4))
+        hold_case("at a literal $.process.run", stamp_with("$.process.run(['git', 'status'])"), "MOD_RUNS_PROCESS", (reg, 4))
+        hold_case("clean: literal $.process.run argv", stamp_with("$.process.run(['git', 'status'])"), "MOD_PROCESS_COMMAND_COMPUTED", None)
+        hold_case("at $.fs.write to a computed path", stamp_with("$.fs.write(p, '')"), "MOD_WRITES_BUILD_FILE", (reg, 4))
+        hold_case("at $.fs.write to package.json", stamp_with("$.fs.write('package.json', '')"), "MOD_WRITES_BUILD_FILE", (reg, 4))
+        hold_case("clean: $.fs.write to a plain literal path", stamp_with("$.fs.write('notes.txt', '')"), "MOD_WRITES_BUILD_FILE", None)
+        hold_case("at $.command.run", stamp_with("$.command.run({ command: 'x' })"), "MOD_RUNS_SLASH_COMMAND", (reg, 4))
+        hold_case("at $.prompt.submit", stamp_with("$.prompt.submit({ text: 'x' })"), "MOD_SUBMITS_PROMPT", (reg, 4))
+        hold_case("at $.prompt.submit", stamp_with("$.prompt.submit({ text: 'x' })"), "MOD_SESSION_DATA_LEAVES", (reg, 4))
+        hold_case("clean: no capability call", {}, "MOD_RUNS_PROCESS", None)
+        hold_case("at the entry module", {}, "MOD_INCLUDES_MOD", (reg, 0))
+        hold_case("clean: hooks.json without modules", {"hooks/hooks.json": '{ "hooks": {} }\n'}, "MOD_INCLUDES_MOD", None)
+        rebuilt = REGISTER.replace("  })\n}\n", "  })\n\n  on('command.run', async ($, runEvent, passRun) => passRun({ ...runEvent }))\n}\n")
+        hold_case("at the first R7 finding", {reg: rebuilt}, "MOD_CHANGES_PERMISSIONS", (reg, 13))
+        hold_case("clean: hooks pass their events on", {}, "MOD_CHANGES_PERMISSIONS", None)
+        helper = {"hooks/helper.ts": "export async function run($: EngineInterface) {\n  await $.process.run(cmd)\n}\n"}
+        hold_case("clean: a call in a module the entry does not import", helper, "MOD_RUNS_PROCESS", None)
+        hold_case("at a call in an imported module", {**helper, reg: "import { run } from './helper'\n" + REGISTER},
+                  "MOD_RUNS_PROCESS", ("hooks/helper.ts", 2))
+        def importing(line, rel="hooks/helper.ts"):
+            return {rel: helper["hooks/helper.ts"], reg: line + "\n" + REGISTER}
+        hold_case("at a call in a dotted module name", importing("import { run } from './helper.fixtures'", "hooks/helper.fixtures.ts"),
+                  "MOD_RUNS_PROCESS", ("hooks/helper.fixtures.ts", 2))
+        hold_case("at a call in a directory's index", importing("import { run } from './lib'", "hooks/lib/index.ts"),
+                  "MOD_RUNS_PROCESS", ("hooks/lib/index.ts", 2))
+        hold_case("at a call in a module imported as .js", importing("import { run } from './helper.js'"),
+                  "MOD_RUNS_PROCESS", ("hooks/helper.ts", 2))
+        hold_case("at a call in a required module", importing("const { run } = require('./helper')"),
+                  "MOD_RUNS_PROCESS", ("hooks/helper.ts", 2))
+        hold_case("clean: an import in a comment", importing("// import { run } from './helper'"), "MOD_RUNS_PROCESS", None)
+        hold_case("clean: a type-only import", importing("import type { Run } from './helper'"), "MOD_RUNS_PROCESS", None)
+        hold_case("clean: inline type-only names", importing("import { type Run, type Mode } from './helper'"), "MOD_RUNS_PROCESS", None)
+        hold_case("at a call in the folder's own index", importing("import { run } from '.'", "hooks/index.ts"),
+                  "MOD_RUNS_PROCESS", ("hooks/index.ts", 2))
+        hold_case("at a call in a module imported by a template literal", importing("const h = await import(`./helper`)"),
+                  "MOD_RUNS_PROCESS", ("hooks/helper.ts", 2))
+        hold_case("clean: import() in a type", importing("type Run = typeof import('./helper').run"), "MOD_RUNS_PROCESS", None)
+        hold_case("clean: import() as a type alias", importing("type Mod = import('./helper').Mod"), "MOD_RUNS_PROCESS", None)
+        hold_case("clean: import type = require()", importing("import type H = require('./helper')"), "MOD_RUNS_PROCESS", None)
+        hold_case("at a default import named type", importing("import type from './helper'"), "MOD_RUNS_PROCESS", ("hooks/helper.ts", 2))
+        hold_case("at a call in a module imported in an object", importing("const m = { lazy: () => 1, mod: import('./helper') }"),
+                  "MOD_RUNS_PROCESS", ("hooks/helper.ts", 2))
+        hold_case("at a call in a module imported after ||", importing("const m = ready || import('./helper')"),
+                  "MOD_RUNS_PROCESS", ("hooks/helper.ts", 2))
+        hold_case("clean: import() in a type alias over two lines", importing("type Mod =\n  import('./helper')"), "MOD_RUNS_PROCESS", None)
+        many = ",\n".join(f"  Type{i}" for i in range(600))
+        hold_case("clean: a long type-only import", importing("import type {\n" + many + "\n} from './helper'"), "MOD_RUNS_PROCESS", None)
+        hold_case("at $.fs.write to an escaped CLAUDE.md", stamp_with("$.fs.write('CLAUDE\\x2emd', '')"), "MOD_WRITES_BUILD_FILE", (reg, 4))
+        hold_case("at a call in a module imported by an escaped path", importing("import { run } from './\\x68elper'"),
+                  "MOD_RUNS_PROCESS", ("hooks/helper.ts", 2))
+        hold_case("clean: import() in a union type alias", importing("type T = Foo | import('./helper').Run"), "MOD_RUNS_PROCESS", None)
+        plugin_case("no crash on a bad escape", stamp_with("$.fs.write('\\x' + '\\u{110000}', '')"), "MOD_WRITES_BUILD_FILE", "note")
+        hold_case("clean: literal argv as const", stamp_with("$.process.run(['git', 'status'] as const)"), "MOD_PROCESS_COMMAND_COMPUTED", None)
+        hold_case("at $.fs.write to an escaped package.json", stamp_with("$.fs.write('a\\'b/package.json', '')"), "MOD_WRITES_BUILD_FILE", (reg, 4))
+        plugin_case("no crash on a call cut off at the end", {reg: REGISTER + "export function cut($: any) {\n  $.process.run("}, "MOD_RUNS_PROCESS", "note")
+        hold_case("clean: a call in a comment or string", stamp_with("'$.process.run(cmd)' // $.process.run(cmd)"), "MOD_RUNS_PROCESS", None)
+        unimported = {"hooks/register.fixtures.ts": "export function wire(on: any) {\n  on('command.run', async ($: any, runEvent: any, passRun: any) => passRun({ ...runEvent }))\n}\n"}
+        hold_case("clean: an R7 finding in a module the entry does not import", unimported, "MOD_CHANGES_PERMISSIONS", None)
+        no_section = README.replace("## What it runs, reads, writes and sends", "## Notes")
+        plugin_case("O27 warns on holds with no disclosure section", {**stamp_with("$.process.run(cmd)"), "README.md": no_section}, "O27", "warn")
+        plugin_case("O27 clean: disclosure section present", stamp_with("$.process.run(cmd)"), "O27", None)
+        plugin_case("O27 warns on a mod with no capability call and no section", {"README.md": no_section}, "O27", "warn")
 
         # ---- P1-P2 release -----------------------------------------------------------------------
         repo, plugin = make_plugin(tmp, "release")

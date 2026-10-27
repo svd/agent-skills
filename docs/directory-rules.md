@@ -169,7 +169,7 @@ Source: official,
 
 For a mod, the checker reports the Policy holds the portal raised on ctx-guard as `note`, and
 warns (O27) when the README has no section "What it runs, reads, writes and sends" to answer
-them. Which capability call raises which hold is inferred. O16 counts a source file as minified
+them. Every mod raises at least `MOD_INCLUDES_MOD`, so every mod needs the section. Which capability call raises which hold is inferred. O16 counts a source file as minified
 when it is over 4 KiB with lines averaging over 200 characters (inferred).
 
 ## Mod rules (portal findings)
@@ -208,16 +208,36 @@ The checker has nothing to look for there.
 
 ### Expected Policy holds
 
-Not blockers. The portal holds a mod that uses these capabilities for a reviewer; the README
-section "What it runs, reads, writes and sends" answers each one.
+Not blockers. The portal holds a mod for a reviewer, once per capability it uses; the README
+section "What it runs, reads, writes and sends" answers each one. The checker reports each as a
+`note` at the first call that raises it, in the files the entry modules import at run time
+(directly or in turn), taken in name order; that is the line the portal named on ctx-guard 0.2.0,
+0.3.1, 0.5.0 and 0.6.0. Which call raises which hold is inferred.
 
-| Code | Raised by (inferred) |
-| --- | --- |
-| `MOD_WRITES_BUILD_FILE` | `$.fs.write` |
-| `MOD_LOCAL_DATA_LEAVES` | `$.process.run`, `$.model.fork`, `$.prompt.submit` |
-| `MOD_SESSION_DATA_LEAVES` | `$.process.run`, `$.model.fork`, `$.prompt.submit` |
-| `MOD_PROCESS_COMMAND_COMPUTED` | `$.process.run` with a command built at run time |
-| `MOD_RUNS_PROCESS` | `$.process.run` |
+An import counts when it is `import … from`, `export … from`, `import '…'`, `import('…')` or
+`require('…')` with a relative path (`.`, `..`, `./…`, `../…`, quoted or a template literal with
+no `${…}`), outside comments. Imports of types only do not count: `import type`,
+`import { type A }`, `import type A = require('…')`, and `import('…')` in a type (after `typeof`,
+or as a `type` alias); elsewhere in a type, as in `x: import('…').T`, it counts. A path resolves
+as written, with a source extension added, to the `index` file of a directory, or, when it ends
+in `.js` and the like, to the same name with another source extension. Test files (`*.test.*`,
+`*.spec.*`) are left out even when imported. String paths are read with their escapes decoded
+(`'CLAUDE\x2emd'` is `CLAUDE.md`).
+
+The checker finds calls only as written `$.noun.method(`; a `$` alias is an R2 block, and the
+calls made through it raise no note.
+
+| Code | Raised by (inferred) | At |
+| --- | --- | --- |
+| `MOD_WRITES_BUILD_FILE` | `$.fs.write` to a computed path, or to a literal build, settings or instructions file (`package.json`, `tsconfig*.json`, `settings.json`, `hooks.json`, `CLAUDE.md`, `AGENTS.md`, `.github/…` and the like; the list is inferred) | first such call |
+| `MOD_LOCAL_DATA_LEAVES` | `$.process.run`, `$.model.fork`, `$.prompt.submit` | first of these calls |
+| `MOD_SESSION_DATA_LEAVES` | `$.process.run`, `$.model.fork`, `$.prompt.submit` | first of these calls |
+| `MOD_PROCESS_COMMAND_COMPUTED` | `$.process.run` whose first argument is not a string literal or an array of string literals (an `as …`, `satisfies …` or `!` after it is fine) | first such call |
+| `MOD_RUNS_PROCESS` | `$.process.run` | first call |
+| `MOD_RUNS_SLASH_COMMAND` (**provisional** code) | `$.command.run` | first call |
+| `MOD_SUBMITS_PROMPT` (**provisional** code) | `$.prompt.submit` | first call |
+| `MOD_INCLUDES_MOD` (**provisional** code) | each entry module in `hooks/hooks.json` `modules` | the module, line 0 |
+| `MOD_CHANGES_PERMISSIONS` (**provisional** code) | an R6 or R7 finding in those files | the first one |
 
 ## Release rules
 
