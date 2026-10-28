@@ -2,7 +2,8 @@
 
 [← ctx-guard README](../README.md) · [All docs](README.md)
 
-*Checked on 2026-10-15 against each project's own README or documentation. Tools change fast:
+*Checked on 2026-10-15 (cc-orchestrator-mod and aigent-os on 2026-10-28) against each project's
+own README or documentation. Tools change fast:
 if anything here is wrong or out of date, please
 [open an issue](https://github.com/svd/agent-skills/issues) and it will be fixed.*
 
@@ -17,6 +18,8 @@ are often better used together with ctx-guard than instead of it.
 | | Shows context and limits | Warns the model | Usage-limit brakes | Subagent budgets | Clears and resumes on its own | Checks before clearing | Multi-session coordination | Prompt-cache help | Other agents |
 |---|---|---|---|---|---|---|---|---|---|
 | **ctx-guard** | ● | ● | ● | ● | ● | ● | ● | ● | — |
+| [cc-orchestrator-mod](https://github.com/victor-bajanov/cc-orchestrator-mod) | ◐ | ● | — | ◐ | ● | ◐ | ◐ | — | — |
+| [aigent-os](https://github.com/wrg32786/aigent-os) | ◐ | ● | — | — | ● | ◐ | ◐ | — | ◐ |
 | [ctx-handoff-mod](https://github.com/cablate/ctx-handoff-mod) | — | — | — | — | ● | ◐ | — | ● | — |
 | [claude-code-auto-handoff](https://github.com/Amel-DZRV/claude-code-auto-handoff) | ◐ | ◐ | — | — | ● | ◐ | — | ◐ | — |
 | [claude-handoff](https://github.com/samzilverberg/claude-handoff) | — | ◐ | — | — | ◐ | ◐ | — | — | — |
@@ -35,6 +38,29 @@ own ready-check scripts; role leases and peer gaps for several long-lived sessio
 a band countdown to the cache's expiry, a `cache.miss` trigger (a toast in the presets) for a request that re-wrote a cache that should
 have been warm, and opt-in keep-warm (a `ping` request or a `prompt` turn, capped by `times`,
 behind `/ctx-guard trust`).
+
+**cc-orchestrator-mod** (a mod, `orchestrator`). Watches the context of the main thread and every
+subagent at any depth, and draws it per agent on a shared time axis in its own pane, with a
+timeline of each agent's turns and tool calls. Usage windows are not shown. A subagent past
+`agentThreshold` (450k tokens) is told to write a handover note; once it ends with the note
+written, the mod spawns a replacement with the same brief, type, model and name, stops the old
+agent, re-parents its children and redirects messages sent to it. A main thread past
+`mainThreshold` writes a note, then the mod runs `/clear` and submits a prompt with the note and
+the live agents (`mainHandover`: `ask` by default, `auto` or `off`). The only check before a
+clear or respawn is that the note exists. It coordinates the agents of one session: check-in
+deadlines, forwarded reports, nudges for idle agents and unread background commands. It ships
+the `orchestrated-run` skill. No usage-limit handling is described.
+
+**aigent-os** (a harness: hooks, skills, agents and a launcher). At a context threshold (80% by
+default) it asks Claude for a capsule, waits for an exact acknowledgement, sends one `/clear`
+through a PTY runner its launcher starts, checks that a fresh session began and resumes from the
+capsule. The clear needs that launcher and `node-pty`; without them, capsules work and you clear
+by hand (the `context-capsule` plugin is that manual half). The checks before a clear are the
+model's acknowledgement and a selector that refuses a capsule with no next step. Memory is
+markdown committed to git at each cycle, with local semantic search; a status line shows context.
+The core runs one session at a time; two mods for several sessions side by side are an
+unreleased pilot. Also routes prompts to skills, checks subagent model tiers, and sends one task
+type to Codex. No usage-limit handling is described.
 
 **ctx-handoff-mod** (a mod). Hands off to a fresh conversation at a token threshold, after Claude
 and its subagents finish; its summary separates verified from unverified work. Keeps the prompt
@@ -76,6 +102,10 @@ clear-and-resume ([#90089](https://github.com/anthropics/claude-code/issues/9008
 
 ## Where other tools do better
 
+- **Long runs of nested subagents**: cc-orchestrator-mod hands over and respawns a subagent
+  in place, keeps its name and children, and shows every agent's context and turns in one pane.
+  ctx-guard budgets a subagent's tokens, but it does not replace one.
+- **Memory you can diff**: aigent-os keeps notes, decisions and capsules as markdown in git.
 - **Learning from your corrections**: ctx-handoff-mod's project notes.
 - **History and cross-agent reports**: ccusage, for Claude Code, Codex and others.
 - **Validating handoff structure out of the box**: claude-handoff checks its nine sections.
@@ -91,6 +121,9 @@ clear-and-resume ([#90089](https://github.com/anthropics/claude-code/issues/9008
 - **Output filters** such as [RTK](https://github.com/rtk-ai/rtk) or
   [context-mode](https://github.com/mksglu/context-mode) to put less into the context; ctx-guard to
   decide what to do as it fills.
+- **cc-orchestrator-mod or aigent-os** for subagent handovers or git memory, with ctx-guard's
+  usage brakes and notes. Let only one of them restart the main thread: set the mod's
+  `mainHandover` to `off`, or leave ctx-guard's restarts off.
 - **Handoff skills** such as `session-handoff` (this repo) or superpowers' plans: name the skill in
   `handoff.instructions` and ctx-guard runs the restart around it
   ([recipe 11](use-cases.md#11-handoffs-through-the-session-handoff-skill)).
