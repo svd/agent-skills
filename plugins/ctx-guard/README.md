@@ -166,8 +166,8 @@ it can start are model requests that Claude Code sends like any other: a keep-wa
   local config and the state folder to `.gitignore`. Handoffs are written by the model, not by
   ctx-guard.
 - **Sends to the model.** Notes that start with `[ctx-guard]`, added to the conversation as
-  user messages: to the main session when a trigger fires or a brake lifts, or to a subagent
-  nearing its budget.
+  user messages: to the main session when a trigger fires, a brake lifts or the ready token is
+  refused, or to a subagent nearing its budget.
   Two more things reach the model, both only after `/ctx-guard trust`, with `autoActions` on and
   a `times` cap: a `ping`, one tool-less request (`Reply with OK.`) over the session's own
   transcript, made with the engine's `$.model.fork`, whose reply is discarded; and a `prompt`, a
@@ -176,6 +176,14 @@ it can start are model requests that Claude Code sends like any other: a keep-wa
   the session is idle: first the same tool-less request, to read the account's current usage
   limits, then, if its tools are still free, a turn asking the model to check where the work
   stands and carry on. Both spend usage; the turn is capped by `lift.times`.
+
+  The refusal prompt is another turn ctx-guard submits: when the verdict refuses the ready token,
+  it sends the refusal note as a prompt, so the idle model reads it and can fix the cause. It
+  comes only where ctx-guard acts on the token (`restart.mode: "auto"`, `autoActions` on, no
+  pause) and the repo is trusted. With code `already-busy` or `untrusted`, while a turn runs, when
+  the prompt is refused, or when the loop guard holds it back, the note is added to the
+  conversation with no turn. The loop guard allows one such turn per code in a row and at most 3
+  until a restart goes through or you type a prompt.
 - **Runs commands.** Three, and only with `autoActions` on and after `/ctx-guard trust`:
   - `/clear`, when the model ends a reply with the ready token after a context note asked for a
     restart, the role restarts by clear, and every check of the verdict passes;
@@ -216,7 +224,7 @@ What each hook does, and what it may change:
 | Hook | What it does |
 | --- | --- |
 | `session.start`, `session.measure`, `session.end`, `turn.start`, `turn.step`, `turn.complete`, `classic.Stop` | Read the figures and evaluate the triggers. A main-loop `turn.step` also records, for lifts, that the model read a brake's note: a touch. Each passes the event on unchanged. |
-| `prompt.submit` | Notes whether the prompt is ctx-guard's own `prompt` action, to tell its turn from yours, and whether it is your own input (by its origin), which stops a lift from waking the session. Passes the prompt on unchanged. |
+| `prompt.submit` | Notes whether the prompt is ctx-guard's own (a `prompt` action or a refusal prompt), to tell its turn from yours, and whether it is your own input (by its origin), which stops a lift from waking the session. Passes the prompt on unchanged. |
 | `tool.call` | Denies a main-loop tool call while a `deny` trigger holds, and a subagent's call once it is past its budget. For lifts, it records a refused call as a touch of the brakes on that tool, and a call of a freed tool drops that lift's wake prompt. Every other call passes unchanged. |
 | `session.compact` | Records a main-loop compact in the ledger once it ran: its trigger and the tokens before and after. Passes the event on unchanged. |
 | `agent.spawn` | Records each new agent's id and type, for its budget. Passes the spawn on unchanged. |

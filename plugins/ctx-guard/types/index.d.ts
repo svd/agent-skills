@@ -350,6 +350,9 @@ export type Pause = { until: number }
 // The last ready-token verdict: a refusal code, or `ok` for a restart that went ahead.
 export type LastVerdict = { code: string; text: string; at: number }
 
+// The last wake-eligible refusal: its code and time, and the wakes so far in this streak.
+export type RefusalStreak = { code: string; wakes: number; at: number }
+
 // This session's role lease: the id it writes into owner files and restart
 // stamps (kept across /clear, which changes the session id, and reloads), the
 // role it holds, its last heartbeat, and who else held the role at the last look.
@@ -447,6 +450,8 @@ declare module 'claude-code' {
       // restart, a /clear, a role claim or change, or a closing main turn; a cut turn suspends it (clearAskHolds).
       clearAsk: ClearAsk | null
       lastVerdict: LastVerdict | null
+      // The ready-token refusals since the last restart or typed turn, for the loop guard (liveStreak).
+      refusalStreak: RefusalStreak | null
       lease: LeaseState | null
       work: Work | null
       // Subagents past their warn or stop budget, by agent id; dropped at their turn.complete.

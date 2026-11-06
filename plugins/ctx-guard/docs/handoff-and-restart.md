@@ -70,6 +70,8 @@ command needs a role and a restart mode other than `off`.
 When the token arrives in `auto` mode, ctx-guard runs these checks in order right after the
 turn. The first that fails refuses the restart with a toast and a note to the model
 (`[ctx-guard] CTX-READY ignored (<code>): <reason>. Nothing was cleared.`); nothing is cleared.
+The note can be sent as a prompt that wakes the idle model, at most 3 times per streak; see the
+[config reference](../skills/guide/references/config-reference.md#the-verdict).
 
 1. `untrusted`: the repo's restart settings are approved.
 2. `already-busy`: no restart, compact or resume is under way.
@@ -172,4 +174,5 @@ your note thresholds:
 
 At most one compact waits. A queued compact is dropped when its trigger re-arms first, and on
 `/clear`. A ready-token restart at the same turn end goes first; if it is refused, the compact
-runs. Both ways need trust, `autoActions` on and no pause.
+runs, or, when the refusal woke the model, waits for the woken turn's end. Both ways need trust,
+`autoActions` on and no pause.

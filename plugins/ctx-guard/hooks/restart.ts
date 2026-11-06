@@ -2,7 +2,7 @@
 // restart is judged on and the fail-closed verdict over them, the peer race,
 // and what to do with a pending resume found after a reload. Pure: no `$`,
 // never throws.
-import type { BackgroundTask, ClearAsk, LastCompact, PendingCompact, PendingResume, Quantity, RestartVia } from '../types'
+import type { BackgroundTask, ClearAsk, LastCompact, PendingCompact, PendingResume, Quantity, RefusalStreak, RestartVia } from '../types'
 import type { Lease } from './roles'
 import { humanDuration, humanQuantity, humanTokens } from './messages'
 
@@ -104,6 +104,42 @@ export function clearAskHolds(ask: ClearAsk | null, role: string | null, m: Clea
   const cut = m.cutStartAt
   const takenUp = (at: number | null): boolean => cut !== null && at !== null && at > cut
   return cut === null || !since(cut) || takenUp(m.typedStartAt) || takenUp(m.wokenStartAt)
+}
+
+// ---- refusal wakes -----------------------------------------------------------
+
+// A refused ready token wakes the model at most this many times in one streak.
+export const REFUSAL_WAKE_CAP = 3
+
+export type StreakMarks = { restartAt: number | null; typedStartAt: number | null }
+
+/** The streak as it stands: null once a restart or a typed turn has ended it. */
+export function liveStreak(s: RefusalStreak | null, m: StreakMarks): RefusalStreak | null {
+  if (s === null) return null
+  if (m.restartAt !== null && m.restartAt >= s.at) return null
+  if (m.typedStartAt !== null && m.typedStartAt > s.at) return null
+  return s
+}
+
+/** Whether a refusal with this code wakes the model: not already-busy, not untrusted (no prompt goes out of an untrusted repo), not a repeat code, under the cap. */
+export function wakesOnRefusal(live: RefusalStreak | null, code: RefusalCode): boolean {
+  if (code === 'already-busy' || code === 'untrusted' || live?.code === code) return false
+  return (live?.wakes ?? 0) < REFUSAL_WAKE_CAP
+}
+
+/** The streak after a refusal: the wake count moves only when the wake went in. */
+export function nextStreak(live: RefusalStreak | null, code: RefusalCode, woke: boolean, now: number): RefusalStreak {
+  return { code, wakes: (live?.wakes ?? 0) + (woke ? 1 : 0), at: now }
+}
+
+/** The streak as $.state may hold it; null when it is not one. */
+export function asRefusalStreak(v: unknown): RefusalStreak | null {
+  if (typeof v !== 'object' || v === null) return null
+  const o = v as Record<string, unknown>
+  if (typeof o.code !== 'string') return null
+  if (typeof o.wakes !== 'number' || !Number.isInteger(o.wakes) || o.wakes < 0) return null
+  if (typeof o.at !== 'number' || !Number.isFinite(o.at)) return null
+  return { code: o.code, wakes: o.wakes, at: o.at }
 }
 
 // ---- stamps ------------------------------------------------------------------

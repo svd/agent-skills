@@ -112,6 +112,7 @@ import {
   noteToastText,
   promptText,
   refusalNote,
+  refusalPrompt,
   subagentDenyReason,
   subagentStopText,
   subagentWarnText,
@@ -128,6 +129,7 @@ import {
   asLastCompact,
   asPendingCompact,
   asPendingResume,
+  asRefusalStreak,
   checkDetail,
   checkLines,
   compactArgs,
@@ -139,7 +141,9 @@ import {
   clearAskHolds,
   isTypedPrompt,
   isUnder,
+  liveStreak,
   nextLastCompact,
+  nextStreak,
   parseStamp,
   pendingAction,
   pendingFresh,
@@ -152,6 +156,7 @@ import {
   stampJson,
   stampPath,
   verdict,
+  wakesOnRefusal,
 } from './restart'
 import type { CheckRun, Facts, HandoffFact, RefusalCode, StampRead, Verdict } from './restart'
 import { claimFromResume, heartbeatDue, leasePath, leaseState, ownerJson, parseOwner, parseResumeArgs, parseRoleArg, resolveRole, roleForCommand, roleProblem } from './roles'
@@ -234,6 +239,7 @@ const SUBAGENTS = { plugin: 'ctx-guard', key: 'subagents' } as const
 const SPAWNED = { plugin: 'ctx-guard', key: 'spawned' } as const
 const CACHE = { plugin: 'ctx-guard', key: 'cache' } as const
 const LIFTS = { plugin: 'ctx-guard', key: 'lifts' } as const
+const REFUSAL_STREAK = { plugin: 'ctx-guard', key: 'refusalStreak' } as const
 // A /clear this soon after a not-cleared restart was dropped is that restart's, landing late.
 const LATE_CLEAR_MS = 60 * 1000
 
@@ -518,6 +524,7 @@ const emptyMem = (): Stored => ({
   activity: null,
   cache: null,
   lifts: null,
+  refusalStreak: null,
 })
 
 let mem: Stored = emptyMem()
@@ -585,6 +592,8 @@ function stateSet($: EngineInterface, key: Key, value: unknown): Promise<unknown
       return $.state.set(CACHE, value as Stored['cache'])
     case 'lifts':
       return $.state.set(LIFTS, value as Stored['lifts'])
+    case 'refusalStreak':
+      return $.state.set(REFUSAL_STREAK, value as Stored['refusalStreak'])
   }
 }
 
@@ -621,7 +630,7 @@ const writesSettled = (): Promise<unknown> => Promise.all(Object.values(writing)
 
 // Shape-checked, as another version may have written them; a key never written is its default.
 async function readStored($: EngineInterface): Promise<Stored> {
-  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, clearAsk, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache, lifts] = await Promise.all([
+  const [band, marks, roleClaim, config, pendingResume, pendingCompact, lastCompact, pause, lastClearAt, lastRestartAt, clearAsk, lastVerdict, lease, work, subagents, spawned, stamp, activity, cache, lifts, refusalStreak] = await Promise.all([
     $.state.get(BAND),
     $.state.get(MARKS),
     $.state.get(ROLE_CLAIM),
@@ -642,6 +651,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     $.state.get(ACTIVITY),
     $.state.get(CACHE),
     $.state.get(LIFTS),
+    $.state.get(REFUSAL_STREAK),
   ])
   const opt = <T,>(v: unknown, as: (v: unknown) => T): T | null => (v === undefined || v === null ? null : as(v))
   return {
@@ -665,6 +675,7 @@ async function readStored($: EngineInterface): Promise<Stored> {
     activity: opt(activity.value, asActivity),
     cache: opt(cache.value, asCache),
     lifts: opt(lifts.value, asLifts),
+    refusalStreak: asRefusalStreak(refusalStreak.value),
   }
 }
 
@@ -1862,7 +1873,8 @@ async function setVerdict($: EngineInterface, code: RefusalCode | 'ok', text: st
   await put($, 'lastVerdict', { code, text, at: await $.clock.now() })
 }
 
-async function refuse($: EngineInterface, code: RefusalCode, text: string): Promise<void> {
+// Answers whether a wake prompt went in for this refusal.
+async function refuse($: EngineInterface, code: RefusalCode, text: string): Promise<boolean> {
   const eff = mod.eff
   const token = eff?.config.readyToken ?? 'CTX-READY'
   const role = mod.role.role
@@ -1870,6 +1882,25 @@ async function refuse($: EngineInterface, code: RefusalCode, text: string): Prom
   const line = refusalNote(token, code, text, via)
   await setVerdict($, code, text)
   $.ui.toast(line)
+  const now = await $.clock.now()
+  const live = liveStreak(mem.refusalStreak, { restartAt: mem.lastRestartAt, typedStartAt: activity().lastTypedStartAt })
+  // Already-busy and untrusted refusals, and a refusal while a turn runs, only leave the note: a prompt would land in that turn, and nothing is submitted from an untrusted repo.
+  if (code === 'already-busy' || code === 'untrusted' || turnRunningIn(activity(), now)) {
+    await appendNote($, line)
+    return false
+  }
+  let woke = false
+  if (wakesOnRefusal(live, code)) {
+    await quietly(async () => {
+      woke = (await submitOwnPrompt($, refusalPrompt(token, code, text, via), false)).drop === undefined
+    })
+  }
+  await put($, 'refusalStreak', nextStreak(live, code, woke, now))
+  if (!woke) await appendNote($, line)
+  return woke
+}
+
+async function appendNote($: EngineInterface, line: string): Promise<void> {
   await quietly(() => $.session.append({ message: { type: 'user', content: [{ type: 'text', text: line }] } }))
 }
 
@@ -2123,21 +2154,28 @@ async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean):
   if (claimed) gen.restarting = true
   let cleared = false
   let retryCompact = true
+  // Whether a refusal of this flow sent a wake prompt.
+  let woke = false
+  const refused = async (code: RefusalCode, text: string): Promise<void> => {
+    if (await refuse($, code, text)) woke = true
+  }
   try {
     if (busy === null) busy = await pendingBusy($, await $.clock.now())
     const g = await gather($, role, spec, busy, asked)
     const v = await judge($, g, spec)
-    if (!v.ok) return await refuse($, v.code, v.text)
+    if (!v.ok) return await refused(v.code, v.text)
     if (mod.ledger) await quietly(async () => ledgerPush({ t: await $.clock.now(), k: 'ready', role, ctx: mod.lastMain?.tokens ?? null }))
     if (gen !== mod) return
     if (spec.restart.via === 'compact') {
-      if ((await compactRestart($, role, spec, tokenAt, gen)) === 'failed') retryCompact = false
+      const done = await compactRestart($, role, spec, tokenAt, gen)
+      if (done === 'failed') retryCompact = false
+      if (done === 'woke') woke = true
       return
     }
     const stamps = g.stamps
-    if (!stamps || g.facts.handoff.kind !== 'present') return await refuse($, 'error', 'the restart stamps could not be placed')
+    if (!stamps || g.facts.handoff.kind !== 'present') return await refused('error', 'the restart stamps could not be placed')
     const before = await quiet($, tokenAt, spec)
-    if (!before.ok) return await refuse($, before.code, before.text)
+    if (!before.ok) return await refused(before.code, before.text)
     const lease = await leaseOf($)
     const restore = async (): Promise<void> => {
       await $.fs.write(stamps.own, stamps.ownText ?? stampJson(lease.id, 0))
@@ -2153,13 +2191,13 @@ async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean):
       for (const p of stamps.peers) again.push({ role: p.role, stamp: (await readStamp($, p.abs, stamps.realRoot)).stamp })
     } catch (e) {
       await quietly(restore)
-      return await refuse($, 'error', errorText(e))
+      return await refused('error', errorText(e))
     }
     const race = raceVerdict({ at, owner: lease.id }, again, spec.restart.peerGap, await $.clock.now())
     const last = race.ok ? await quiet($, tokenAt, spec) : race
     if (!last.ok) {
       await quietly(restore)
-      return await refuse($, last.code, last.text)
+      return await refused(last.code, last.text)
     }
     const pending: PendingResume = { role, handoff: g.facts.handoff.path, command: spec.restart.command, prompt: spec.restart.prompt, step: 'clear', at }
     await put($, 'pendingResume', pending)
@@ -2176,7 +2214,7 @@ async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean):
     } catch (e) {
       await put($, 'pendingResume', null)
       await quietly(restore)
-      return await refuse($, 'error', `/clear was refused: ${errorText(e)}`)
+      return await refused('error', `/clear was refused: ${errorText(e)}`)
     }
     // A reload during /clear leaves the resume to the new copy's session start.
     if (gen !== mod) return
@@ -2184,11 +2222,11 @@ async function restartFlow($: EngineInterface, tokenAt: number, asked: boolean):
     await put($, 'pendingResume', next)
     await resume($, next, gen)
   } catch (e) {
-    await refuse($, 'error', errorText(e))
+    await refused('error', errorText(e))
   } finally {
     if (claimed) gen.restarting = false
-    // Nothing was cleared: a compact queued for this turn end gets the try it gave up.
-    if (claimed && !cleared && retryCompact && gen === mod) await quietly(() => compactAtTurnEnd($))
+    // Nothing was cleared: a compact queued for this turn end gets the try it gave up, unless a wake went in: it waits for that turn's end.
+    if (claimed && !cleared && retryCompact && gen === mod && !woke) await quietly(() => compactAtTurnEnd($))
   }
 }
 
@@ -2460,13 +2498,10 @@ async function compactAtStart($: EngineInterface): Promise<void> {
  * A compact a trigger left waiting is marked sent first, so a reload while
  * this runs never sends a second one; it is served by this one.
  */
-// Answers 'failed' when /compact itself did not run, so the queued compact is not retried at once.
-async function compactRestart($: EngineInterface, role: string, spec: RoleSpec, tokenAt: number, gen: Mod): Promise<'failed' | 'done'> {
+// Answers 'failed' when /compact itself did not run, so the queued compact is not retried at once, and 'woke' when the re-check's refusal sent a wake prompt, so the queued compact waits for that turn.
+async function compactRestart($: EngineInterface, role: string, spec: RoleSpec, tokenAt: number, gen: Mod): Promise<'failed' | 'done' | 'woke'> {
   const before = await quiet($, tokenAt, spec)
-  if (!before.ok) {
-    await refuse($, before.code, before.text)
-    return 'done'
-  }
+  if (!before.ok) return (await refuse($, before.code, before.text)) ? 'woke' : 'done'
   gen.compacting = true
   const waiting = getPendingCompact()
   const served = waiting && waiting.step !== 'sent' && (await movePending($, waiting, waiting.step, cur => ({ ...cur, step: 'sent' }))) ? waiting : null

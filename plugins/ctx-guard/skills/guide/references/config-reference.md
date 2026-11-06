@@ -618,6 +618,22 @@ the restart, and nothing is cleared. A refusal is a toast and this note to the m
 
 With `via: compact` it ends "Nothing was compacted."
 
+The note is also a prompt turn, which wakes the idle model: the note line, a newline, then `Fix it
+if it is yours to fix, then send <token> once more; else go on with the task or tell the operator.`
+(`<token>` is the configured ready token). The turn goes out only where ctx-guard acts on the
+token (`restart.mode: "auto"`, `autoActions` on, no pause) and the repo is trusted. The note is
+added to the conversation with no turn, and the loop guard's streak is left as it is, for the
+codes `already-busy` and `untrusted` and while a turn runs. When the prompt is refused (a hook
+drops it, or the submit throws) or the loop guard holds it back, the note is added with no turn;
+the refusal then becomes the streak's last code, so the same code refused again does not wake
+either, and the wake count does not move.
+
+The loop guard allows one wake per code in a row, and at most 3 wakes per streak. The streak
+ends when a restart goes through (a `/clear` or a `/compact` on the token) or when a prompt you
+typed starts a turn. It is kept in the plugin's state, so a reload keeps it. A compact queued
+for the turn's end waits for the woken turn to end. The wake follows `restart.mode`,
+`autoActions`, trust and pause.
+
 | Code | Refused when | Fix |
 |---|---|---|
 | `untrusted` | The repo's restart settings are not approved, or changed since. | The operator reads `/ctx-guard` and runs `/ctx-guard trust`. |

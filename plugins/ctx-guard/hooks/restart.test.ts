@@ -6,7 +6,9 @@ import {
   COMPACT_QUIET_MS,
   PENDING_RESUME_MS,
   REFUSAL_CODES,
+  REFUSAL_WAKE_CAP,
   asLastCompact,
+  asRefusalStreak,
   asPendingCompact,
   asPendingResume,
   checkDetail,
@@ -20,7 +22,9 @@ import {
   isReadyAnswer,
   isTypedPrompt,
   isUnder,
+  liveStreak,
   nextLastCompact,
+  nextStreak,
   parseStamp,
   pendingAction,
   pendingFresh,
@@ -34,6 +38,7 @@ import {
   renoteRisk,
   verdict,
   outputTail,
+  wakesOnRefusal,
 } from './restart'
 import type { ClearAskMarks, Facts } from './restart'
 import type { LastCompact, PendingCompact, PendingResume } from '../types'
@@ -638,5 +643,38 @@ describe('ready-check output', () => {
   test('checkDetail adds the tail to the exit code', () => {
     expect(checkDetail(1, 'uncommitted changes: M a.ts', '')).toBe('exited 1: uncommitted changes: M a.ts')
     expect(checkDetail(3, '', '')).toBe('exited 3')
+  })
+})
+
+describe('the refusal wake streak', () => {
+  const streak = (code: string, wakes: number, at: number) => ({ code, wakes, at })
+
+  test('liveStreak: a restart at or after the last refusal, or a typed turn started after it, ends the streak', () => {
+    expect(liveStreak(null, { restartAt: null, typedStartAt: null })).toBe(null)
+    expect(liveStreak(streak('no-handoff', 1, 100), { restartAt: 99, typedStartAt: 100 })).toEqual(streak('no-handoff', 1, 100))
+    expect(liveStreak(streak('no-handoff', 1, 100), { restartAt: 100, typedStartAt: null })).toBe(null)
+    expect(liveStreak(streak('no-handoff', 1, 100), { restartAt: null, typedStartAt: 101 })).toBe(null)
+  })
+
+  test('wakesOnRefusal: one wake per code in a row, at most REFUSAL_WAKE_CAP, never for already-busy or untrusted', () => {
+    expect(REFUSAL_WAKE_CAP).toBe(3)
+    expect(wakesOnRefusal(null, 'no-handoff')).toBe(true)
+    expect(wakesOnRefusal(null, 'already-busy')).toBe(false)
+    expect(wakesOnRefusal(null, 'untrusted')).toBe(false)
+    expect(wakesOnRefusal(streak('no-handoff', 1, 1), 'no-handoff')).toBe(false)
+    expect(wakesOnRefusal(streak('no-handoff', 1, 1), 'background-tasks')).toBe(true)
+    expect(wakesOnRefusal(streak('no-handoff', 3, 1), 'background-tasks')).toBe(false)
+  })
+
+  test('nextStreak: counts only wakes that went in', () => {
+    expect(nextStreak(null, 'no-handoff', true, 5)).toEqual(streak('no-handoff', 1, 5))
+    expect(nextStreak(streak('no-handoff', 1, 5), 'background-tasks', false, 9)).toEqual(streak('background-tasks', 1, 9))
+  })
+
+  test('asRefusalStreak: shape-checked', () => {
+    expect(asRefusalStreak(streak('error', 2, 7))).toEqual(streak('error', 2, 7))
+    expect(asRefusalStreak({ code: 'error', wakes: -1, at: 7 })).toBe(null)
+    expect(asRefusalStreak({ code: 1, wakes: 0, at: 7 })).toBe(null)
+    expect(asRefusalStreak('x')).toBe(null)
   })
 })

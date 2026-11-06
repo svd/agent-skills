@@ -107,7 +107,7 @@ test('after a /clear, a $.state that stays empty: the report still has the pause
   expect(await ctxGuard($, 'role lead')).toContain('role is now lead')
   await writeHandoff(w, clock)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('CTX-READY ignored (untrusted)')
+  expect(refusals(session, w)[0]).toContain('CTX-READY ignored (untrusted)')
   expect(await ctxGuard($, 'pause 30m')).toContain('paused for 30m')
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
   await run($, 'wipe-hold')
@@ -495,7 +495,7 @@ test('a usage note never loops a restart: no tail, not-needed, its mark survives
   expect(weekly()[0]).toContain('Prefer cheaper steps')
   // A token anyway: there is no context to free.
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain('CTX-READY ignored (not-needed): context is at 100k, under restart.minContext 40% (400k)')
+  expect(refusals(session, w).at(-1)).toContain('CTX-READY ignored (not-needed): context is at 100k, under restart.minContext 40% (400k)')
   expect(w.ran).toEqual([])
   // Past the context threshold the restart goes through.
   await measure($, w, 450_000)
@@ -522,8 +522,8 @@ test('a usage note never loops a restart: no tail, not-needed, its mark survives
   w.files[`${STATE}/main-handoff.md`] = { text: '# handoff\n', mtimeMs: clock.now() }
   expect(await ctxGuard($, 'check')).toContain('warning: ')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain('CTX-READY ignored (too-soon): this session restarted')
-  expect(refusals(session).at(-1)).toContain('under selfGap 1m')
+  expect(refusals(session, w).at(-1)).toContain('CTX-READY ignored (too-soon): this session restarted')
+  expect(refusals(session, w).at(-1)).toContain('under selfGap 1m')
   expect(w.ran.length).toBe(2)
   expect(await ctxGuard($, 'check')).toContain('FAIL too-soon')
 })

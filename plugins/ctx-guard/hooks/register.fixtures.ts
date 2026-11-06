@@ -83,6 +83,8 @@ export type World = {
   prompts: string[]
   // Why the bottom refuses a prompt (it answers `{ drop }`); null lets it in.
   dropPrompt: string | null
+  // Runs as a prompt reaches the bottom, before `$.prompt.submit` answers: the test starts the prompt's turn here, as the engine does. null leaves the turn to the test.
+  onSubmit: ((text: string) => Promise<void>) | null
   // Each `$.ui.log` line, `to: text`.
   logs: string[]
   // A write to a matching path throws; null lets every write land.
@@ -132,6 +134,7 @@ export function newWorld(over: Partial<World> = {}): World {
     usageHang: 0,
     prompts: [],
     dropPrompt: null,
+    onSubmit: null,
     logs: [],
     failWrites: null,
     writeHang: null,
@@ -169,9 +172,10 @@ export function world(on: On, w: World, env: Record<string, string> = {}, { stor
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
-  on('prompt.submit', ($, e) => {
+  on('prompt.submit', async ($, e) => {
     w.prompts.push(e.text)
     if (w.dropPrompt !== null) return { drop: w.dropPrompt }
+    if (w.onSubmit !== null) await w.onSubmit(e.text)
     return { text: e.text }
   })
   on('ui.log', ($, e) => {
@@ -407,7 +411,7 @@ export const DENY_READS: Plugin = {
 export const WIPE: Plugin = {
   name: 'wipe',
   register: on => {
-    const keys = ['band', 'cache', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity', 'lifts']
+    const keys = ['band', 'cache', 'marks', 'roleClaim', 'config', 'pendingResume', 'pendingCompact', 'lastCompact', 'pause', 'lastClearAt', 'lastRestartAt', 'lastVerdict', 'lease', 'work', 'subagents', 'spawned', 'stamp', 'activity', 'lifts', 'refusalStreak']
     const wiped = new Set<string>()
     let hold = false
     let sets: Record<string, number> = {}
@@ -496,7 +500,11 @@ export async function ready($: Engine, clock: MockClock, answer = 'Handoff writt
   await clock.advance(RACE_SETTLE_MS)
 }
 
-export const refusals = (s: MockSession): string[] => notes(s).filter(n => n.includes('CTX-READY ignored'))
+// The refusals the model was told of: the notes appended, then the refusal line of each wake prompt.
+export const refusals = (s: MockSession, w: World): string[] => [
+  ...notes(s).filter(n => n.includes('CTX-READY ignored')),
+  ...w.prompts.flatMap(p => p.split('\n').filter(l => l.includes('CTX-READY ignored'))),
+]
 
 // A trusted lead with a fresh handoff: everything a restart needs.
 export async function armed($: Engine, on: On, w: World, config: unknown = autoConfig()): Promise<{ clock: MockClock; session: MockSession }> {

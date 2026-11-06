@@ -2,6 +2,20 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- A refused ready token now reaches the model as a prompt turn: the refusal note, then a line
+  asking it to fix the cause if that is its to fix and send the token once more. The refusal note
+  was only added to the conversation. The turn goes out where ctx-guard acts on the token
+  (`restart.mode: "auto"`, `autoActions` on, no pause) in a trusted repo. With code
+  `already-busy` or `untrusted`, while a turn runs, when the prompt is refused and when the loop
+  guard holds it back, the note is added with no turn, as before. The loop guard allows one turn
+  per code in a row and at most 3 per streak; a restart that goes through or a typed prompt's
+  turn starts a new streak, and a reload keeps it. A compact queued for the turn's end waits for
+  the woken turn to end.
+
 ## [0.7.0] - 2026-10-28
 
 ### Added
