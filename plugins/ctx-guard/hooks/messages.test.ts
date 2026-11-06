@@ -27,6 +27,7 @@ import {
   isOwnPrompt,
   promptText,
   refusalNote,
+  refusalPrompt,
   render,
   restartTail,
   subagentDenyReason,
@@ -564,6 +565,19 @@ describe('refusal and subagent texts', () => {
     expect(refusalNote('CTX-READY', 'already-busy', 'a /compact is under way', 'compact')).toBe(
       '[ctx-guard] CTX-READY ignored (already-busy): a /compact is under way. Nothing was compacted.',
     )
+  })
+
+  test('refusal prompt: the refusal note, then what to do', () => {
+    expect(refusalPrompt('CTX-READY', 'agents-running', 'two subagents are still running.')).toBe(
+      '[ctx-guard] CTX-READY ignored (agents-running): two subagents are still running. Nothing was cleared.\n' +
+        'Fix it if it is yours to fix, then send CTX-READY once more; else go on with the task or tell the operator.',
+    )
+  })
+
+  test('refusal prompt: via compact, and a custom token', () => {
+    const p = refusalPrompt('GO', 'error', '/compact was refused: no', 'compact')
+    expect(p.split('\n')[0]).toBe('[ctx-guard] GO ignored (error): /compact was refused: no. Nothing was compacted.')
+    expect(p.split('\n')[1]).toContain('then send GO once more')
   })
 
   test('subagent budget texts', () => {

@@ -69,6 +69,12 @@ its text.
 With `via: compact` it ends "Nothing was compacted." Nothing was lost; the session goes on. Fix
 the cause only if it is yours to fix, then send the token once more. Never loop it.
 
+When ctx-guard acts on the token, the refusal can arrive as a prompt turn of its own: the note
+line above, then `Fix it if it is yours to fix, then send CTX-READY once more; else go on with
+the task or tell the operator.` Answer that turn by the table below. The turn comes once per
+code in a row, and at most 3 times until a restart goes through or the operator types a prompt.
+In every other case the note is added to the conversation with no turn.
+
 | Code | What you do |
 |---|---|
 | `no-handoff`, `handoff-stale` | Rewrite the handoff now, then send the token again. |

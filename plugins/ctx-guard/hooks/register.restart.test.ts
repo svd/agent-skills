@@ -27,6 +27,7 @@ import {
   writeHandoff,
   ready,
   refusals,
+  ownPrompts,
   armed,
   PEEK_RESTART,
   peekRestart,
@@ -85,7 +86,7 @@ test('a trusted ready token: pendingResume, then /clear, then the resume, then c
   expect(w.ran).toEqual(['clear', RESUME])
   expect((await peekRestart($)).pendingResume?.step).toBe('sent')
   await clock.advance(1000)
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   const after = await peekRestart($)
   expect(after.pendingResume).toBeNull()
   expect(after.lastVerdict?.code).toBe('ok')
@@ -99,7 +100,7 @@ test('a ready token mid-line or on an earlier line does nothing', async ($, on) 
   await ready($, clock, 'I will end with CTX-READY once done.')
   await ready($, clock, 'CTX-READY\nnot yet')
   expect(w.ran).toEqual([])
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   await ready($, clock, 'Done.\n`CTX-READY`.')
   expect(w.ran).toEqual(['clear', RESUME])
 })
@@ -118,7 +119,7 @@ test('manual mode never clears', async ($, on) => {
   const { clock, session } = await armed($, on, w, autoConfig({ mode: 'manual' }))
   await ready($, clock)
   expect(w.ran).toEqual([])
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
 })
 
 test('autoActions off never clears', { options: { autoActions: false } }, async ($, on) => {
@@ -147,8 +148,8 @@ test('untrusted: refused, never clears, never runs a ready check; the note asks 
   await ready($, clock)
   expect(w.ran).toEqual([])
   expect(w.processes).toEqual([])
-  expect(refusals(session)[0]).toContain('CTX-READY ignored (untrusted)')
-  expect(refusals(session)[0]).toContain('Nothing was cleared.')
+  expect(refusals(session, w)[0]).toContain('CTX-READY ignored (untrusted)')
+  expect(refusals(session, w)[0]).toContain('Nothing was cleared.')
   const report = await ctxGuard($, '')
   expect(report).toContain('trust: not approved (needs approval: *.readyToken, *.stateDir, lead.handoff, lead.restart,')
   // No compact settings: nothing of them to approve.
@@ -170,7 +171,7 @@ test('trust is the operator\'s, and any change to a trusted field withdraws it',
   expect(await ctxGuard($, '')).toContain('; automatic clear, compact, ping, prompt, lift prompts and ready checks stay off until')
   await ready($, clock)
   expect(w.ran).toEqual([])
-  expect(refusals(session)[0]).toContain('(untrusted)')
+  expect(refusals(session, w)[0]).toContain('(untrusted)')
   // A change outside the trusted fields keeps it.
   await ctxGuard($, 'trust')
   await clock.advance(1000)
@@ -198,7 +199,7 @@ test('trust off withdraws the approval, and the band says so until the next trus
   expect((await peekRestart($)).band?.untrusted).toBe('untrusted')
   await ready($, clock)
   expect(w.ran).toEqual([])
-  expect(refusals(session)[0]).toContain('(untrusted)')
+  expect(refusals(session, w)[0]).toContain('(untrusted)')
   expect(await ctxGuard($, 'trust off')).toContain('/repo has no approval to withdraw')
   await ctxGuard($, 'trust')
   expect((await peekRestart($)).band?.untrusted).toBeNull()
@@ -209,7 +210,7 @@ test('already-busy: a second token while the restart runs', async ($, on) => {
   const { clock, session } = await armed($, on, w)
   await ready($, clock)
   await ready($, clock)
-  expect(refusals(session).map(r => r.includes('(already-busy)'))).toEqual([true])
+  expect(refusals(session, w).map(r => r.includes('(already-busy)'))).toEqual([true])
   await clock.advance(30_000)
   expect(w.ran).toEqual(['clear', RESUME])
 })
@@ -218,7 +219,7 @@ test('no-restart-command', async ($, on) => {
   const w = restartWorld({ commands: [{ name: 'clear', source: 'builtin' }] })
   const { clock, session } = await armed($, on, w)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain("(no-restart-command): /ctx-guard:resume is not among the session's commands")
+  expect(refusals(session, w)[0]).toContain("(no-restart-command): /ctx-guard:resume is not among the session's commands")
   expect(w.ran).toEqual([])
 })
 
@@ -226,7 +227,7 @@ test('agents-running: a listed agent', async ($, on) => {
   const w = restartWorld({ agents: [{ id: 'a1', status: 'running', description: 'review the diff', type: 'general-purpose' }] })
   const { clock, session } = await armed($, on, w)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(agents-running): agents still running: review the diff')
+  expect(refusals(session, w)[0]).toContain('(agents-running): agents still running: review the diff')
   expect(w.ran).toEqual([])
 })
 
@@ -236,7 +237,7 @@ test('agents-running: an unlisted agent seen stepping, until its turn completes'
   const { clock, session } = await armed($, on, w)
   await step($, clock, 'wf-1')
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(agents-running): agents still running: agent wf-1 (stepped recently)')
+  expect(refusals(session, w)[0]).toContain('(agents-running): agents still running: agent wf-1 (stepped recently)')
   await $.turn.complete({ answer: 'report', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer', agentId: 'wf-1' })
   await ready($, clock)
   expect(w.ran).toEqual(['clear', RESUME])
@@ -264,10 +265,11 @@ test('background-tasks from the last Stop', async ($, on) => {
   const w = restartWorld()
   const { clock, session } = await armed($, on, w)
   await ready($, clock, undefined, [{ id: 'b1', type: 'shell', status: 'running', description: 'npm run watch' }])
-  expect(refusals(session)[0]).toContain('(background-tasks): background tasks still running: shell b1 (npm run watch)')
-  // A Stop with no list is unknown, not empty.
+  expect(refusals(session, w)[0]).toContain('(background-tasks): background tasks still running: shell b1 (npm run watch)')
+  // A Stop with no list is unknown, not empty. The same code twice in a row wakes once: this one is a note.
+  await turn($, 'start')
   await ready($, clock, undefined, 'none')
-  expect(refusals(session)[1]).toContain('(background-tasks): background tasks unknown')
+  expect(notes(session).at(-1)).toContain('(background-tasks): background tasks unknown')
   await ready($, clock)
   expect(w.ran).toEqual(['clear', RESUME])
 })
@@ -292,7 +294,7 @@ test('background-tasks: a role change during the ready checks leaves the restart
   await $.classic.Stop({ stop_hook_active: false, background_tasks: [MONITOR] })
   expect(await ctxGuard($, 'role reviewer')).toContain('role is now reviewer')
   await clock.advance(MIN + RACE_SETTLE_MS)
-  expect(refusals(session)[0]).toContain(MONITOR_BUSY)
+  expect(refusals(session, w)[0]).toContain(MONITOR_BUSY)
   expect(w.ran).toEqual([])
 })
 
@@ -308,7 +310,7 @@ test('background-tasks: a config reload during the ready checks leaves restart v
   writeConfig(w, config)
   await ctxGuard($, 'reload')
   await clock.advance(MIN + RACE_SETTLE_MS)
-  expect(refusals(session)[0]).toContain(MONITOR_BUSY)
+  expect(refusals(session, w)[0]).toContain(MONITOR_BUSY)
   expect(w.ran).toEqual([])
 })
 
@@ -323,7 +325,7 @@ test('role-shared: another live session holds the lease; one warning toast', asy
   expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('other')
   await writeHandoff(w, clock)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(role-shared): another live session (other) holds role')
+  expect(refusals(session, w)[0]).toContain('(role-shared): another live session (other) holds role')
   expect(await ctxGuard($, '')).toContain('lease: held by another live session (other')
   expect(w.ran).toEqual([])
 })
@@ -370,7 +372,7 @@ test('the lease: a session id changed by an in-process /clear, then a reload tha
   await measure($, w, 310_000)
   await writeHandoff(w, clock)
   await ready($, clock)
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   expect(w.ran).toEqual(['clear', RESUME])
 })
 
@@ -387,7 +389,7 @@ test('the lease: a session id that cannot be read, after a reload that cannot re
   await measure($, w, 310_000)
   await writeHandoff(w, clock)
   await ready($, clock)
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   expect(w.ran).toEqual(['clear', RESUME])
 })
 
@@ -407,7 +409,7 @@ test('the lease: a /clear while $.state is unread, once the next start reads the
   expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('s1')
   await writeHandoff(w, clock)
   await ready($, clock)
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   expect(w.ran).toEqual(['clear', RESUME])
 })
 
@@ -431,7 +433,7 @@ test('the lease: a /clear while a start\'s read of $.state is under way and then
   expect(w.toasts.filter(t => t.includes('another live session'))).toEqual([])
   await writeHandoff(w, clock)
   await ready($, clock)
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   expect(w.ran).toEqual(['clear', RESUME])
 })
 
@@ -451,7 +453,7 @@ test('the lease: a /clear while $.state is unread, with an owner file of an id t
   await writeHandoff(w, clock)
   await ready($, clock)
   expect(w.toasts.filter(t => t.includes('another live session'))).toEqual([])
-  expect(refusals(session).at(-1)).toContain('(error): a /clear emptied the stored state before it was read')
+  expect(refusals(session, w).at(-1)).toContain('(error): a /clear emptied the stored state before it was read')
   expect(await ctxGuard($, '')).toContain('lease: unknown (a /clear emptied the stored state before it was read')
   // Nothing beats s1 any more: once its beat is 15 minutes old, the role is free and the cleared session's id takes it.
   await clock.advance(21 * MIN)
@@ -495,7 +497,7 @@ test('the lease: a ready token while $.state is unread is refused as error, and 
   await measure($, w, 310_000)
   await writeHandoff(w, clock)
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain("(error): the stored state could not be read, so this session's role lease is unknown; try again")
+  expect(refusals(session, w).at(-1)).toContain("(error): the stored state could not be read, so this session's role lease is unknown; try again")
   expect(await ctxGuard($, '')).toContain('lease: unknown (the stored state could not be read)')
   expect(w.ran).toEqual([])
 })
@@ -507,7 +509,7 @@ test('no-handoff', async ($, on) => {
   await start($)
   await ctxGuard($, 'trust')
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(no-handoff): .ctx-guard/lead-handoff.md does not exist')
+  expect(refusals(session, w)[0]).toContain('(no-handoff): .ctx-guard/lead-handoff.md does not exist')
 })
 
 test('handoff-stale: written before the session start, or before the last /clear', async ($, on) => {
@@ -518,12 +520,12 @@ test('handoff-stale: written before the session start, or before the last /clear
   await start($)
   await ctxGuard($, 'trust')
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(handoff-stale)')
+  expect(refusals(session, w)[0]).toContain('(handoff-stale)')
   await writeHandoff(w, clock)
   await clock.advance(MIN)
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} as never })
   await ready($, clock)
-  expect(refusals(session)[1]).toContain('(handoff-stale)')
+  expect(refusals(session, w)[1]).toContain('(handoff-stale)')
   expect(w.ran).toEqual([])
 })
 
@@ -532,7 +534,7 @@ test('stamp-unreadable', async ($, on) => {
   w.files[`${STATE}/reviewer.restart`] = { text: 'garbage', mtimeMs: NOW }
   const { clock, session } = await armed($, on, w)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(stamp-unreadable): the restart stamp of reviewer cannot be read')
+  expect(refusals(session, w)[0]).toContain('(stamp-unreadable): the restart stamp of reviewer cannot be read')
 })
 
 test('peer-restarting: a peer stamp younger than peerGap', async ($, on) => {
@@ -540,7 +542,7 @@ test('peer-restarting: a peer stamp younger than peerGap', async ($, on) => {
   const { clock, session } = await armed($, on, w)
   w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'other', at: clock.now() - 4 * MIN }), mtimeMs: NOW }
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(peer-restarting): the reviewer session restarted 4m ago, under peerGap 10m')
+  expect(refusals(session, w)[0]).toContain('(peer-restarting): the reviewer session restarted 4m ago, under peerGap 10m')
   await clock.advance(6 * MIN)
   await writeHandoff(w, clock)
   await ready($, clock)
@@ -551,11 +553,14 @@ test('ready-check-failed: a non-zero exit or a timeout; exit 0 passes', async ($
   const w = restartWorld({ exitCode: 3, stderr: 'clean-worktree: uncommitted changes:\n M src/a.ts\n' })
   const { clock, session } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['./ready.sh', '--strict'], timeout: '10s' }] }))
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(ready-check-failed): ./ready.sh --strict: exited 3: clean-worktree: uncommitted changes: M src/a.ts')
+  expect(refusals(session, w)[0]).toContain('(ready-check-failed): ./ready.sh --strict: exited 3: clean-worktree: uncommitted changes: M src/a.ts')
   w.exitCode = 'timeout'
+  await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session)[1]).toContain('(ready-check-failed): ./ready.sh --strict: did not finish within 10s')
+  // The same code twice in a row wakes once: this one is a note.
+  expect(notes(session).at(-1)).toContain('(ready-check-failed): ./ready.sh --strict: did not finish within 10s')
   w.exitCode = 0
+  await turn($, 'start')
   await ready($, clock)
   expect(w.processes).toEqual([
     ['./ready.sh', '--strict'],
@@ -573,7 +578,7 @@ test('race-lost: a peer stamp written first; the own stamp is put back', async (
     w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'other', at: clock.now() - 1 }), mtimeMs: clock.now() }
   }
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(race-lost): the reviewer session started its restart first')
+  expect(refusals(session, w)[0]).toContain('(race-lost): the reviewer session started its restart first')
   expect(JSON.parse(w.files[`${STATE}/lead.restart`]?.text ?? '{}').at).toBe(0)
   expect(w.ran).toEqual([])
 })
@@ -583,7 +588,7 @@ test('error: a handoff that is a symlink out of the root', async ($, on) => {
   const { clock, session } = await armed($, on, w)
   w.links[HANDOFF] = '/elsewhere/secret.md'
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(error): handoff path .ctx-guard/lead-handoff.md resolves outside the project root')
+  expect(refusals(session, w)[0]).toContain('(error): handoff path .ctx-guard/lead-handoff.md resolves outside the project root')
   expect(w.ran).toEqual([])
 })
 
@@ -592,7 +597,7 @@ test('error: a state folder that is a symlink out of the root', async ($, on) =>
   const { clock, session } = await armed($, on, w)
   w.links[STATE] = '/tmp/elsewhere'
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(error): stateDir .ctx-guard resolves outside the project root')
+  expect(refusals(session, w)[0]).toContain('(error): stateDir .ctx-guard resolves outside the project root')
   expect(w.ran).toEqual([])
 })
 
@@ -600,7 +605,7 @@ test('error: /clear refused puts the stamp back and clears pendingResume', { plu
   const w = restartWorld({ failCommand: 'clear' })
   const { clock, session } = await armed($, on, w)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(error): /clear was refused')
+  expect(refusals(session, w)[0]).toContain('(error): /clear was refused')
   expect((await peekRestart($)).pendingResume).toBeNull()
   expect(JSON.parse(w.files[`${STATE}/lead.restart`]?.text ?? '{}').at).toBe(0)
 })
@@ -837,7 +842,7 @@ test('/ctx-guard:clear holds for one turn: a turn that ends with no token ends i
   await ready($, clock, 'Still on it.')
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
   expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
 })
 
@@ -853,7 +858,7 @@ test('/ctx-guard:clear: a typed prompt\'s turn after the command that ends with 
   await ready($, clock, 'Waiting on the build.')
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
 test('/ctx-guard:clear: a turn that starts in the command\'s millisecond does not end the ask', async ($, on) => {
@@ -1002,7 +1007,7 @@ test('/ctx-guard:clear: a typed prompt\'s turn that ends with no token ends the 
   await ready($, clock, 'Waiting on the build.')
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
   expect(w.ran.slice(1)).not.toContain('clear')
   expect(w.ran.slice(1)).not.toContain(RESUME)
 })
@@ -1024,7 +1029,7 @@ for (const reason of ['aborted', 'error', 'refusal'] as const) {
     await cut($, clock, reason)
     await turn($, 'start')
     await ready($, clock)
-    expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+    expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
     await $.prompt.submit({ text: 'go on', origin: { kind: 'composer' } } as never)
     await turn($, 'start')
     await ready($, clock)
@@ -1047,7 +1052,7 @@ for (const [what, input] of [
     await $.prompt.submit(input as never)
     await turn($, 'start')
     await ready($, clock)
-    expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+    expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
     expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
   })
 }
@@ -1069,7 +1074,7 @@ test('/ctx-guard:clear cut by the usage limit, then /ctx-guard wake 5h: the woke
   expect(w.prompts.filter(p => p.includes('/ctx-guard wake')).length).toBe(1)
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).join('\n')).not.toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).join('\n')).not.toContain(MIN_CONTEXT_REFUSAL)
   expect(w.ran.slice(1)).toEqual(['clear', RESUME])
 })
 
@@ -1097,7 +1102,7 @@ test('/ctx-guard:clear cut, a wake prompt accepted with no turn for it: the turn
   expect(w.prompts.filter(p => p.includes('Still there?')).length).toBe(1)
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
   expect(w.ran.slice(1)).toEqual([])
 })
 
@@ -1111,7 +1116,7 @@ test('/ctx-guard:clear interrupted, then "go on" typed: its token, refused for n
   await $.prompt.submit({ text: 'go on', origin: { kind: 'composer' } } as never)
   await turn($, 'start')
   await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
-  expect(refusals(session).at(-1)).toContain('background tasks still running: local_bash b1 (the build)')
+  expect(refusals(session, w).at(-1)).toContain('background tasks still running: local_bash b1 (the build)')
   await $.prompt.submit({ text: 'b1 done', origin: { kind: 'task-notification' } } as never)
   await turn($, 'start')
   await ready($, clock)
@@ -1151,7 +1156,7 @@ test('/ctx-guard:clear: a token refused for now keeps the ask, and the next toke
   await typedClear($)
   await turn($, 'start')
   await ready($, clock, undefined, [{ id: 'b1', type: 'local_bash', status: 'running', description: 'the build' }])
-  expect(refusals(session).at(-1)).toContain('background tasks still running: local_bash b1 (the build)')
+  expect(refusals(session, w).at(-1)).toContain('background tasks still running: local_bash b1 (the build)')
   await turn($, 'start')
   await ready($, clock)
   expect(w.ran.slice(1)).toEqual(['clear', RESUME])
@@ -1180,7 +1185,7 @@ test('/ctx-guard:clear: a role change ends the ask', async ($, on) => {
   await ctxGuard($, 'role lead')
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
 test('/ctx-guard:clear: a role change with no claim ends the ask, though the role comes back', async ($, on) => {
@@ -1201,7 +1206,7 @@ test('/ctx-guard:clear: a role change with no claim ends the ask, though the rol
   await clock.advance(1000)
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
 test('/ctx-guard:clear: a session start that cannot read $.state is no role change; once read, the ask still holds', { plugins: [DENY_READS] }, async ($, on) => {
@@ -1270,7 +1275,7 @@ test('/ctx-guard:clear: a reading taken while $.state is unread keeps the stored
   await clock.advance(1000)
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
   expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
 })
 
@@ -1294,7 +1299,7 @@ test('/ctx-guard:clear: a typed turn started before a reload and ended while $.s
   await clock.advance(1000)
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
   expect(w.ran).toEqual([`ctx-guard:clear ${CLEAR_NOTE}`])
 })
 
@@ -1311,7 +1316,7 @@ test('agents-running: a stored step survives a Stop while $.state is unread', { 
   await run($, 'allow-reads')
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain('(agents-running): agents still running: agent wf-1 (stepped recently)')
+  expect(refusals(session, w).at(-1)).toContain('(agents-running): agents still running: agent wf-1 (stepped recently)')
   expect(w.ran).toEqual([])
 })
 
@@ -1354,7 +1359,7 @@ test('/ctx-guard:clear: the operator unsetting the role ends the ask; setting it
   await ctxGuard($, 'role lead')
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
 test('/ctx-guard:clear: a reload that leaves the session with no role keeps the ask', async ($, on) => {
@@ -1383,7 +1388,7 @@ test('/ctx-guard:clear: the operator\'s own /clear ends the ask, and the flush a
   await measure($, w, 100_000)
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
 test('/ctx-guard:clear in manual mode records no ask', async ($, on) => {
@@ -1401,7 +1406,7 @@ test('/ctx-guard:clear in manual mode records no ask', async ($, on) => {
   await ctxGuard($, 'trust')
   await turn($, 'start')
   await ready($, clock)
-  expect(refusals(session).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
+  expect(refusals(session, w).at(-1)).toContain(MIN_CONTEXT_REFUSAL)
 })
 
 test('/ctx-guard:clear fills notes.suffix from the live reading', async ($, on) => {
@@ -1526,7 +1531,7 @@ test('a turn started between the token and /clear refuses, and the stamp is put 
   // The flow waits out the race's settle period; the person types meanwhile.
   await $.turn.start({ text: 'one more thing', turnId: 't2' })
   await clock.advance(RACE_SETTLE_MS)
-  expect(refusals(session)[0]).toContain('(already-busy): a turn started after the ready token')
+  expect(refusals(session, w)[0]).toContain('(already-busy): a turn started after the ready token')
   expect(JSON.parse(w.files[`${STATE}/lead.restart`]?.text ?? '{}').at).toBe(0)
   expect(w.ran).toEqual([])
 })
@@ -1539,7 +1544,7 @@ test('a whole turn run between the token and /clear refuses', async ($, on) => {
   await $.turn.start({ text: 'status?', turnId: 't2' })
   await $.turn.complete({ answer: 'All good.', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
   await clock.advance(RACE_SETTLE_MS)
-  expect(refusals(session)[0]).toContain('(already-busy): another turn ran after the ready token')
+  expect(refusals(session, w)[0]).toContain('(already-busy): another turn ran after the ready token')
   expect(w.ran).toEqual([])
 })
 
@@ -1550,7 +1555,7 @@ test('an agent started during the ready checks refuses at the re-check', async (
     w.agents = [{ id: 'a9', status: 'running', description: 'late dispatch', type: 'Explore' }]
   }
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(agents-running): agents still running: late dispatch (started after the checks)')
+  expect(refusals(session, w)[0]).toContain('(agents-running): agents still running: late dispatch (started after the checks)')
   expect(w.ran).toEqual([])
 })
 
@@ -1562,7 +1567,7 @@ test('race: a peer that wrote its stamp while our checks ran wins; we put ours b
     w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'peer', at: clock.now() }), mtimeMs: clock.now() }
   }
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(race-lost): the reviewer session started its restart first')
+  expect(refusals(session, w)[0]).toContain('(race-lost): the reviewer session started its restart first')
   expect(w.ran).toEqual([])
 })
 
@@ -1574,7 +1579,7 @@ test('race: a peer stamp newer than ours that lands in the settle period loses t
     w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'peer', at: clock.now() + 700 }), mtimeMs: clock.now() }
   }
   await ready($, clock)
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   expect(w.ran).toEqual(['clear', RESUME])
 })
 
@@ -1587,12 +1592,12 @@ test('busy work survives a reload: a running background task and a stepping agen
   await start($)
   await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.settle()
-  expect(refusals(session)[0]).toContain('(agents-running): agents still running: agent wf-1 (stepped recently)')
+  expect(refusals(session, w)[0]).toContain('(agents-running): agents still running: agent wf-1 (stepped recently)')
   await $.turn.complete({ answer: 'report', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer', agentId: 'wf-1' })
   await start($)
   await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.settle()
-  expect(refusals(session)[1]).toContain('(background-tasks): background tasks still running: shell b1 (npm run watch)')
+  expect(refusals(session, w)[1]).toContain('(background-tasks): background tasks still running: shell b1 (npm run watch)')
   expect(w.ran).toEqual([])
 })
 
@@ -1601,7 +1606,7 @@ test('background tasks never reported are unknown: refused', async ($, on) => {
   const { clock, session } = await armed($, on, w)
   await $.turn.complete({ answer: 'CTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.settle()
-  expect(refusals(session)[0]).toContain('(background-tasks): background tasks unknown')
+  expect(refusals(session, w)[0]).toContain('(background-tasks): background tasks unknown')
 })
 
 test('error: a missing handoff whose parent folder is a symlink out of the root', async ($, on) => {
@@ -1609,7 +1614,7 @@ test('error: a missing handoff whose parent folder is a symlink out of the root'
   w.links[`${ROOT}/notes`] = '/elsewhere/notes'
   const { clock, session } = await armed($, on, w, autoConfig({}, { path: 'notes/{role}.md' }))
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(error): handoff path notes/lead.md resolves outside the project root')
+  expect(refusals(session, w)[0]).toContain('(error): handoff path notes/lead.md resolves outside the project root')
 })
 
 test('no-handoff: an empty handoff file does not count', async ($, on) => {
@@ -1617,7 +1622,7 @@ test('no-handoff: an empty handoff file does not count', async ($, on) => {
   const { clock, session } = await armed($, on, w)
   w.files[HANDOFF] = { text: '', mtimeMs: clock.now() }
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(no-handoff): .ctx-guard/lead-handoff.md is empty')
+  expect(refusals(session, w)[0]).toContain('(no-handoff): .ctx-guard/lead-handoff.md is empty')
 })
 
 test('a garbage owner file counts as free and is taken over', async ($, on) => {
@@ -1627,7 +1632,7 @@ test('a garbage owner file counts as free and is taken over', async ($, on) => {
   expect(JSON.parse(w.files[`${STATE}/lead.owner`]?.text ?? '{}').sessionId).toBe('s1')
   expect(w.toasts.some(t => t.includes('another live session'))).toBe(false)
   await ready($, clock)
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   expect(w.ran).toEqual(['clear', RESUME])
 })
 
@@ -1675,7 +1680,7 @@ test('trust reads the files again and prints every approved field; a script unde
   w.files[`${ROOT}/ready.sh`] = { text: '#!/bin/sh\nrm -rf /\n', mtimeMs: clock.now() }
   await writeHandoff(w, clock)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(untrusted): this repo\'s restart settings are not approved (changed since approval: script:./ready.sh)')
+  expect(refusals(session, w)[0]).toContain('(untrusted): this repo\'s restart settings are not approved (changed since approval: script:./ready.sh)')
   expect(w.processes).toEqual([])
   expect(await ctxGuard($, '')).toContain('trust: not approved (needs approval: script:./ready.sh)')
 })
@@ -1686,7 +1691,7 @@ test('a script passed as an argument is hashed too', async ($, on) => {
   const { clock, session } = await armed($, on, w, autoConfig({ readyChecks: [{ run: ['bash', 'scripts/check.sh', '--fast'] }] }))
   w.files[`${ROOT}/scripts/check.sh`] = { text: 'exit 1\n', mtimeMs: clock.now() }
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('changed since approval: script:scripts/check.sh')
+  expect(refusals(session, w)[0]).toContain('changed since approval: script:scripts/check.sh')
   expect(w.processes).toEqual([])
 })
 
@@ -2007,19 +2012,20 @@ test('via compact: a failed /compact does not retry the queued compact at once',
   await measure($, w, 860_000)
   await ready($, clock)
   await clock.settle()
-  expect(refusals(session)[0]).toContain('/compact was refused')
+  expect(refusals(session, w)[0]).toContain('/compact was refused')
   expect(w.ran).toEqual([COMPACTED])
   expect(await ctxGuard($, '')).toContain('queued compact: queued for trigger "squeeze"')
 })
 
-test('compact action: a refused ready token at the same turn end lets the queued compact run', async ($, on) => {
+test('compact action: a refused ready token whose wake is dropped lets the queued compact run at the same turn end', async ($, on) => {
   const w = restartWorld()
+  w.dropPrompt = 'busy'
   const { clock, session } = await compactArmed($, on, w, compactConfig({ mode: 'auto', prompt: 'Carry on.' }))
   delete w.files[HANDOFF]
   await $.turn.start({ text: 'go', turnId: 't1' })
   await measure($, w, 860_000)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(no-handoff)')
+  expect(refusals(session, w)[0]).toContain('(no-handoff)')
   expect(w.ran).toEqual([COMPACTED])
 })
 
@@ -2081,7 +2087,7 @@ test('race: a compact and a ready-token restart in the same tick never both run 
   const { clock, session } = await compactArmed($, on, w, compactConfig({ mode: 'auto', prompt: 'Carry on.' }))
   await measure($, w, 860_000)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(already-busy): a /compact of this session is under way')
+  expect(refusals(session, w)[0]).toContain('(already-busy): a /compact of this session is under way')
   await clock.advance(30_000)
   expect(w.ran).toEqual([COMPACTED])
 })
@@ -2124,7 +2130,7 @@ test('via compact: runs /compact with the instructions, no clear or resume; hand
   w.files[`${STATE}/reviewer.restart`] = { text: JSON.stringify({ owner: 'other', at: clock.now() }), mtimeMs: clock.now() }
   w.files[`${STATE}/lead.owner`] = { text: JSON.stringify({ sessionId: 'other', heartbeat: clock.now() }), mtimeMs: clock.now() }
   await ready($, clock)
-  expect(refusals(session)).toEqual([])
+  expect(refusals(session, w)).toEqual([])
   expect(w.ran).toEqual([COMPACTED])
   expect(w.files[`${STATE}/lead.restart`]).toBeUndefined()
   const report = await ctxGuard($, '')
@@ -2137,8 +2143,8 @@ test('via compact: already-busy while the compact runs; the refusal says nothing
   const { clock, session } = await armed($, on, w, viaCompact())
   await ready($, clock)
   await ready($, clock)
-  expect(refusals(session).length).toBe(1)
-  expect(refusals(session)[0]).toContain('CTX-READY ignored (already-busy): a /compact of this session is under way. Nothing was compacted.')
+  expect(refusals(session, w).length).toBe(1)
+  expect(refusals(session, w)[0]).toContain('CTX-READY ignored (already-busy): a /compact of this session is under way. Nothing was compacted.')
   await clock.advance(30_000)
   expect(w.ran).toEqual([COMPACTED])
 })
@@ -2149,7 +2155,7 @@ test('via compact: a compact action in flight makes the ready token already-busy
   await measure($, w, 860_000)
   await clock.settle()
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(already-busy)')
+  expect(refusals(session, w)[0]).toContain('(already-busy)')
   await clock.advance(30_000)
   expect(w.ran).toEqual([COMPACTED])
 })
@@ -2158,11 +2164,11 @@ test('via compact: refused while an agent runs or untrusted, and a refused /comp
   const w = restartWorld({ agents: [{ id: 'a1', status: 'running', description: 'scan', type: 'Explore' }] })
   const { clock, session } = await armed($, on, w, viaCompact())
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(agents-running)')
+  expect(refusals(session, w)[0]).toContain('(agents-running)')
   w.agents = []
   w.failCommand = 'compact'
   await ready($, clock)
-  expect(refusals(session)[1]).toMatch(/\(error\): \/compact was refused: .*\. Nothing was compacted\./)
+  expect(refusals(session, w)[1]).toMatch(/\(error\): \/compact was refused: .*\. Nothing was compacted\./)
   expect(w.ran).toEqual([COMPACTED])
 })
 
@@ -2172,7 +2178,7 @@ test('via compact: untrusted refuses', async ($, on) => {
   const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
   await start($)
   await ready($, clock)
-  expect(refusals(session)[0]).toContain('(untrusted)')
+  expect(refusals(session, w)[0]).toContain('(untrusted)')
   expect(w.ran).toEqual([])
 })
 
@@ -2215,4 +2221,252 @@ test('via compact: a reload while it runs never sends a second /compact for the 
   await mainTurnEnd($, clock)
   expect(w.ran).toEqual([COMPACTED])
   expect(await ctxGuard($, '')).toContain('last compact: ran')
+})
+
+// ---- restart: a refusal wakes the model -------------------------------------
+
+const BUSY_SHELL: Task = { id: 'b1', type: 'shell', status: 'running', description: 'npm run watch' }
+
+const refusalNotes = (s: MockSession): string[] => notes(s).filter(n => n.includes('ignored ('))
+const refusalPrompts = (w: World): string[] => ownPrompts(w).filter(p => p.includes('ignored ('))
+
+// A token refused background-tasks: the handoff is fresh, a shell still runs.
+async function refuseBackground($: Engine, w: World, clock: MockClock): Promise<void> {
+  await writeHandoff(w, clock)
+  await ready($, clock, undefined, [BUSY_SHELL])
+}
+
+// A token refused no-handoff: the handoff file is gone.
+async function refuseNoHandoff($: Engine, w: World, clock: MockClock): Promise<void> {
+  delete w.files[HANDOFF]
+  await ready($, clock)
+}
+
+test('a refused token wakes the model with the reason, and appends no note', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock, undefined, [BUSY_SHELL])
+  const prompts = refusalPrompts(w)
+  expect(prompts.length).toBe(1)
+  const [first, second] = prompts[0]!.split('\n')
+  expect(first).toContain('CTX-READY ignored (background-tasks)')
+  expect(first).toEndWith('Nothing was cleared.')
+  expect(second).toBe('Fix it if it is yours to fix, then send CTX-READY once more; else go on with the task or tell the operator.')
+  expect(refusalNotes(session)).toEqual([])
+  expect(w.ran).not.toContain('clear')
+})
+
+test('already-busy is not woken: the note is appended', async ($, on) => {
+  const w = restartWorld({ hang: { clear: 30_000 } })
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock)
+  await ready($, clock)
+  expect(refusalPrompts(w)).toEqual([])
+  expect(refusalNotes(session).map(r => r.includes('(already-busy)'))).toEqual([true])
+  await clock.advance(30_000)
+})
+
+test('no wake while a main turn runs: the note is appended', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [BUSY_SHELL] })
+  await $.turn.complete({ answer: 'Handoff written.\n\nCTX-READY', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  // The operator's next turn starts before the restart's timer runs.
+  await turn($, 'start')
+  await clock.settle()
+  await clock.advance(RACE_SETTLE_MS)
+  expect(refusalPrompts(w)).toEqual([])
+  // A wake-eligible code, so only the running-turn guard explains the missing prompt.
+  expect(refusalNotes(session).length).toBe(1)
+  expect(refusalNotes(session)[0]).toContain('(background-tasks)')
+})
+
+test('untrusted is not woken: the note is appended', async ($, on) => {
+  const w = restartWorld()
+  writeConfig(w, autoConfig())
+  const { clock, session } = world(on, w, { CTX_GUARD_ROLE: 'lead' })
+  await start($)
+  await ready($, clock)
+  expect(refusalPrompts(w)).toEqual([])
+  expect(refusalNotes(session).length).toBe(1)
+  expect(refusalNotes(session)[0]).toContain('(untrusted)')
+  // The streak is untouched: once trusted, a refusal still wakes.
+  await ctxGuard($, 'trust')
+  await turn($, 'start')
+  await refuseBackground($, w, clock)
+  expect(refusalPrompts(w).length).toBe(1)
+  expect(refusalNotes(session).length).toBe(1)
+})
+
+test('the same code twice in a row wakes once', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(1)
+  expect(refusalNotes(session)).toEqual([])
+  await turn($, 'start')
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(1)
+  expect(refusalNotes(session).length).toBe(1)
+  expect(refusalNotes(session)[0]).toContain('(background-tasks)')
+})
+
+test('a new code wakes again', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await armed($, on, w)
+  await refuseBackground($, w, clock)
+  await turn($, 'start')
+  await refuseNoHandoff($, w, clock)
+  const prompts = refusalPrompts(w)
+  expect(prompts.length).toBe(2)
+  expect(prompts[0]).toContain('(background-tasks)')
+  expect(prompts[1]).toContain('(no-handoff)')
+})
+
+test('at most 3 wakes in a streak: the 4th refusal is appended', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await refuseBackground($, w, clock)
+  await turn($, 'start')
+  await refuseNoHandoff($, w, clock)
+  await turn($, 'start')
+  await refuseBackground($, w, clock)
+  await turn($, 'start')
+  expect(refusalPrompts(w).length).toBe(3)
+  expect(refusalNotes(session)).toEqual([])
+  await refuseNoHandoff($, w, clock)
+  expect(refusalPrompts(w).length).toBe(3)
+  expect(refusalNotes(session).length).toBe(1)
+  expect(refusalNotes(session)[0]).toContain('(no-handoff)')
+})
+
+test('a dropped wake falls back to the note', async ($, on) => {
+  const w = restartWorld()
+  w.dropPrompt = 'busy'
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalNotes(session).length).toBe(1)
+  expect(refusalNotes(session)[0]).toContain('(background-tasks)')
+  expect(w.prompts.filter(p => p.includes('ignored (')).length).toBe(1)
+})
+
+test('a restart that goes through resets the streak', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w, autoConfig({ selfGap: '0' }))
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(1)
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran).toContain('clear')
+  await turn($, 'start')
+  await writeHandoff(w, clock)
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(2)
+  expect(refusalNotes(session)).toEqual([])
+})
+
+test('a typed turn resets the streak', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(1)
+  await clock.advance(1000)
+  await $.prompt.submit({ text: 'what now?', origin: { kind: 'bridge' } } as never)
+  await turn($, 'start')
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(2)
+  expect(refusalNotes(session)).toEqual([])
+})
+
+test('the streak survives a reload', async ($, on) => {
+  const w = restartWorld()
+  const { clock, session } = await armed($, on, w)
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(1)
+  await start($)
+  await turn($, 'start')
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(1)
+  expect(refusalNotes(session).length).toBe(1)
+})
+
+test('the woken turn\'s token still counts as asked under /ctx-guard:clear', async ($, on) => {
+  const w = restartWorld({ commands: CLEAR_COMMANDS, tokens: 100_000 })
+  const { clock, session } = await underMinimum($, on, w)
+  await typedClear($)
+  await turn($, 'start')
+  await ready($, clock, undefined, [BUSY_SHELL])
+  expect(refusalPrompts(w).length).toBe(1)
+  expect(w.ran.slice(1)).toEqual([])
+  await turn($, 'start')
+  await ready($, clock)
+  expect(w.ran.slice(1)).toEqual(['clear', RESUME])
+  expect(refusalNotes(session)).toEqual([])
+  expect(refusals(session, w).filter(r => r.includes('(not-needed)'))).toEqual([])
+})
+
+test('via compact: the wake says nothing was compacted', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w, compactConfig({ mode: 'auto', via: 'compact' }))
+  await ready($, clock, undefined, [BUSY_SHELL])
+  const prompts = refusalPrompts(w)
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]!.split('\n')[0]).toEndWith('Nothing was compacted.')
+})
+
+test('a queued compact waits for the woken turn', async ($, on) => {
+  const w = restartWorld()
+  const { clock } = await compactArmed($, on, w, compactConfig({ mode: 'auto' }))
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  await refuseNoHandoff($, w, clock)
+  expect(refusalPrompts(w).length).toBe(1)
+  expect(w.ran).toEqual([])
+  await turn($, 'start')
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+// The engine ordering: the woken turn is running when the submit answers, so the busy check alone holds the compact; the test above pins the retry gate, where the submit leaves no turn running.
+test('a queued compact waits for the woken turn when the turn has started as the wake prompt is submitted', async ($, on) => {
+  const w = restartWorld()
+  w.onSubmit = async text => {
+    await $.turn.start({ text, turnId: 't2' })
+  }
+  const { clock } = await compactArmed($, on, w, compactConfig({ mode: 'auto' }))
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await clock.settle()
+  await refuseNoHandoff($, w, clock)
+  expect(refusalPrompts(w).length).toBe(1)
+  expect(w.ran).toEqual([])
+  await $.turn.complete({ answer: 'Done.', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.settle()
+  expect(w.ran).toEqual([COMPACTED])
+})
+
+test('via compact: a queued compact waits for the turn woken by a re-check refusal', async ($, on) => {
+  const w = restartWorld()
+  const config = compactConfig({ mode: 'auto', via: 'compact', readyChecks: [{ run: ['./ready.sh'] }] })
+  const { clock } = await compactArmed($, on, w, config)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await measure($, w, 860_000)
+  await clock.settle()
+  expect(w.ran).toEqual([])
+  w.onProcess = () => {
+    w.agents = [{ id: 'a9', status: 'running', description: 'late dispatch', type: 'Explore' }]
+  }
+  // The agent that failed the re-check is gone by the time the wake prompt is submitted: only the wake holds the compact.
+  w.onSubmit = async () => {
+    w.agents = []
+  }
+  await ready($, clock)
+  expect(refusalPrompts(w).length).toBe(1)
+  expect(refusalPrompts(w)[0]).toContain('(agents-running)')
+  expect(w.ran).toEqual([])
+  await turn($, 'start')
+  await mainTurnEnd($, clock)
+  expect(w.ran).toEqual([COMPACTED])
 })

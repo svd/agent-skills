@@ -563,6 +563,11 @@ export function refusalNote(readyToken: string, code: string, text: string, via:
   return `${PREFIX} ${readyToken} ignored (${code}): ${text.trim().replace(/\.$/, '')}. Nothing was ${via === 'compact' ? 'compacted' : 'cleared'}.`
 }
 
+/** The prompt that wakes the model after a refused ready token: the note, then what to do. */
+export function refusalPrompt(readyToken: string, code: string, text: string, via: RestartVia = 'clear'): string {
+  return `${refusalNote(readyToken, code, text, via)}\nFix it if it is yours to fix, then send ${readyToken} once more; else go on with the task or tell the operator.`
+}
+
 export type BudgetVars = { type: string; tokens: number; warn: number | null; stop: number | null }
 
 function budgetVars(b: BudgetVars): Record<string, string> {
