@@ -2,7 +2,7 @@
 
 All notable changes to the `ctx-guard` plugin are documented here.
 
-## [Unreleased]
+## [0.8.0] - 2026-11-07
 
 ### Changed
 
